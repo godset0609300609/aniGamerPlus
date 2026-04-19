@@ -137,3 +137,6 @@ ffmpeg.exe
 
 # Frontend
 node_modules/
+frontend/playwright-report/
+frontend/test-results/
+frontend/blob-report/

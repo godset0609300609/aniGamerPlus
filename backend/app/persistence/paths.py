@@ -38,13 +38,18 @@ class WorkspacePaths:
     def detect(cls, *, working_dir: pathlib.Path | None = None) -> WorkspacePaths:
         """Resolve all known paths.
 
-        - If ``working_dir`` is given, use it verbatim (after ``resolve()``).
-        - Otherwise, if ``sys.frozen`` is set (PyInstaller bundle), use the
-          directory of ``sys.executable``.
-        - Otherwise, fall back to ``backend/`` (two levels up from this file).
+        Priority order:
+        1. ``working_dir`` kwarg (tests / CLI usage).
+        2. ``ANIGAMERPLUS_WORKSPACE_DIR`` environment variable.
+        3. ``sys.frozen`` (PyInstaller bundle) → directory of ``sys.executable``.
+        4. Default: ``backend/`` (two levels up from this file).
         """
+        import os
+
         if working_dir is not None:
             root = pathlib.Path(working_dir).resolve()
+        elif env_dir := os.environ.get('ANIGAMERPLUS_WORKSPACE_DIR', ''):
+            root = pathlib.Path(env_dir).resolve()
         elif getattr(sys, 'frozen', False):
             root = pathlib.Path(sys.executable).resolve().parent
         else:
