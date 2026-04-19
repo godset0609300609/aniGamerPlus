@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import typing as T
 
+import anyio.to_thread
 import fastapi
 import starlette.requests
 
@@ -48,7 +49,8 @@ async def current_user(
     user_id: str | None = connection.session.get('user_id')
     if not user_id:
         return None
-    return user_repo.get(user_id)
+    uid = user_id
+    return await anyio.to_thread.run_sync(lambda: user_repo.get(uid))
 
 
 async def require_user(

@@ -54,7 +54,7 @@ async def tasks_progress(
     await ws.accept()
     try:
         while True:
-            snapshot = progress.snapshot(user)
+            snapshot = await progress.snapshot(user)
             # Send the ``tasks`` sub-mapping directly, matching the legacy
             # frontend wire shape: ``{ "<sn>": { rate, status, filename } }``.
             await ws.send_json({sn: entry.model_dump() for sn, entry in snapshot.tasks.items()})
