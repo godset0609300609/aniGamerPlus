@@ -6,6 +6,8 @@ import datetime as dt
 import pathlib
 from typing import Any
 
+import pytest
+
 from app.logging_ import Logger
 from app.models import AnimeListEntry
 from app.persistence.anime_list_repo import AnimeListEntryDTO, AnimeListEntryRepository
@@ -67,10 +69,11 @@ FIXTURE = """\
 """
 
 
-def test_parse_realistic_fixture(tmp_path: pathlib.Path) -> None:
+@pytest.mark.anyio
+async def test_parse_realistic_fixture(tmp_path: pathlib.Path) -> None:
     service, _, _, db = _make_service(tmp_path, FIXTURE)
     try:
-        entries = service.list()
+        entries = await service.list()
 
         assert [e.sn for e in entries] == [11111, 22222, 44444, 55555]
 
@@ -96,17 +99,18 @@ def test_parse_realistic_fixture(tmp_path: pathlib.Path) -> None:
         db.dispose()
 
 
-def test_round_trip_parse_serialize_parse(tmp_path: pathlib.Path) -> None:
+@pytest.mark.anyio
+async def test_round_trip_parse_serialize_parse(tmp_path: pathlib.Path) -> None:
     service, sn_list_repo, _, db = _make_service(tmp_path, FIXTURE)
     try:
-        parsed_once = service.list()
+        parsed_once = await service.list()
 
-        service.replace_all(parsed_once)
+        await service.replace_all(parsed_once)
         serialized = sn_list_repo.read_raw()
 
         service2, _, _, db2 = _make_service(tmp_path / 'sub', serialized)
         try:
-            parsed_twice = service2.list()
+            parsed_twice = await service2.list()
         finally:
             db2.dispose()
 
@@ -127,11 +131,12 @@ def test_round_trip_parse_serialize_parse(tmp_path: pathlib.Path) -> None:
         db.dispose()
 
 
-def test_disabled_round_trip_single_row(tmp_path: pathlib.Path) -> None:
+@pytest.mark.anyio
+async def test_disabled_round_trip_single_row(tmp_path: pathlib.Path) -> None:
     content = '@\n# 12345 latest\n'
     service, sn_list_repo, _, db = _make_service(tmp_path, content)
     try:
-        entries = service.list()
+        entries = await service.list()
         assert len(entries) == 1
         entry = entries[0]
         assert entry.enabled is False
@@ -140,23 +145,25 @@ def test_disabled_round_trip_single_row(tmp_path: pathlib.Path) -> None:
         assert entry.comment == ''
 
         # Serialize back and confirm the ``# `` prefix is there.
-        service.replace_all(entries)
+        await service.replace_all(entries)
         assert '# 12345 latest' in sn_list_repo.read_raw()
     finally:
         db.dispose()
 
 
-def test_unknown_mode_falls_back_to_none(tmp_path: pathlib.Path) -> None:
+@pytest.mark.anyio
+async def test_unknown_mode_falls_back_to_none(tmp_path: pathlib.Path) -> None:
     service, _, _, db = _make_service(tmp_path, '@\n99999 bogus\n')
     try:
-        entries = service.list()
+        entries = await service.list()
         assert len(entries) == 1
         assert entries[0].mode is None
     finally:
         db.dispose()
 
 
-def test_group_order_and_first_occurrence(tmp_path: pathlib.Path) -> None:
+@pytest.mark.anyio
+async def test_group_order_and_first_occurrence(tmp_path: pathlib.Path) -> None:
     service, sn_list_repo, _, db = _make_service(tmp_path, '')
     try:
         inputs = [
@@ -164,7 +171,7 @@ def test_group_order_and_first_occurrence(tmp_path: pathlib.Path) -> None:
             AnimeListEntry(sn=2, tag='B'),
             AnimeListEntry(sn=3, tag='A'),  # should be grouped back with sn=1
         ]
-        service.replace_all(inputs)
+        await service.replace_all(inputs)
         text = sn_list_repo.read_raw()
 
         # Category A comes first and contains both 1 and 3.
@@ -180,7 +187,8 @@ def test_group_order_and_first_occurrence(tmp_path: pathlib.Path) -> None:
         db.dispose()
 
 
-def test_cached_anime_name_shows_without_download(tmp_path: pathlib.Path) -> None:
+@pytest.mark.anyio
+async def test_cached_anime_name_shows_without_download(tmp_path: pathlib.Path) -> None:
     """Goal A: when an entry has cached anime_name, _enrich shows it even
     without any row in the anime (downloaded) table."""
     from app.persistence.anime_list_repo import AnimeListEntryDTO, AnimeListEntryRepository
@@ -217,7 +225,7 @@ def test_cached_anime_name_shows_without_download(tmp_path: pathlib.Path) -> Non
             created_at=dt.datetime.now(dt.timezone.utc),
             last_login_at=None,
         )
-        entries = service.list_entries(user)
+        entries = await service.list_entries(user)
         assert len(entries) == 1
         assert entries[0].anime_name == '黃泉使者'
         # No downloads yet so counts are 0.
@@ -272,13 +280,14 @@ _SEED_ROWS = [
 ]
 
 
-def test_enrichment_counts_episodes(tmp_path: pathlib.Path) -> None:
+@pytest.mark.anyio
+async def test_enrichment_counts_episodes(tmp_path: pathlib.Path) -> None:
     content = '@\n100\n200 latest\n9999\n'
     # The helper mutates each dict, so give it a fresh list.
     rows = [dict(r) for r in _SEED_ROWS]
     service, _, _, db = _make_service(tmp_path, content, seed_rows=rows)
     try:
-        entries = service.list()
+        entries = await service.list()
 
         by_sn = {e.sn: e for e in entries}
         assert by_sn[100].anime_name == 'OneAnime'
@@ -297,11 +306,12 @@ def test_enrichment_counts_episodes(tmp_path: pathlib.Path) -> None:
         db.dispose()
 
 
-def test_enrichment_missing_rows_leaves_counts_zero(tmp_path: pathlib.Path) -> None:
+@pytest.mark.anyio
+async def test_enrichment_missing_rows_leaves_counts_zero(tmp_path: pathlib.Path) -> None:
     """Unknown sn → fields stay at defaults."""
     service, _, _, db = _make_service(tmp_path, '@\n100\n')
     try:
-        entries = service.list()
+        entries = await service.list()
         assert len(entries) == 1
         assert entries[0].anime_name is None
         assert entries[0].downloaded_episodes == 0
@@ -342,7 +352,8 @@ def _make_user_row(uid: str, role: str) -> UserRow:
     )
 
 
-def test_admin_delete_all_entries_persists_empty_list(tmp_path: pathlib.Path) -> None:
+@pytest.mark.anyio
+async def test_admin_delete_all_entries_persists_empty_list(tmp_path: pathlib.Path) -> None:
     """Saving an empty list as admin must clear the admin's own entries."""
     service, entry_repo, user_repo, db = _make_service_with_repos(tmp_path)
     try:
@@ -353,7 +364,7 @@ def test_admin_delete_all_entries_persists_empty_list(tmp_path: pathlib.Path) ->
         )
 
         admin = _make_user_row('admin1', 'admin')
-        service.replace_entries(admin, [])
+        await service.replace_entries(admin, [])
 
         remaining = entry_repo.list_for_user('admin1')
         assert remaining == [], f'Expected empty list, got {remaining}'
@@ -361,7 +372,8 @@ def test_admin_delete_all_entries_persists_empty_list(tmp_path: pathlib.Path) ->
         db.dispose()
 
 
-def test_admin_removes_owner_entirely_clears_their_slice(tmp_path: pathlib.Path) -> None:
+@pytest.mark.anyio
+async def test_admin_removes_owner_entirely_clears_their_slice(tmp_path: pathlib.Path) -> None:
     """When admin saves without any entries for owner B, B's slice must be wiped."""
     service, entry_repo, user_repo, db = _make_service_with_repos(tmp_path)
     try:
@@ -373,7 +385,7 @@ def test_admin_removes_owner_entirely_clears_their_slice(tmp_path: pathlib.Path)
         admin = _make_user_row('admin1', 'admin')
         # Save only admin1's entry; owner B is entirely absent from the payload.
         admin_entry = AnimeListEntry(sn=10, enabled=True, mode=None, tag='', season=1, comment='', owner_id='admin1')
-        service.replace_entries(admin, [admin_entry])
+        await service.replace_entries(admin, [admin_entry])
 
         owner_b_remaining = entry_repo.list_for_user('ownerB')
         assert owner_b_remaining == [], f"Owner B's slice should be empty, got {owner_b_remaining}"
