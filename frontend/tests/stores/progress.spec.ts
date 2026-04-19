@@ -50,10 +50,11 @@ vi.mock("@/api/ws", () => ({
 }));
 
 // Mock TasksApi so no real HTTP calls are made when connect() triggers loadHistory.
+const mockFetchHistory = vi.fn().mockResolvedValue([]);
 vi.mock("@/api/tasks", () => ({
   TasksApi: class {
-    fetchHistory() {
-      return Promise.resolve([]);
+    fetchHistory(...args: unknown[]) {
+      return mockFetchHistory(...args);
     }
     submitManual() {
       return Promise.resolve({ status: "ok" });
@@ -390,6 +391,26 @@ describe("useProgressStore — connect / close delegation", () => {
     store.close();
     expect(mockClose).toHaveBeenCalledTimes(1);
   });
+
+  it("close() clears the history poll timer that was started by connect()", () => {
+    vi.useFakeTimers();
+    const clearSpy = vi.spyOn(globalThis, "clearInterval");
+
+    const store = useProgressStore();
+    store.connect(); // sets _historyPollTimer via setInterval
+    store.close();   // should clearInterval and null the timer
+
+    expect(mockClose).toHaveBeenCalledTimes(1);
+    // clearInterval must have been called at least once for the poll timer.
+    expect(clearSpy).toHaveBeenCalled();
+  });
+
+  it("close() is safe to call without prior connect() (timer is null)", () => {
+    const store = useProgressStore();
+    // Should not throw even though _historyPollTimer is null.
+    expect(() => store.close()).not.toThrow();
+    expect(mockClose).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -400,6 +421,7 @@ describe("useProgressStore — historyEntries", () => {
   beforeEach(() => {
     resetSocketStubs();
     __resetProgressStoreForTest();
+    mockFetchHistory.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -417,6 +439,24 @@ describe("useProgressStore — historyEntries", () => {
     await expect(store.loadHistory()).resolves.toBeUndefined();
     // Mock always returns [] so historyEntries stays empty.
     expect(store.historyEntries.value).toEqual([]);
+  });
+
+  it("loadHistory swallows fetch errors (non-fatal) and keeps previous historyEntries", async () => {
+    const store = useProgressStore();
+
+    // Pre-populate historyEntries with a known value.
+    store.historyEntries.value = [
+      { id: 1, sn: 1, filename: "existing.mp4", final_status: "下載完成", retries: 0, finished_at: "2026-04-18T08:00:00Z" },
+    ];
+
+    // Make fetchHistory reject for this call only.
+    mockFetchHistory.mockRejectedValueOnce(new Error("History API unavailable"));
+
+    await store.loadHistory();
+
+    // historyEntries must not be wiped — the catch block preserves existing data.
+    expect(store.historyEntries.value).toHaveLength(1);
+    expect(store.historyEntries.value[0]!.filename).toBe("existing.mp4");
   });
 
   it("byCategory.completed merges live terminal tasks when history is empty", () => {

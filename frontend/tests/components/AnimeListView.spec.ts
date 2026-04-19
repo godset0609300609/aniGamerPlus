@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
 import type { AnimeListEntry, AnimeListPayload } from '@/types'
 
 const list = vi.fn()
@@ -11,9 +11,13 @@ vi.mock('@/api/animelist', () => ({
   },
 }))
 
+const { mockElMessageBoxConfirm } = vi.hoisted(() => ({
+  mockElMessageBoxConfirm: vi.fn().mockResolvedValue(undefined),
+}))
+
 vi.mock('element-plus', () => ({
   ElMessage: { success: vi.fn(), error: vi.fn() },
-  ElMessageBox: { confirm: vi.fn() },
+  ElMessageBox: { confirm: mockElMessageBoxConfirm },
 }))
 
 import { flushPromises, mount } from '@vue/test-utils'
@@ -318,5 +322,254 @@ describe('AnimeListView', () => {
     vm.entries[0]!.tag = '全新'
     await flushPromises()
     expect(vm.activeGroups).toContain('全新')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// save() error path
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — save error', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockElMessageBoxConfirm.mockResolvedValue(undefined)
+  })
+
+  it('shows error message when api.replaceAll rejects', async () => {
+    list.mockResolvedValue(payload([makeEntry({ sn: 10, tag: '群組' })]))
+    replaceAll.mockRejectedValueOnce(new Error('save error'))
+
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { save: () => Promise<void> }
+    await vm.save()
+    await flushPromises()
+
+    expect(ElMessage.error).toHaveBeenCalledWith(expect.stringContaining('save error'))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// discard() behaviour
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — discard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockElMessageBoxConfirm.mockResolvedValue(undefined)
+  })
+
+  it('restores original entries when user confirms discard', async () => {
+    list.mockResolvedValue(payload([makeEntry({ sn: 42, tag: 'base', anime_name: 'Original' })]))
+
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      entries: AnimeListEntry[]
+      dirty: boolean
+      discard: () => Promise<void>
+    }
+
+    // Mutate to make dirty.
+    vm.entries[0]!.comment = 'changed'
+    await wrapper.vm.$nextTick()
+    expect(vm.dirty).toBe(true)
+
+    mockElMessageBoxConfirm.mockResolvedValueOnce(undefined)
+    await vm.discard()
+    await flushPromises()
+
+    expect(vm.entries[0]!.comment).toBe('')
+    expect(vm.dirty).toBe(false)
+  })
+
+  it('does not restore when discard is not dirty', async () => {
+    list.mockResolvedValue(payload([makeEntry({ sn: 99, tag: 'keep' })]))
+
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      entries: AnimeListEntry[]
+      dirty: boolean
+      discard: () => Promise<void>
+    }
+
+    // Not dirty — discard should return early without calling confirm.
+    await vm.discard()
+    await flushPromises()
+
+    expect(mockElMessageBoxConfirm).not.toHaveBeenCalled()
+  })
+
+  it('does not restore when user cancels discard confirm dialog', async () => {
+    list.mockResolvedValue(payload([makeEntry({ sn: 77, comment: '', tag: 'g' })]))
+
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      entries: AnimeListEntry[]
+      dirty: boolean
+      discard: () => Promise<void>
+    }
+
+    vm.entries[0]!.comment = 'edited'
+    await wrapper.vm.$nextTick()
+    expect(vm.dirty).toBe(true)
+
+    mockElMessageBoxConfirm.mockRejectedValueOnce('cancel')
+    await vm.discard()
+    await flushPromises()
+
+    // Entries not reverted — comment is still 'edited'.
+    expect(vm.entries[0]!.comment).toBe('edited')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// removeEntry()
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — removeEntry', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    list.mockResolvedValue(
+      payload([
+        makeEntry({ sn: 1, tag: '群組' }),
+        makeEntry({ sn: 2, tag: '群組' }),
+      ]),
+    )
+  })
+
+  it('removes the entry from entries array and makes dirty', async () => {
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      entries: AnimeListEntry[]
+      dirty: boolean
+      removeEntry: (entry: AnimeListEntry) => void
+    }
+
+    const entryToRemove = vm.entries[0]!
+    vm.removeEntry(entryToRemove)
+    await wrapper.vm.$nextTick()
+
+    expect(vm.entries).toHaveLength(1)
+    expect(vm.entries[0]!.sn).toBe(2)
+    expect(vm.dirty).toBe(true)
+  })
+
+  it('removes entry via the 刪除 button in the table', async () => {
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const rowsBefore = wrapper.findAll('.el-table-row').length
+    expect(rowsBefore).toBe(2)
+
+    // Find the first 刪除 button.
+    const deleteBtn = wrapper.findAll('button').find((b) => b.text().trim() === '刪除')!
+    expect(deleteBtn).toBeDefined()
+    await deleteBtn.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.el-table-row').length).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// load() error path
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — load error', () => {
+  it('shows error message when api.list rejects', async () => {
+    list.mockRejectedValueOnce(new Error('fetch failed'))
+
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    expect(ElMessage.error).toHaveBeenCalledWith(expect.stringContaining('fetch failed'))
+    // Empty state message shown.
+    expect(wrapper.text()).toContain('目前追番清單為空')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// episodeText() edge cases
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — episodeText', () => {
+  it('shows numeric fraction when anime_name is present', async () => {
+    list.mockResolvedValueOnce(
+      payload([makeEntry({ sn: 10, anime_name: '有名稱', downloaded_episodes: 5, known_episodes: 12 })]),
+    )
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('5 / 12')
+  })
+
+  it('shows fraction even when anime_name is null but episodes > 0', async () => {
+    list.mockResolvedValueOnce(
+      payload([makeEntry({ sn: 11, anime_name: null, downloaded_episodes: 0, known_episodes: 3 })]),
+    )
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    // known_episodes > 0 so it falls through to the fraction path.
+    expect(wrapper.text()).toContain('0 / 3')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// groupLabel()
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — groupLabel', () => {
+  it('returns UNGROUPED_LABEL for empty-string tag', async () => {
+    list.mockResolvedValueOnce(payload([makeEntry({ sn: 20, tag: '' })]))
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { groupLabel: (tag: string) => string }
+    expect(vm.groupLabel('')).toBe('未分類')
+  })
+
+  it('returns the tag as-is for a non-empty tag', async () => {
+    list.mockResolvedValueOnce(payload([makeEntry({ sn: 21, tag: '秋番' })]))
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { groupLabel: (tag: string) => string }
+    expect(vm.groupLabel('秋番')).toBe('秋番')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// commitTagDraft via Enter key
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — commitTagDraft on Enter', () => {
+  it('commits draft tag when Enter is pressed in the tag input', async () => {
+    list.mockResolvedValueOnce(
+      payload([makeEntry({ sn: 30, tag: '舊組', anime_name: 'Test' })]),
+    )
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { entries: AnimeListEntry[] }
+    const tagInput = wrapper.find('td[data-label="群組"] input.el-input')
+    expect(tagInput.exists()).toBe(true)
+
+    const inputEl = tagInput.element as HTMLInputElement
+    inputEl.value = 'Enter組'
+    await tagInput.trigger('input')
+    expect(vm.entries[0]!.tag).toBe('舊組') // not yet committed
+
+    await tagInput.trigger('keyup.enter')
+    expect(vm.entries[0]!.tag).toBe('Enter組')
   })
 })

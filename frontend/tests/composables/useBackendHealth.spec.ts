@@ -213,4 +213,60 @@ describe('useBackendHealth — ping', () => {
     expect(state.value).toBe('online')
     expect(fetchFn).toHaveBeenCalledTimes(1)
   })
+
+  it('ping() increments retryCount on non-ok HTTP response (line 54-56)', async () => {
+    const timer = makeTimerFactory()
+    const fetchFn = makeFetch({ status: 503, body: {} })
+    const { ping, retryCount } = useBackendHealth({ fetchFn, timerFactory: timer })
+
+    await ping()
+    expect(retryCount.value).toBe(1)
+  })
+
+  it('two non-ok HTTP responses transition state to offline', async () => {
+    const timer = makeTimerFactory()
+    const fetchFn = makeFetch({ status: 500, body: {} })
+    const { state, start } = useBackendHealth({ fetchFn, timerFactory: timer })
+
+    start()
+    await nextTick()
+    await nextTick()
+    // second failure via interval tick
+    timer.tick()
+    await nextTick()
+    await nextTick()
+
+    expect(state.value).toBe('offline')
+  })
+})
+
+describe('useBackendHealth — default timerFactory (window.setInterval)', () => {
+  it('start() uses window.setInterval when no timerFactory is injected', () => {
+    vi.useFakeTimers()
+    const setIntervalSpy = vi.spyOn(window, 'setInterval')
+    const fetchFn = makeFetch({ status: 200, body: { status: 'ok' } })
+
+    const { start } = useBackendHealth({ fetchFn })
+    start()
+
+    expect(setIntervalSpy).toHaveBeenCalled()
+
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('stop() uses window.clearInterval when no timerFactory is injected', () => {
+    vi.useFakeTimers()
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval')
+    const fetchFn = makeFetch({ status: 200, body: { status: 'ok' } })
+
+    const { start, stop } = useBackendHealth({ fetchFn })
+    start()
+    stop()
+
+    expect(clearIntervalSpy).toHaveBeenCalled()
+
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
 })
