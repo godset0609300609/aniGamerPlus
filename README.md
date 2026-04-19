@@ -11,6 +11,35 @@
 
 同時支援命令行, 也適用於需要大批量下載的使用者, 如: 下載整部番劇. 命令行模式支援顯示下載進度, 但要求 **最大并發下載數** 設置為 **1** .
 
+## 專案結構 (v2 重構完成)
+
+```
+.
+├── backend/    # FastAPI + uv + Python 3.14, 動畫瘋下載核心已拆分為 downloader / scheduler / persistence / services 四層
+└── frontend/   # Vite + Vue 3 + TypeScript + Element Plus 的 Web 控制臺
+```
+
+後端模組對照:
+
+| 目錄 | 職責 |
+| ---- | ---- |
+| `app/downloader/` | m3u8 / 分段下載 / ffmpeg / 彈幕 / 檔名 / FTP 上傳 / HTTP client (原 `Anime.py` 核心) |
+| `app/scheduler/` | 更新巡檢 (`UpdateLoop`)、手動任務 (`ManualRunner`)、任務佇列、worker、冷卻、signal 處理 |
+| `app/persistence/` | `config.json` / `sn_list.txt` / `cookie.txt` / SQLite (`aniGamer.db`) 存取 + Alembic 遷移 |
+| `app/services/` | FastAPI 依賴注入, 把 repo / scheduler 暴露給 Web UI |
+| `app/api/` | HTTP / WebSocket 端點 |
+| `app/cli.py` | 命令列進入點 (取代舊 `aniGamerPlus.py` 底部的 `__main__`) |
+
+常用指令:
+
+- 後端 (FastAPI): `cd backend && uv sync && uv run anigamerplus-server`
+- 前端 (Vite dev): `cd frontend && npm install && npm run dev`
+- 命令列下載: `cd backend && uv run anigamerplus -s <sn>` (舊版 `python3 aniGamerPlus.py -s <sn>`)
+- 後端測試: `cd backend && uv run pytest` (目前 225+ 項, `filterwarnings = ["error"]`)
+- 前端測試 + 類型檢查 + 打包: `cd frontend && npm run test && npm run typecheck && npm run build` (目前 39 項)
+
+舊版單體 Flask Dashboard 已被拆出的 Vue 前端取代; 原本的 `Anime.py` / `Config.py` / `aniGamerPlus.py` / `Danmu.py` / `ColorPrint.py` 已在 v2 cutover 刪除. 若需查閱舊程式碼請切到 v1 標籤.
+
 ## **注意**:warning:
 
 **本專案依賴ffmpeg, 請事先將ffmpeg放入系統PATH或者本程序目錄下!**
@@ -25,27 +54,39 @@ windows 使用者可以[**點擊這裡**](https://github.com/miyouzi/aniGamerPlu
 
 ## 源碼運行
 
-Python 版本 3 以上
+Python 3.14 以上 (v2 重構後由 [uv](https://github.com/astral-sh/uv) 管理依賴與虛擬環境)
 
 下載源碼
 ```bash
 git clone https://github.com/miyouzi/aniGamerPlus.git
+cd aniGamerPlus
 ```
 
-**第一次使用前，進入原始碼所在資料夾，安裝依賴（重要）**
+**第一次使用前, 以 `uv` 安裝依賴**
 ```bash
-cd aniGamerPlus
-pip3 install -r requirements.txt
+cd backend
+uv sync
 ```
 
 升級
 ```bash
 git pull https://github.com/miyouzi/aniGamerPlus.git
+cd backend && uv sync
 ```
 
-使用
+啟動自動下載 / 排程模式:
 ```bash
-python3 aniGamerPlus.py
+cd backend && uv run anigamerplus
+```
+
+啟動 Web 控制臺 (取代舊的 Flask Dashboard):
+```bash
+cd backend && uv run anigamerplus-server
+```
+
+Web 前端開發模式 (與後端分離):
+```bash
+cd frontend && npm install && npm run dev
 ```
 
 ## Docker 運行
@@ -402,14 +443,13 @@ sqlite3資料庫, 可以使用 [SQLite Expert](http://www.sqliteexpert.com/) 等
 
 **除了使用 list 模式的情況, 命令行模式將不會和資料庫進行交互, 將會無視數據庫中下載狀態標記强制下載**
 
-**EXE 檔的 aniGamerPlus.exe 也是支援命令行使用的, 將下方演示的 ```python3 aniGamerPlus.py``` 換成 ```aniGamerPlus``` 就行**
+**v2 重構後, 命令列入口從 `python3 aniGamerPlus.py` 換成 `uv run anigamerplus`. EXE 檔的行為不變, 使用 `aniGamerPlus` 即可.**
 
 參數:
 ```
->python3 aniGamerPlus.py -h
-當前aniGamerPlus版本: v24.4
-usage: aniGamerPlus.py [-h] [--sn SN] [--resolution {360,480,540,576,720,1080}] [--download_mode {single,latest,largest-sn,multi,all,range,list,sn-list,sn-range,db}]
-                       [--thread_limit THREAD_LIMIT] [--current_path] [--episodes EPISODES] [--no_classify] [--user_command] [--information_only] [--danmu] [--my_anime]
+>uv run anigamerplus --help
+usage: anigamerplus [-h] [--sn SN] [--resolution {360,480,540,576,720,1080}] [--download_mode {single,latest,largest-sn,multi,all,range,list,sn-list,sn-range,db}]
+                    [--thread_limit THREAD_LIMIT] [--current_path] [--episodes EPISODES] [--no_classify] [--user_command] [--information_only] [--danmu] [--my_anime]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -491,19 +531,19 @@ optional arguments:
     - 舉例:
 
         - 想下載某番劇第1,2,3集
-        ```python3 aniGamerPlus.py -s 10218 -e 1,2,3```
+        ```uv run anigamerplus -s 10218 -e 1,2,3```
 
         - 想下載某番劇第5到8集
-        ```python3 aniGamerPlus.py -s 10218 -e 5-8```
+        ```uv run anigamerplus -s 10218 -e 5-8```
 
         - 想下載某番劇第2集, 第5到8集, 第12集
-        ```python3 aniGamerPlus.py -s 10218 -e 2,5-8,12```
+        ```uv run anigamerplus -s 10218 -e 2,5-8,12```
 
         - 想下載某番劇sn範圍 14440 到 14459 的劇集, 外加 sn 為 14670 和 14746 的兩集
-        ```python3 aniGamerPlus.py -s 14440 -m sn-range -e 14670,14746,14440-14459```
+        ```uv run anigamerplus -s 14440 -m sn-range -e 14670,14746,14440-14459```
 
         - 想下載sn為 14479,14518,14511 的動畫
-        ```aniGamerPlus.py -m multi -e 14479,14518,14511```
+        ```uv run anigamerplus -m multi -e 14479,14518,14511```
 
     - 截圖:
 
