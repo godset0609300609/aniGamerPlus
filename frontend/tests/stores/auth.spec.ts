@@ -110,4 +110,18 @@ describe('useAuthStore', () => {
     expect(user.value).toBeNull()
     expect(window.location.hash).toBe('#/login')
   })
+
+  it('logout clears user even when fetch rejects (best-effort)', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network failure'))
+
+    const { useAuthStore } = await import('@/stores/auth')
+    const { user, logout } = useAuthStore()
+    user.value = { id: '1', username: 'alice', avatar_url: null, role: 'admin' }
+
+    await logout()
+
+    // Despite fetch failure, user must be cleared and redirect must happen.
+    expect(user.value).toBeNull()
+    expect(window.location.hash).toBe('#/login')
+  })
 })
