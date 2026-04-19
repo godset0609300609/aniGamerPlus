@@ -82,12 +82,20 @@ class M3u8Client:
             self._unlock(sn)
 
         is_vip = bool(user_info.get('vip'))
-        if not is_vip:
+        if is_vip:
+            self._logger.info(sn, 'VIP', 'cookie 具備 VIP，跳過廣告等待', display=False)
+        else:
             if self._settings.only_use_vip:
                 raise exceptions.NoAvailableStreamError(f'sn={sn} requires VIP and only_use_vip is enabled')
-            ad_time = self._settings.mobile_ads_time if self._settings.use_mobile_api else self._settings.ads_time
+            ad_time = int(self._settings.mobile_ads_time if self._settings.use_mobile_api else self._settings.ads_time)
+            self._logger.info(
+                sn,
+                '廣告等待',
+                f'cookie 無 VIP，等待 {ad_time} 秒廣告',
+                display=False,
+            )
             self._start_ad(sn)
-            time.sleep(max(0, int(ad_time)))
+            time.sleep(max(0, ad_time))
             self._skip_ad(sn)
 
         if not self._settings.use_mobile_api:
