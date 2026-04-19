@@ -48,6 +48,7 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+**/coverage/
 
 # Translations
 *.mo
@@ -106,6 +107,9 @@ venv.bak/
 # mypy
 .mypy_cache/
 
+# ruff
+.ruff_cache/
+
 # aniGamerPlus
 bangumi/
 cookies.txt
@@ -127,3 +131,9 @@ temp/
 cookie2.txt
 */*.iml
 **/.DS_Store
+ffmpeg.exe
+
+.claude/
+
+# Frontend
+node_modules/
