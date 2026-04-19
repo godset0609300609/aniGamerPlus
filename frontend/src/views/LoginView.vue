@@ -12,9 +12,6 @@ function loginWithDiscord(): void {
           動畫管家
         </div>
       </template>
-      <p class="login-desc">
-        請以 Discord 帳號登入以繼續使用。
-      </p>
       <el-button
         type="primary"
         size="large"

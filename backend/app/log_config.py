@@ -61,6 +61,22 @@ class _DisplayFilter:
         return not (self._stdout and display is False)
 
 
+class _AuditLoggerFilter:
+    """Drop records from logger names that represent audit-level logs
+    which shouldn't appear in the live log panel / stdout.
+
+    ``uvicorn.access`` emits one line per HTTP request
+    (``GET /api/health HTTP/1.1 200``) — useful for file-based auditing but
+    too noisy for the real-time log panel.  Records are still written to the
+    daily file handler because this filter is NOT wired there.
+    """
+
+    _AUDIT_LOGGERS: T.ClassVar[frozenset[str]] = frozenset({'uvicorn.access'})
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
+        return record.name not in self._AUDIT_LOGGERS
+
+
 def _safe_put_nowait(q: asyncio.Queue[T.Any], item: T.Any) -> None:
     """Put *item* on *q* without blocking; drop silently when full."""
     with contextlib.suppress(asyncio.QueueFull):
@@ -192,11 +208,17 @@ class RingBufferHandler(logging.Handler):
                     self._loop.call_soon_threadsafe(_safe_put_nowait, q, entry)
 
     def _format(self, record: logging.LogRecord) -> dict[str, T.Any]:
+        # Always use the raw message text — never the pre-formatted line that
+        # embeds timestamp + level prefix.  Using self.format(record) when a
+        # formatter is attached would produce a "2026-04-19 17:04:27  INFO
+        # app.api._scheduler_proxy: …" string, and since the frontend renders
+        # timestamp, level, and message fields independently that prefix would
+        # appear twice in the UI.
         return {
             'timestamp': datetime.datetime.fromtimestamp(record.created, tz=datetime.UTC).isoformat(),
             'level': record.levelname,
             'name': record.name,
-            'message': self.format(record) if self.formatter else record.getMessage(),
+            'message': record.getMessage(),
             'sn': getattr(record, 'sn', None),
         }
 
@@ -426,8 +448,9 @@ def build_log_config(
             'formatter': 'rich',
             # Rich handles its own coloring; the filter tree still honours
             # ``display=False`` so file-only records don't surface in the
-            # terminal.
-            'filters': ['stdout_display'],
+            # terminal.  audit_logger drops uvicorn.access HTTP lines from
+            # the live terminal too (they're persisted to the file handler).
+            'filters': ['stdout_display', 'audit_logger'],
             'rich_tracebacks': True,
             'show_path': False,
             'show_time': True,
@@ -437,12 +460,12 @@ def build_log_config(
         },
         # The ring buffer singleton is returned by the factory callable so
         # dictConfig reuses the module-level instance rather than constructing
-        # a fresh one.  The formatter is attached after construction via the
-        # standard dictConfig post-processing step ("formatter" key).
+        # a fresh one.  No formatter is attached: _format() always uses
+        # record.getMessage() directly, so a formatter would only add noise.
         'ring_buffer': {
             '()': f'{__name__}.get_ring_buffer_handler',
             'level': 'INFO',
-            'formatter': 'default',
+            'filters': ['stdout_display', 'audit_logger'],
         },
     }
     if save_logs:
@@ -486,6 +509,12 @@ def build_log_config(
             'file_display': {
                 '()': f'{__name__}._DisplayFilter',
                 'stdout': False,
+            },
+            # Drops uvicorn.access (HTTP audit lines) from the live panel +
+            # stdout.  NOT wired to the file handler so audit logs are still
+            # persisted to the daily log file.
+            'audit_logger': {
+                '()': f'{__name__}._AuditLoggerFilter',
             },
         },
         'handlers': handlers,
