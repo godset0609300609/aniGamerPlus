@@ -196,3 +196,109 @@ def test_error_payload_raises_no_available_stream(logger: Logger, settings_repo:
     with pytest.raises(Exception) as excinfo:
         m3u8.fetch(500)
     assert 'geo-blocked' in str(excinfo.value) or '1012' in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# feat(downloader): VIP detection log emission
+# ---------------------------------------------------------------------------
+
+
+def test_vip_cookie_logs_vip_info(
+    logger: Logger,
+    settings_repo: SettingsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When token.php returns ``vip=True``, the VIP info log must be emitted
+    with the expected tag and message substring."""
+    fake = _FakeClient(vip=True)
+
+    info_calls: list[dict[str, str]] = []
+    orig_info = logger.info
+
+    def _capture(sn: int, tag: str, msg: str, **kwargs: object) -> None:
+        info_calls.append({'tag': tag, 'msg': msg})
+        orig_info(sn, tag, msg, **kwargs)
+
+    monkeypatch.setattr(logger, 'info', _capture)
+
+    m3u8 = _make(fake, logger, settings_repo)
+    m3u8.fetch(600)
+
+    vip_logs = [c for c in info_calls if c['tag'] == 'VIP']
+    assert vip_logs, f'Expected VIP info log; got {info_calls}'
+    assert any('跳過廣告' in c['msg'] for c in vip_logs), vip_logs
+
+
+def test_non_vip_cookie_logs_ad_wait_info(
+    logger: Logger,
+    settings_repo: SettingsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When token.php returns ``vip=False``, the ad-wait info log must be
+    emitted with the expected tag and message containing the ad duration."""
+    fake = _FakeClient(vip=False)
+
+    info_calls: list[dict[str, str]] = []
+    orig_info = logger.info
+
+    def _capture(sn: int, tag: str, msg: str, **kwargs: object) -> None:
+        info_calls.append({'tag': tag, 'msg': msg})
+        orig_info(sn, tag, msg, **kwargs)
+
+    monkeypatch.setattr(logger, 'info', _capture)
+
+    settings = AppSettings(ua='Mozilla/5.0', parse_sn_cd=0, ads_time=30)
+    m3u8 = _make(fake, logger, settings_repo, settings=settings)
+    m3u8.fetch(601)
+
+    ad_logs = [c for c in info_calls if c['tag'] == '廣告等待']
+    assert ad_logs, f'Expected 廣告等待 info log; got {info_calls}'
+    assert any('30' in c['msg'] for c in ad_logs), ad_logs
+
+
+def test_vip_cookie_no_ad_wait_log(
+    logger: Logger,
+    settings_repo: SettingsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """VIP users must NOT trigger the 廣告等待 log."""
+    fake = _FakeClient(vip=True)
+
+    info_calls: list[dict[str, str]] = []
+    orig_info = logger.info
+
+    def _capture(sn: int, tag: str, msg: str, **kwargs: object) -> None:
+        info_calls.append({'tag': tag, 'msg': msg})
+        orig_info(sn, tag, msg, **kwargs)
+
+    monkeypatch.setattr(logger, 'info', _capture)
+
+    m3u8 = _make(fake, logger, settings_repo)
+    m3u8.fetch(602)
+
+    ad_logs = [c for c in info_calls if c['tag'] == '廣告等待']
+    assert not ad_logs, f'VIP user should not trigger 廣告等待 log; got {ad_logs}'
+
+
+def test_non_vip_cookie_no_vip_log(
+    logger: Logger,
+    settings_repo: SettingsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-VIP users must NOT trigger the VIP log."""
+    fake = _FakeClient(vip=False)
+
+    info_calls: list[dict[str, str]] = []
+    orig_info = logger.info
+
+    def _capture(sn: int, tag: str, msg: str, **kwargs: object) -> None:
+        info_calls.append({'tag': tag, 'msg': msg})
+        orig_info(sn, tag, msg, **kwargs)
+
+    monkeypatch.setattr(logger, 'info', _capture)
+
+    m3u8 = _make(fake, logger, settings_repo)
+    m3u8.fetch(603)
+
+    vip_logs = [c for c in info_calls if c['tag'] == 'VIP']
+    assert not vip_logs, f'Non-VIP user should not trigger VIP log; got {vip_logs}'
