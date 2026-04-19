@@ -119,6 +119,7 @@ docker compose up -d
    python -c "import secrets; print(secrets.token_urlsafe(32))"
    ```
 2. `config.json` 中的 `bangumi_dir` 請保持為空，下載目錄已透過 volume 掛載至 `/app/bangumi`。
+3. `./logs/` 目錄會在首次 `docker compose up` 時自動建立，並由 `scheduler` 與 `api` 兩個容器共用（掛載至 `/app/logs`），面板的日誌檢視器才能同時看到排程器與 API 的輸出。
 
 ### 容器進入點 (entrypoint dispatcher)
 
