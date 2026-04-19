@@ -13,6 +13,7 @@ import collections.abc
 import contextlib
 import dataclasses
 import datetime
+import logging.config
 import os
 import secrets
 import threading
@@ -24,7 +25,8 @@ import pydantic
 import uvicorn
 
 from .core import Container, build_container
-from .log_config import get_ring_buffer_handler
+from .log_config import build_log_config, get_ring_buffer_handler
+from .persistence.paths import WorkspacePaths
 
 # ---------------------------------------------------------------------------
 # Shared-secret resolution
@@ -341,10 +343,20 @@ def build_scheduler_app(container: Container) -> fastapi.FastAPI:
 
 def serve() -> None:
     """Entry point for ``uv run anigamerplus-scheduler``."""
+    # Apply our log config BEFORE build_container so Alembic migration log
+    # lines are captured by our handlers rather than the root logger default.
+    _paths = WorkspacePaths.detect()
+    logging.config.dictConfig(build_log_config(_paths, save_logs=True, quantity_of_logs=7))
     container = build_container()
     app = build_scheduler_app(container)
     port = int(os.environ.get('ANIGAMERPLUS_SCHEDULER_PORT', '5001'))
-    uvicorn.run(app, host='127.0.0.1', port=port, log_level='info')
+    uvicorn.run(
+        app,
+        host='127.0.0.1',
+        port=port,
+        log_level='info',
+        log_config=build_log_config(_paths, save_logs=True, quantity_of_logs=7),
+    )
 
 
 if __name__ == '__main__':
