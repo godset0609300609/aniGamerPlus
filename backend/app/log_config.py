@@ -61,6 +61,25 @@ class _DisplayFilter:
         return not (self._stdout and display is False)
 
 
+class _CliAuditNoiseFilter:
+    """Drop audit-level repeat noise from CLI stdout.
+
+    Intended for the RichHandler (stdout) only. The web log panel uses
+    :class:`_PanelAllowlistFilter` for a stricter cut; the file handler
+    keeps everything.
+
+    Suppressed loggers: ``uvicorn.access`` (one line per HTTP request),
+    ``httpx`` / ``httpcore`` (one line per outbound HTTP call from health
+    polling, ~2 per 10s). These inflate CLI output without carrying
+    actionable info — real errors at WARNING+ still pass through.
+    """
+
+    _AUDIT_LOGGERS = frozenset({'uvicorn.access', 'httpx', 'httpcore'})
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
+        return not (record.name in self._AUDIT_LOGGERS and record.levelno < logging.WARNING)
+
+
 class _PanelAllowlistFilter:
     """Allow only ``app.*`` records and real warnings/errors through.
 
@@ -470,8 +489,8 @@ def build_log_config(
             'level': 'INFO',
             'formatter': 'rich',
             # Rich handles its own coloring; stdout_display honours
-            # ``display=False``; panel_allowlist keeps only app.* + WARN+.
-            'filters': ['stdout_display', 'panel_allowlist'],
+            # ``display=False``; cli_audit_noise drops only spam loggers.
+            'filters': ['stdout_display', 'cli_audit_noise'],
             'rich_tracebacks': True,
             'show_path': False,
             'show_time': True,
@@ -531,12 +550,19 @@ def build_log_config(
                 '()': f'{__name__}._DisplayFilter',
                 'stdout': False,
             },
-            # Allowlist: pass app.* always; for everything else (uvicorn.*,
-            # httpx, alembic, sqlalchemy, etc.) only WARNING+ reaches the
-            # live panel and stdout.  NOT wired to the file handler so all
-            # records are still persisted to disk for audit / debug.
+            # Allowlist for the web log panel: pass app.* always; for
+            # everything else (uvicorn.*, httpx, alembic, sqlalchemy, etc.)
+            # only WARNING+ reaches the live panel.  NOT wired to stdout or
+            # the file handler.
             'panel_allowlist': {
                 '()': f'{__name__}._PanelAllowlistFilter',
+            },
+            # Lighter filter for CLI stdout: drops only high-frequency audit
+            # noise (uvicorn.access, httpx, httpcore) at INFO; WARNING+ from
+            # those loggers still passes.  uvicorn.error INFO passes so the
+            # user sees startup/shutdown messages.
+            'cli_audit_noise': {
+                '()': f'{__name__}._CliAuditNoiseFilter',
             },
         },
         'handlers': handlers,

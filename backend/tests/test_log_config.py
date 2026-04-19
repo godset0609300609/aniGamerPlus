@@ -24,6 +24,7 @@ import app.log_config as _lc
 from app.log_config import (
     DailyLogFileHandler,
     RingBufferHandler,
+    _CliAuditNoiseFilter,
     _DisplayFilter,
     _PanelAllowlistFilter,
     build_log_config,
@@ -182,6 +183,94 @@ class TestPanelAllowlistFilter:
     def test_panel_allowlist_allows_httpx_warning(self) -> None:
         """httpx WARNING must pass through."""
         assert self.f.filter(_make_record('httpx', level=logging.WARNING)) is True
+
+
+# ---------------------------------------------------------------------------
+# _CliAuditNoiseFilter unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestCliAuditNoiseFilter:
+    def setup_method(self) -> None:
+        self.f = _CliAuditNoiseFilter()
+
+    def test_drops_uvicorn_access_info(self) -> None:
+        """uvicorn.access INFO must be dropped (per-request spam)."""
+        assert self.f.filter(_make_record('uvicorn.access', level=logging.INFO)) is False
+
+    def test_drops_httpx_info(self) -> None:
+        """httpx INFO must be dropped (health poll spam)."""
+        assert self.f.filter(_make_record('httpx', level=logging.INFO)) is False
+
+    def test_drops_httpcore_info(self) -> None:
+        """httpcore INFO must be dropped (health poll spam)."""
+        assert self.f.filter(_make_record('httpcore', level=logging.INFO)) is False
+
+    def test_allows_uvicorn_access_warning(self) -> None:
+        """uvicorn.access WARNING must pass through (real error)."""
+        assert self.f.filter(_make_record('uvicorn.access', level=logging.WARNING)) is True
+
+    def test_allows_uvicorn_error_info(self) -> None:
+        """uvicorn.error INFO (e.g. 'Uvicorn running on ...') must pass through."""
+        assert self.f.filter(_make_record('uvicorn.error', level=logging.INFO)) is True
+
+    def test_allows_app_main_info(self) -> None:
+        """app.main INFO must pass through."""
+        assert self.f.filter(_make_record('app.main', level=logging.INFO)) is True
+
+    def test_allows_alembic_info(self) -> None:
+        """alembic INFO must pass through (not in audit set)."""
+        assert self.f.filter(_make_record('alembic.runtime.migration', level=logging.INFO)) is True
+
+    def test_allows_sqlalchemy_info(self) -> None:
+        """sqlalchemy INFO must pass through (not in audit set)."""
+        assert self.f.filter(_make_record('sqlalchemy.engine', level=logging.INFO)) is True
+
+
+# ---------------------------------------------------------------------------
+# Handler filter wire-up assertions
+# ---------------------------------------------------------------------------
+
+
+def test_stdout_handler_uses_cli_audit_noise_filter_not_panel_allowlist(
+    tmp_path: pathlib.Path,
+) -> None:
+    """stdout handler must use cli_audit_noise filter, NOT panel_allowlist."""
+    paths = _make_minimal_paths(tmp_path)
+    cfg = build_log_config(paths, save_logs=False, quantity_of_logs=7)  # type: ignore[arg-type]
+    stdout_filters = cfg['handlers']['stdout']['filters']
+    assert 'cli_audit_noise' in stdout_filters, (
+        'stdout handler must include cli_audit_noise filter'
+    )
+    assert 'panel_allowlist' not in stdout_filters, (
+        'stdout handler must NOT include panel_allowlist filter (too strict for CLI)'
+    )
+
+
+def test_ring_buffer_still_uses_panel_allowlist(
+    tmp_path: pathlib.Path,
+) -> None:
+    """ring_buffer handler must still use panel_allowlist filter."""
+    paths = _make_minimal_paths(tmp_path)
+    cfg = build_log_config(paths, save_logs=False, quantity_of_logs=7)  # type: ignore[arg-type]
+    assert cfg['handlers']['ring_buffer']['filters'] == ['panel_allowlist'], (
+        'ring_buffer handler must use only panel_allowlist filter'
+    )
+
+
+def test_file_handler_has_no_allowlist_filters(
+    tmp_path: pathlib.Path,
+) -> None:
+    """file handler must not include panel_allowlist or cli_audit_noise filters."""
+    paths = _make_minimal_paths(tmp_path)
+    cfg = build_log_config(paths, save_logs=True, quantity_of_logs=7)  # type: ignore[arg-type]
+    file_filters = cfg['handlers']['file']['filters']
+    assert 'panel_allowlist' not in file_filters, (
+        'file handler must NOT include panel_allowlist (audit retention requires all records)'
+    )
+    assert 'cli_audit_noise' not in file_filters, (
+        'file handler must NOT include cli_audit_noise (audit retention requires all records)'
+    )
 
 
 # ---------------------------------------------------------------------------
