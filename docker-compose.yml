@@ -1,84 +1,49 @@
 name: ani-gamer-plus
 
 services:
-  # Scheduler process: runs UpdateLoop.run_forever() and exposes the
-  # internal HTTP/WS API on 127.0.0.1:5001 (loopback only — not published).
   scheduler:
     build:
       context: .
-    image: anigamerplus:latest
+      target: backend
+    image: anigamerplus-backend:latest
     container_name: anigamerplus-scheduler
     command: ["uv", "run", "anigamerplus-scheduler"]
     environment:
-      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:-}
+      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET must be set in .env}
     volumes:
-      - "./downloads:/app/bangumi"
-      - type: bind
-        source: ./config.json
-        target: /app/config.json
-      - type: bind
-        source: ./sn_list.txt
-        target: /app/sn_list.txt
-      - type: bind
-        source: ./aniGamer.db
-        target: /app/aniGamer.db
+      - ./downloads:/app/bangumi
+      - ./config.json:/app/config.json
+      - ./aniGamer.db:/app/aniGamer.db
     restart: unless-stopped
-    networks:
-      - internal
+    networks: [internal]
 
-  # API process: serves the FastAPI web dashboard on :5000 and proxies
-  # manual-task requests to the scheduler via the internal network.
   api:
-    image: anigamerplus:latest
+    image: anigamerplus-backend:latest
     container_name: anigamerplus-api
-    depends_on:
-      - scheduler
+    depends_on: [scheduler]
     command: ["uv", "run", "anigamerplus-api"]
     environment:
       - ANIGAMERPLUS_SCHEDULER_URL=http://scheduler:5001
-      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:-}
-      # Disable the legacy in-process scheduler thread — the scheduler
-      # process handles downloads; the API process only proxies requests.
+      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET must be set in .env}
       - ANIGAMERPLUS_DISABLE_SCHEDULER=1
     volumes:
-      - "./downloads:/app/bangumi"
-      - type: bind
-        source: ./config.json
-        target: /app/config.json
-      - type: bind
-        source: ./sn_list.txt
-        target: /app/sn_list.txt
-      - type: bind
-        source: ./aniGamer.db
-        target: /app/aniGamer.db
-    ports:
-      - "5000:5000"
+      - ./downloads:/app/bangumi
+      - ./config.json:/app/config.json
+      - ./aniGamer.db:/app/aniGamer.db
     restart: unless-stopped
-    networks:
-      - internal
-      - default
+    networks: [internal]
 
-  # Legacy downloader service (kept for backwards compatibility with existing
-  # docker-compose deployments that use the CLI-only mode). Not used in the
-  # multi-process deployment — use scheduler + api above instead.
-  downloader:
-    image: anigamerplus:latest
-    container_name: anigamerplus-downloader
-    command: ["uv", "run", "anigamerplus"]
-    profiles:
-      - legacy
-    volumes:
-      - "./downloads:/app/bangumi"
-      - type: bind
-        source: ./config.json
-        target: /app/config.json
-      - type: bind
-        source: ./sn_list.txt
-        target: /app/sn_list.txt
-      - type: bind
-        source: ./aniGamer.db
-        target: /app/aniGamer.db
+  web:
+    build:
+      context: .
+      target: frontend
+    image: anigamerplus-web:latest
+    container_name: anigamerplus-web
+    depends_on: [api]
+    ports:
+      - "${WEB_PORT:-8080}:80"
     restart: unless-stopped
+    networks: [internal]
 
 networks:
   internal:

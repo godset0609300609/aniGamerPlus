@@ -1,35 +1,24 @@
-# ---------- Stage 1: build the Vue frontend ----------
-FROM node:22-slim AS frontend
-
+# ---------- Stage 1: frontend build (intermediate) ----------
+FROM node:22-slim AS frontend-build
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install --no-audit --no-fund
 COPY frontend/ .
 RUN npm run build
 
-# ---------- Stage 2: backend + runtime ----------
+# ---------- Stage 2: nginx serving frontend ----------
+FROM nginx:alpine AS frontend
+COPY --from=frontend-build /frontend/dist /usr/share/nginx/html
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+
+# ---------- Stage 3: Python backend ----------
 FROM python:3.14-slim AS backend
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        g++ gcc make libffi-dev libxml2-dev libxslt-dev zlib1g-dev ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
-
-# uv for Python dependency management
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg && rm -rf /var/lib/apt/lists/*
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
 WORKDIR /app
 COPY backend/ /app/
-
-# Copy built frontend into the image so the backend can serve it via a
-# reverse proxy (or you can mount /app/static into nginx separately).
-COPY --from=frontend /frontend/dist /app/static
-
-# Install Python deps into a project-local virtualenv.
 RUN uv sync --frozen --no-dev || uv sync --no-dev
-
-EXPOSE 5000
-# Default command: the auto downloader. Override with
-#   docker run ... uv run uvicorn app.main:app --host 0.0.0.0 --port 5000
-# to launch the Web dashboard API instead.
-ENTRYPOINT ["uv", "run", "anigamerplus"]
+EXPOSE 5000 5001
+# No ENTRYPOINT — docker-compose 'command' decides scheduler vs api

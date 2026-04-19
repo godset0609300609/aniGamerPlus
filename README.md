@@ -91,44 +91,34 @@ cd frontend && npm install && npm run dev
 
 ## Docker 運行
 
-### (可選) 建構自己的 Image
+三個服務: `scheduler`（下載排程）、`api`（FastAPI 後端）、`web`（nginx 前端）。
 
-下載原始碼
+### 快速啟動
 
 ```bash
 git clone https://github.com/miyouzi/aniGamerPlus.git
+cd aniGamerPlus
+
+# 建立必要的本地檔案
+cp .env.example .env
+# 編輯 .env，填入 ANIGAMERPLUS_INTERNAL_SECRET（見檔案內說明）
+touch config.json aniGamer.db
+
+# 建構 Image
+docker compose build
+
+# 啟動
+docker compose up -d
 ```
 
-Build Image
-
-```bash
-docker build -t anigamerplus .
-```
-
-## 下載官方 Image
-
-目前官方 Image 放在 `tonypepe/anigamerplus`
-
-使用前需在本地先創建好 config.json，並綁定 config.json 和下載目錄至 Container 內。
+啟動後開啟瀏覽器訪問 `http://localhost:8080`（或 `.env` 中設定的 `WEB_PORT`）。
 
 注意：
-
-1. confg.json 中的 Dashboard Host 請設定成 `0.0.0.0`，切勿設定 `127.0.0.1`.
-2. config.json 勿設定下載目錄 `bangumi_dir: ""`，請保持為空，以免目錄綁定失敗。
-3. 可綁定 cookie.txt 至 `/app/cookie.txt`
-
-使用：
-
-```bash
-docker run -td --name anigamerplus \
-    -v /path/to/config.json:/app/config.json \
-    -v /path/to/download:/app/bangumi \
-    -v /path/to/aniGamer.db:/app/aniGamer.db \
-    -p 5000:5000 \
-    tonypepe/anigamerplus
-```
-
-啟動後可至 `localhost:5000` 使用 [Dashboard](#dashboard)。
+1. `.env` 中的 `ANIGAMERPLUS_INTERNAL_SECRET` 為必填，可用下列指令產生：
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+2. `config.json` 中的 `bangumi_dir` 請保持為空，下載目錄已透過 volume 掛載至 `/app/bangumi`。
 
 ## 鳴謝
 
