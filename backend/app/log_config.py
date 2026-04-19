@@ -61,63 +61,28 @@ class _DisplayFilter:
         return not (self._stdout and display is False)
 
 
-#: Logger names representing audit-level output (HTTP access, outbound
-#: requests, websocket chatter) that should NOT appear in the live panel /
-#: stdout.  Extracted as a module-level constant so ``push_parsed_entry`` can
-#: reuse it without instantiating a filter object.
-_AUDIT_LOGGER_NAMES: frozenset[str] = frozenset(
-    {
-        'uvicorn.access',
-        'httpx',
-        'httpcore',
-        'websockets.server',
-        'websockets.client',
-    }
-)
+class _PanelAllowlistFilter:
+    """Allow only ``app.*`` records and real warnings/errors through.
 
-#: Substrings in ``uvicorn.error`` INFO messages that represent per-connection
-#: lifecycle noise.  Extracted at module level so ``push_parsed_entry`` can
-#: reuse them without instantiating a filter object.
-_CONNECTION_LIFECYCLE_PATTERNS: tuple[str, ...] = (
-    'connection open',
-    'connection closed',
-    ' - "WebSocket ',
-    ' [accepted]',
-)
+    Used by both the stdout handler and the ring_buffer handler so the live
+    log panel stays focused on application-level lifecycle events. The file
+    handler does NOT use this filter — all records keep going to disk for
+    audit / debug purposes.
 
-
-class _AuditLoggerFilter:
-    """Drop records from logger names that represent audit-level logs
-    which shouldn't appear in the live log panel / stdout.
-
-    ``uvicorn.access`` emits one line per HTTP request
-    (``GET /api/health HTTP/1.1 200``), ``httpx`` / ``httpcore`` emit one line
-    per outbound request (health polling causes 2 per 10 s), and
-    ``websockets.*`` produce per-connection chatter — all useful for
-    file-based auditing but too noisy for the real-time log panel.  Records
-    are still written to the daily file handler because this filter is NOT
-    wired there.
+    Rule
+    ----
+    * ``app`` and ``app.*`` loggers (our own code) → always pass.
+    * Everything else (``uvicorn.*``, ``httpx``, ``alembic.*``,
+      ``sqlalchemy``, etc.) → only WARNING or above passes; INFO-level
+      infrastructure chatter is dropped.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
-        return record.name not in _AUDIT_LOGGER_NAMES
-
-
-class _UvicornConnectionLifecycleFilter:
-    """Drop uvicorn.error INFO records describing per-connection lifecycle.
-
-    Real errors (ERROR/WARNING/CRITICAL) pass through. The patterns cover
-    HTTP/WS connection accept / open / close noise that pollutes the panel
-    without carrying actionable info.
-    """
-
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
-        if record.name != 'uvicorn.error':
+        # Always allow app.* records (our own code — lifecycle events).
+        if record.name == 'app' or record.name.startswith('app.'):
             return True
-        if record.levelno > logging.INFO:  # WARNING / ERROR / CRITICAL always pass
-            return True
-        message = record.getMessage()
-        return all(pattern not in message for pattern in _CONNECTION_LIFECYCLE_PATTERNS)
+        # For everything else, only allow WARNING+ through.
+        return record.levelno >= logging.WARNING
 
 
 def _safe_put_nowait(q: asyncio.Queue[T.Any], item: T.Any) -> None:
@@ -236,7 +201,7 @@ class RingBufferHandler(logging.Handler):
     def push_parsed_entry(self, entry: dict[str, T.Any]) -> None:
         """Inject an already-parsed entry (e.g. from :class:`LogFileTailer`).
 
-        Apply the same audit filtering that the ``emit()`` path enforces via
+        Apply the same panel allowlist that the ``emit()`` path enforces via
         the logging filter chain — tailed entries that originated in another
         process bypass the Python filter machinery, so we replicate the rules
         here.  Filtering is done before the dedup check so we do not waste
@@ -246,17 +211,14 @@ class RingBufferHandler(logging.Handler):
         record (dedup against API-process-own logs).  Otherwise it is appended
         to the ring buffer and fan-out to all subscribers.
         """
-        # --- Audit filter (mirrors _AuditLoggerFilter) ---
+        # --- Panel allowlist (mirrors _PanelAllowlistFilter) ---
         name = str(entry.get('name', ''))
-        if name in _AUDIT_LOGGER_NAMES:
-            return
-        # --- Connection lifecycle filter (mirrors _UvicornConnectionLifecycleFilter) ---
-        if name == 'uvicorn.error':
-            level = str(entry.get('level', ''))
-            if level.upper() == 'INFO':
-                message = str(entry.get('message', ''))
-                if any(p in message for p in _CONNECTION_LIFECYCLE_PATTERNS):
-                    return
+        is_app = name == 'app' or name.startswith('app.')
+        if not is_app:
+            level = str(entry.get('level', '')).upper()
+            _WARN_PLUS = {'WARNING', 'ERROR', 'CRITICAL', 'SUCCESS'}
+            if level not in _WARN_PLUS:
+                return
 
         key = self._key_of(entry)
         with self._lock:
@@ -507,11 +469,9 @@ def build_log_config(
             '()': 'rich.logging.RichHandler',
             'level': 'INFO',
             'formatter': 'rich',
-            # Rich handles its own coloring; the filter tree still honours
-            # ``display=False`` so file-only records don't surface in the
-            # terminal.  audit_logger drops HTTP audit lines; the connection
-            # noise filter drops uvicorn.error per-connection chatter.
-            'filters': ['stdout_display', 'audit_logger', 'uvicorn_connection_noise'],
+            # Rich handles its own coloring; stdout_display honours
+            # ``display=False``; panel_allowlist keeps only app.* + WARN+.
+            'filters': ['stdout_display', 'panel_allowlist'],
             'rich_tracebacks': True,
             'show_path': False,
             'show_time': True,
@@ -526,7 +486,7 @@ def build_log_config(
         'ring_buffer': {
             '()': f'{__name__}.get_ring_buffer_handler',
             'level': 'INFO',
-            'filters': ['audit_logger', 'uvicorn_connection_noise'],
+            'filters': ['panel_allowlist'],
         },
     }
     if save_logs:
@@ -571,18 +531,12 @@ def build_log_config(
                 '()': f'{__name__}._DisplayFilter',
                 'stdout': False,
             },
-            # Drops uvicorn.access / httpx / httpcore / websockets.* (HTTP and
-            # outbound-request audit lines) from the live panel + stdout.  NOT
-            # wired to the file handler so audit logs are still persisted to
-            # the daily log file.
-            'audit_logger': {
-                '()': f'{__name__}._AuditLoggerFilter',
-            },
-            # Drops uvicorn.error INFO lines that describe per-connection
-            # lifecycle (open/close/WebSocket accepted).  Real errors and
-            # warnings always pass through.
-            'uvicorn_connection_noise': {
-                '()': f'{__name__}._UvicornConnectionLifecycleFilter',
+            # Allowlist: pass app.* always; for everything else (uvicorn.*,
+            # httpx, alembic, sqlalchemy, etc.) only WARNING+ reaches the
+            # live panel and stdout.  NOT wired to the file handler so all
+            # records are still persisted to disk for audit / debug.
+            'panel_allowlist': {
+                '()': f'{__name__}._PanelAllowlistFilter',
             },
         },
         'handlers': handlers,
@@ -744,8 +698,6 @@ class LogFileTailer:
 __all__ = [
     'LOG_FORMAT',
     'DATE_FORMAT',
-    '_AUDIT_LOGGER_NAMES',
-    '_CONNECTION_LIFECYCLE_PATTERNS',
     'RingBufferHandler',
     'get_ring_buffer_handler',
     'LogFileTailer',

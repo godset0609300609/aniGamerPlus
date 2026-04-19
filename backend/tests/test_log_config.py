@@ -1,14 +1,12 @@
-"""Tests for :mod:`app.log_config` — focuses on issues fixed in the
-ring-buffer message deduplication and the audit-logger filter.
+"""Tests for :mod:`app.log_config` — focuses on the ring-buffer,
+the panel allowlist filter, and related helpers.
 
 Specifically:
 * ``RingBufferHandler._format()`` must return ``record.getMessage()`` as the
   ``message`` field — NOT the full pre-formatted line that embeds timestamp
   and level prefix (which would appear twice in the UI).
-* ``_AuditLoggerFilter`` must drop ``uvicorn.access``, ``httpx``, and
-  ``httpcore`` records but pass ``app.main`` and ``uvicorn.error``.
-* ``_UvicornConnectionLifecycleFilter`` must drop uvicorn.error INFO lines
-  with connection-lifecycle patterns but pass real errors and unrelated INFO.
+* ``_PanelAllowlistFilter`` must pass ``app.*`` INFO unconditionally, and for
+  every other logger name only pass WARNING or above.
 * The ring buffer must receive records with ``display=False`` (lifecycle
   events like 自動掃描) — the stdout_display filter must NOT be wired to it.
 * The file handler must still receive httpx records when save_logs=True.
@@ -26,9 +24,8 @@ import app.log_config as _lc
 from app.log_config import (
     DailyLogFileHandler,
     RingBufferHandler,
-    _AuditLoggerFilter,
     _DisplayFilter,
-    _UvicornConnectionLifecycleFilter,
+    _PanelAllowlistFilter,
     build_log_config,
 )
 
@@ -127,59 +124,64 @@ def test_format_includes_correct_level_and_name() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Issue 3: _AuditLoggerFilter
+# _PanelAllowlistFilter unit tests
 # ---------------------------------------------------------------------------
 
 
-class TestAuditLoggerFilter:
+class TestPanelAllowlistFilter:
     def setup_method(self) -> None:
-        self.f = _AuditLoggerFilter()
+        self.f = _PanelAllowlistFilter()
 
-    def _record(self, name: str) -> logging.LogRecord:
-        return _make_record(name=name)
+    # --- app.* always passes ---
 
-    def test_drops_uvicorn_access(self) -> None:
-        """uvicorn.access records must be blocked by the filter."""
-        record = self._record('uvicorn.access')
-        assert self.f.filter(record) is False
+    def test_panel_allowlist_allows_app_main_info(self) -> None:
+        """app.main INFO must pass through."""
+        assert self.f.filter(_make_record('app.main', level=logging.INFO)) is True
 
-    def test_passes_app_main(self) -> None:
-        """app.main records must pass through."""
-        assert self.f.filter(self._record('app.main')) is True
+    def test_panel_allowlist_allows_app_nested_info(self) -> None:
+        """Deeply nested app.* loggers must pass through at INFO."""
+        assert self.f.filter(_make_record('app.api.foo', level=logging.INFO)) is True
+        assert self.f.filter(_make_record('app.downloader.bar', level=logging.INFO)) is True
 
-    def test_passes_uvicorn_error(self) -> None:
-        """uvicorn.error records (server startup / shutdown) must pass through."""
-        assert self.f.filter(self._record('uvicorn.error')) is True
+    def test_panel_allowlist_allows_bare_app_info(self) -> None:
+        """The bare 'app' logger must pass through at INFO."""
+        assert self.f.filter(_make_record('app', level=logging.INFO)) is True
 
-    def test_passes_uvicorn_root(self) -> None:
-        """The bare 'uvicorn' logger must not be filtered."""
-        assert self.f.filter(self._record('uvicorn')) is True
+    # --- non-app INFO is dropped ---
 
-    def test_passes_app_api_scheduler_proxy(self) -> None:
-        """A deeply nested app logger must pass through."""
-        assert self.f.filter(self._record('app.api._scheduler_proxy')) is True
+    def test_panel_allowlist_drops_uvicorn_access_info(self) -> None:
+        """uvicorn.access INFO must be dropped."""
+        assert self.f.filter(_make_record('uvicorn.access', level=logging.INFO)) is False
 
-    def test_passes_alembic(self) -> None:
-        assert self.f.filter(self._record('alembic')) is True
+    def test_panel_allowlist_drops_uvicorn_error_info(self) -> None:
+        """uvicorn.error INFO (startup msg, connection lifecycle) must be dropped."""
+        assert self.f.filter(_make_record('uvicorn.error', level=logging.INFO)) is False
 
-    def test_passes_root_logger(self) -> None:
-        assert self.f.filter(self._record('root')) is True
+    def test_panel_allowlist_drops_httpx_info(self) -> None:
+        """httpx INFO must be dropped."""
+        assert self.f.filter(_make_record('httpx', level=logging.INFO)) is False
 
-    def test_drops_httpx(self) -> None:
-        """httpx records (outbound request lines) must be blocked."""
-        assert self.f.filter(self._record('httpx')) is False
+    def test_panel_allowlist_drops_alembic_info(self) -> None:
+        """alembic.runtime.migration INFO must be dropped."""
+        assert self.f.filter(_make_record('alembic.runtime.migration', level=logging.INFO)) is False
 
-    def test_drops_httpcore(self) -> None:
-        """httpcore records must be blocked."""
-        assert self.f.filter(self._record('httpcore')) is False
+    def test_panel_allowlist_drops_uvicorn_root_info(self) -> None:
+        """The bare 'uvicorn' logger INFO must be dropped."""
+        assert self.f.filter(_make_record('uvicorn', level=logging.INFO)) is False
 
-    def test_drops_websockets_server(self) -> None:
-        """websockets.server records must be blocked."""
-        assert self.f.filter(self._record('websockets.server')) is False
+    # --- non-app WARNING/ERROR/CRITICAL pass ---
 
-    def test_drops_websockets_client(self) -> None:
-        """websockets.client records must be blocked."""
-        assert self.f.filter(self._record('websockets.client')) is False
+    def test_panel_allowlist_allows_uvicorn_error_warning(self) -> None:
+        """uvicorn.error WARNING must pass through."""
+        assert self.f.filter(_make_record('uvicorn.error', level=logging.WARNING)) is True
+
+    def test_panel_allowlist_allows_alembic_error(self) -> None:
+        """alembic ERROR must pass through."""
+        assert self.f.filter(_make_record('alembic.runtime.migration', level=logging.ERROR)) is True
+
+    def test_panel_allowlist_allows_httpx_warning(self) -> None:
+        """httpx WARNING must pass through."""
+        assert self.f.filter(_make_record('httpx', level=logging.WARNING)) is True
 
 
 # ---------------------------------------------------------------------------
@@ -191,25 +193,21 @@ def _ring_buffer_only_cfg() -> dict:  # type: ignore[type-arg]
     """Return a minimal dictConfig dict wiring only the ring_buffer handler.
 
     Uses the same filter set that ``build_log_config`` produces for the
-    ring_buffer handler (audit_logger + uvicorn_connection_noise, no
-    stdout_display).
+    ring_buffer handler (panel_allowlist only; no stdout_display).
     """
     return {
         'version': 1,
         'disable_existing_loggers': False,
         'filters': {
-            'audit_logger': {
-                '()': f'{_lc.__name__}._AuditLoggerFilter',
-            },
-            'uvicorn_connection_noise': {
-                '()': f'{_lc.__name__}._UvicornConnectionLifecycleFilter',
+            'panel_allowlist': {
+                '()': f'{_lc.__name__}._PanelAllowlistFilter',
             },
         },
         'handlers': {
             'ring_buffer': {
                 '()': f'{_lc.__name__}.get_ring_buffer_handler',
                 'level': 'INFO',
-                'filters': ['audit_logger', 'uvicorn_connection_noise'],
+                'filters': ['panel_allowlist'],
             },
         },
         'loggers': {},
@@ -232,7 +230,7 @@ def test_ring_buffer_receives_display_false_records(
     wired to the ring_buffer handler."""
     cfg = _ring_buffer_only_cfg()
     cfg['loggers'] = {
-        'test_ring_display_false': {
+        'app.test_ring_display_false': {
             'level': 'INFO',
             'handlers': ['ring_buffer'],
             'propagate': False,
@@ -240,7 +238,7 @@ def test_ring_buffer_receives_display_false_records(
     }
     logging.config.dictConfig(cfg)
 
-    logger = logging.getLogger('test_ring_display_false')
+    logger = logging.getLogger('app.test_ring_display_false')
     logger.info('自動掃描 lifecycle event', extra={'display': False})
 
     snap = _lc.get_ring_buffer_handler().snapshot()
@@ -253,7 +251,7 @@ def test_ring_buffer_receives_display_false_records(
 def test_ring_buffer_still_filters_uvicorn_access(
     _reset_ring_buffer_singleton: None,
 ) -> None:
-    """uvicorn.access records must NOT appear in the ring buffer (audit noise)."""
+    """uvicorn.access records must NOT appear in the ring buffer (allowlist drops non-app INFO)."""
     cfg = _ring_buffer_only_cfg()
     cfg['loggers'] = {
         'uvicorn.access': {
@@ -269,7 +267,7 @@ def test_ring_buffer_still_filters_uvicorn_access(
     snap = _lc.get_ring_buffer_handler().snapshot()
     messages = [e['message'] for e in snap]
     assert 'GET /healthz HTTP/1.1 200' not in messages, (
-        'uvicorn.access records must be blocked by the audit_logger filter'
+        'uvicorn.access records must be blocked by the panel_allowlist filter'
     )
 
 
@@ -322,7 +320,7 @@ def test_audit_filter_drops_httpx_records(
     snap = _lc.get_ring_buffer_handler().snapshot()
     messages = [e['message'] for e in snap]
     assert not any('HTTP Request' in m for m in messages), (
-        'httpx request lines must be blocked by the audit_logger filter'
+        'httpx request lines must be blocked by the panel_allowlist filter'
     )
 
 
@@ -345,89 +343,19 @@ def test_audit_filter_drops_httpcore_records(
     snap = _lc.get_ring_buffer_handler().snapshot()
     messages = [e['message'] for e in snap]
     assert 'send_request_headers.started' not in messages, (
-        'httpcore records must be blocked by the audit_logger filter'
+        'httpcore records must be blocked by the panel_allowlist filter'
     )
 
 
 # ---------------------------------------------------------------------------
-# _UvicornConnectionLifecycleFilter unit tests
+# Ring buffer integration: uvicorn.error WARNING must reach the panel
 # ---------------------------------------------------------------------------
 
 
-class TestUvicornConnectionLifecycleFilter:
-    def setup_method(self) -> None:
-        self.f = _UvicornConnectionLifecycleFilter()
-
-    def _uvicorn_error_record(self, msg: str, level: int = logging.INFO) -> logging.LogRecord:
-        return logging.LogRecord(
-            name='uvicorn.error',
-            level=level,
-            pathname='',
-            lineno=0,
-            msg=msg,
-            args=(),
-            exc_info=None,
-        )
-
-    def _other_record(self, msg: str) -> logging.LogRecord:
-        return logging.LogRecord(
-            name='app.main',
-            level=logging.INFO,
-            pathname='',
-            lineno=0,
-            msg=msg,
-            args=(),
-            exc_info=None,
-        )
-
-    def test_drops_connection_open(self) -> None:
-        record = self._uvicorn_error_record('127.0.0.1:12345 - connection open')
-        assert self.f.filter(record) is False
-
-    def test_drops_connection_closed(self) -> None:
-        record = self._uvicorn_error_record('127.0.0.1:12345 - connection closed')
-        assert self.f.filter(record) is False
-
-    def test_drops_websocket_accepted(self) -> None:
-        record = self._uvicorn_error_record(
-            '127.0.0.1:12345 - "WebSocket /internal/progress [accepted]"'
-        )
-        assert self.f.filter(record) is False
-
-    def test_drops_accepted_pattern(self) -> None:
-        record = self._uvicorn_error_record('WebSocket /ws [accepted]')
-        assert self.f.filter(record) is False
-
-    def test_allows_real_errors(self) -> None:
-        """ERROR-level records always pass regardless of message content."""
-        record = self._uvicorn_error_record('connection open', level=logging.ERROR)
-        assert self.f.filter(record) is True
-
-    def test_allows_warning(self) -> None:
-        """WARNING-level records always pass regardless of message content."""
-        record = self._uvicorn_error_record('connection open', level=logging.WARNING)
-        assert self.f.filter(record) is True
-
-    def test_allows_unrelated_info(self) -> None:
-        """An INFO message that does not match any noisy pattern must pass."""
-        record = self._uvicorn_error_record('Started server process [12345]')
-        assert self.f.filter(record) is True
-
-    def test_allows_non_uvicorn_error_logger(self) -> None:
-        """Records from other loggers must not be filtered."""
-        record = self._other_record('connection open')
-        assert self.f.filter(record) is True
-
-
-# ---------------------------------------------------------------------------
-# Ring buffer integration: connection-lifecycle noise must not reach the panel
-# ---------------------------------------------------------------------------
-
-
-def test_uvicorn_connection_noise_filter_drops_connection_open(
+def test_uvicorn_error_warning_reaches_ring_buffer(
     _reset_ring_buffer_singleton: None,
 ) -> None:
-    """uvicorn.error INFO 'connection open' must NOT appear in the ring buffer."""
+    """uvicorn.error WARNING must appear in the ring buffer (WARN+ non-app rule)."""
     cfg = _ring_buffer_only_cfg()
     cfg['loggers'] = {
         'uvicorn.error': {
@@ -438,42 +366,19 @@ def test_uvicorn_connection_noise_filter_drops_connection_open(
     }
     logging.config.dictConfig(cfg)
 
-    logging.getLogger('uvicorn.error').info('127.0.0.1:55123 - connection open')
+    logging.getLogger('uvicorn.error').warning('something went wrong in uvicorn')
 
     snap = _lc.get_ring_buffer_handler().snapshot()
     messages = [e['message'] for e in snap]
-    assert not any('connection open' in m for m in messages), (
-        'connection open noise must be blocked from the ring buffer'
+    assert 'something went wrong in uvicorn' in messages, (
+        'uvicorn.error WARNING must reach the ring buffer via WARN+ rule'
     )
 
 
-def test_uvicorn_connection_noise_filter_allows_real_errors(
+def test_uvicorn_error_info_dropped_from_ring_buffer(
     _reset_ring_buffer_singleton: None,
 ) -> None:
-    """uvicorn.error ERROR records must always reach the ring buffer."""
-    cfg = _ring_buffer_only_cfg()
-    cfg['loggers'] = {
-        'uvicorn.error': {
-            'level': 'INFO',
-            'handlers': ['ring_buffer'],
-            'propagate': False,
-        }
-    }
-    logging.config.dictConfig(cfg)
-
-    logging.getLogger('uvicorn.error').error('connection open but something broke')
-
-    snap = _lc.get_ring_buffer_handler().snapshot()
-    messages = [e['message'] for e in snap]
-    assert any('connection open but something broke' in m for m in messages), (
-        'ERROR-level uvicorn.error records must not be suppressed'
-    )
-
-
-def test_uvicorn_connection_noise_filter_allows_unrelated_info(
-    _reset_ring_buffer_singleton: None,
-) -> None:
-    """uvicorn.error INFO not matching noisy patterns must reach the ring buffer."""
+    """uvicorn.error INFO (any message) must NOT appear in the ring buffer."""
     cfg = _ring_buffer_only_cfg()
     cfg['loggers'] = {
         'uvicorn.error': {
@@ -488,8 +393,8 @@ def test_uvicorn_connection_noise_filter_allows_unrelated_info(
 
     snap = _lc.get_ring_buffer_handler().snapshot()
     messages = [e['message'] for e in snap]
-    assert 'Started server process [42]' in messages, (
-        'unrelated uvicorn.error INFO must reach the ring buffer'
+    assert 'Started server process [42]' not in messages, (
+        'uvicorn.error INFO must be dropped by the panel_allowlist filter'
     )
 
 
@@ -519,7 +424,7 @@ def _clean_test_loggers() -> None:  # type: ignore[return]
 
 
 # ---------------------------------------------------------------------------
-# push_parsed_entry audit filtering (cross-process tailer bypass fix)
+# push_parsed_entry allowlist filtering (cross-process tailer)
 # ---------------------------------------------------------------------------
 
 
@@ -537,44 +442,56 @@ def _make_entry(
     }
 
 
+def test_push_parsed_entry_drops_non_app_info(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """push_parsed_entry must drop non-app INFO entries (e.g. uvicorn.access)."""
+    handler = _lc.get_ring_buffer_handler()
+    handler.push_parsed_entry(_make_entry(name='uvicorn.access', level='INFO', message='GET /api/health'))
+    snap = handler.snapshot()
+    assert not any(e['name'] == 'uvicorn.access' for e in snap), (
+        'uvicorn.access INFO entry must be dropped by push_parsed_entry allowlist'
+    )
+
+
+def test_push_parsed_entry_allows_app_info(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """push_parsed_entry must keep app.main INFO entries."""
+    handler = _lc.get_ring_buffer_handler()
+    handler.push_parsed_entry(_make_entry(name='app.main', level='INFO', message='app-lifecycle'))
+    snap = handler.snapshot()
+    assert any(e['message'] == 'app-lifecycle' for e in snap), (
+        'app.main INFO entries must pass push_parsed_entry allowlist'
+    )
+
+
+def test_push_parsed_entry_allows_uvicorn_warning(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """push_parsed_entry must keep uvicorn.error WARNING entries."""
+    handler = _lc.get_ring_buffer_handler()
+    handler.push_parsed_entry(_make_entry(name='uvicorn.error', level='WARNING', message='something bad'))
+    snap = handler.snapshot()
+    assert any(e['message'] == 'something bad' for e in snap), (
+        'uvicorn.error WARNING entries must pass push_parsed_entry allowlist'
+    )
+
+
 @pytest.mark.parametrize(
     'logger_name',
-    ['uvicorn.access', 'httpx', 'httpcore', 'websockets.server', 'websockets.client'],
+    ['uvicorn.access', 'httpx', 'httpcore', 'websockets.server', 'alembic.runtime.migration'],
 )
-def test_push_parsed_entry_drops_audit_logger_names(
+def test_push_parsed_entry_drops_non_app_info_parametrized(
     _reset_ring_buffer_singleton: None,
     logger_name: str,
 ) -> None:
-    """push_parsed_entry must silently drop entries whose name is in the audit blocklist."""
+    """push_parsed_entry must silently drop INFO entries from non-app loggers."""
     handler = _lc.get_ring_buffer_handler()
     handler.push_parsed_entry(_make_entry(name=logger_name, message='audit-noise'))
     snap = handler.snapshot()
     assert not any(e['name'] == logger_name for e in snap), (
-        f'{logger_name} entry must be dropped by push_parsed_entry audit filter'
-    )
-
-
-def test_push_parsed_entry_drops_uvicorn_error_connection_open(
-    _reset_ring_buffer_singleton: None,
-) -> None:
-    """push_parsed_entry must drop uvicorn.error INFO entries matching lifecycle patterns."""
-    handler = _lc.get_ring_buffer_handler()
-    handler.push_parsed_entry(_make_entry(name='uvicorn.error', level='INFO', message='connection open'))
-    snap = handler.snapshot()
-    assert not any('connection open' in e['message'] for e in snap), (
-        'uvicorn.error INFO connection-lifecycle entry must be dropped by push_parsed_entry'
-    )
-
-
-def test_push_parsed_entry_allows_uvicorn_error_real_error(
-    _reset_ring_buffer_singleton: None,
-) -> None:
-    """push_parsed_entry must keep uvicorn.error ERROR entries even if message matches a lifecycle pattern."""
-    handler = _lc.get_ring_buffer_handler()
-    handler.push_parsed_entry(_make_entry(name='uvicorn.error', level='ERROR', message='connection open'))
-    snap = handler.snapshot()
-    assert any('connection open' in e['message'] for e in snap), (
-        'uvicorn.error ERROR entries must not be filtered by push_parsed_entry'
+        f'{logger_name} INFO entry must be dropped by push_parsed_entry allowlist'
     )
 
 
@@ -586,7 +503,7 @@ def test_push_parsed_entry_allows_app_main(
     handler.push_parsed_entry(_make_entry(name='app.main', message='test-tag'))
     snap = handler.snapshot()
     assert any(e['message'] == 'test-tag' for e in snap), (
-        'app.main entries must pass push_parsed_entry audit filter'
+        'app.main entries must pass push_parsed_entry allowlist'
     )
 
 
@@ -604,19 +521,49 @@ def test_push_parsed_entry_dedup_still_works(
     )
 
 
+def test_file_handler_still_sees_uvicorn_access(
+    _reset_ring_buffer_singleton: None,
+    _clean_test_loggers: None,
+    tmp_path: pathlib.Path,
+) -> None:
+    """With save_logs=True, uvicorn.access INFO records must be written to the
+    log file.  The panel_allowlist filter is NOT wired to the file handler,
+    so all infrastructure records are still persisted to disk.
+    """
+    import datetime
+
+    class _Paths:
+        pass
+
+    paths = _Paths()
+    paths.logs_dir = tmp_path / 'logs'  # type: ignore[attr-defined]
+    paths.logs_dir.mkdir()  # type: ignore[attr-defined]
+
+    cfg = build_log_config(paths, save_logs=True, quantity_of_logs=1)  # type: ignore[arg-type]
+    logging.config.dictConfig(cfg)
+
+    access_msg = '127.0.0.1:1234 - "GET /api/health HTTP/1.1" 200'
+    logging.getLogger('uvicorn.access').info(access_msg)
+
+    today = datetime.datetime.now().strftime('%Y-%m-%d')
+    log_file = paths.logs_dir / f'{today}.log'  # type: ignore[attr-defined]
+    assert log_file.exists(), 'log file must be created by DailyLogFileHandler'
+
+    content = log_file.read_text(encoding='utf-8')
+    assert access_msg in content, (
+        'uvicorn.access records must be written to the file handler even though '
+        'they are filtered from the ring buffer and stdout'
+    )
+
+
 def test_file_handler_still_sees_httpx(
     _reset_ring_buffer_singleton: None,
     _clean_test_loggers: None,
     tmp_path: pathlib.Path,
 ) -> None:
-    """With save_logs=True, httpx INFO records must be written to the log file.
-
-    The audit_logger / uvicorn_connection_noise filters are NOT wired to the
-    file handler, so audit noise is retained on disk for forensic purposes.
-    """
+    """With save_logs=True, httpx INFO records must be written to the log file."""
     import datetime
 
-    # Build a minimal WorkspacePaths-like stub so build_log_config can proceed.
     class _Paths:
         pass
 
@@ -630,7 +577,6 @@ def test_file_handler_still_sees_httpx(
     httpx_msg = 'HTTP Request: GET http://127.0.0.1:5001/internal/health "HTTP/1.1 200 OK"'
     logging.getLogger('httpx').info(httpx_msg)
 
-    # Locate today's log file.
     today = datetime.datetime.now().strftime('%Y-%m-%d')
     log_file = paths.logs_dir / f'{today}.log'  # type: ignore[attr-defined]
     assert log_file.exists(), 'log file must be created by DailyLogFileHandler'
@@ -640,3 +586,59 @@ def test_file_handler_still_sees_httpx(
         'httpx records must be written to the file handler even though '
         'they are filtered from the ring buffer and stdout'
     )
+
+
+# ---------------------------------------------------------------------------
+# Smoke test: realistic mixed log stream
+# ---------------------------------------------------------------------------
+
+
+def test_realistic_mixed_stream_smoke(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """Emit 10 records representing a real session; assert exactly 2 appear in
+    the ring buffer (both app.main records — one INFO lifecycle, one ERROR).
+
+    Stream composition (10 records):
+    1. uvicorn.access INFO  — GET /api/health
+    2. uvicorn.access INFO  — GET /api/auth/me
+    3. uvicorn.error  INFO  — connection open
+    4. uvicorn.error  INFO  — connection closed
+    5. httpx          INFO  — HTTP Request: GET /internal/health
+    6. httpx          INFO  — HTTP Request: GET /internal/health
+    7. app.main       INFO  — 自動掃描 偵測新集數
+    8. app.main       ERROR — 下載失敗 sn=1234
+    9. alembic.runtime.migration INFO — Running upgrade
+    10. uvicorn.error  INFO  — Started server process [99]
+
+    Expected in ring buffer: records 7 and 8 only (2 records).
+    """
+    cfg = _ring_buffer_only_cfg()
+    cfg['loggers'] = {
+        'uvicorn.access': {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
+        'uvicorn.error':  {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
+        'httpx':          {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
+        'app.main':       {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
+        'alembic.runtime.migration': {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
+    }
+    logging.config.dictConfig(cfg)
+
+    logging.getLogger('uvicorn.access').info('127.0.0.1:1 - "GET /api/health HTTP/1.1" 200')
+    logging.getLogger('uvicorn.access').info('127.0.0.1:2 - "GET /api/auth/me HTTP/1.1" 200')
+    logging.getLogger('uvicorn.error').info('127.0.0.1:3 - connection open')
+    logging.getLogger('uvicorn.error').info('127.0.0.1:4 - connection closed')
+    logging.getLogger('httpx').info('HTTP Request: GET http://127.0.0.1:5001/internal/health "HTTP/1.1 200 OK"')
+    logging.getLogger('httpx').info('HTTP Request: GET http://127.0.0.1:5001/internal/health "HTTP/1.1 200 OK"')
+    logging.getLogger('app.main').info('自動掃描 偵測新集數')
+    logging.getLogger('app.main').error('下載失敗 sn=1234')
+    logging.getLogger('alembic.runtime.migration').info('Running upgrade abc -> def')
+    logging.getLogger('uvicorn.error').info('Started server process [99]')
+
+    snap = _lc.get_ring_buffer_handler().snapshot()
+    assert len(snap) == 2, (
+        f'Expected exactly 2 entries in ring buffer, got {len(snap)}: '
+        f'{[e["message"] for e in snap]}'
+    )
+    messages = [e['message'] for e in snap]
+    assert '自動掃描 偵測新集數' in messages
+    assert '下載失敗 sn=1234' in messages
