@@ -9,13 +9,12 @@ from __future__ import annotations
 
 import codecs
 import collections.abc
-import contextlib
 import datetime
 import os
-import pathlib
-import tempfile
 import threading
 import typing as T
+
+from .file_utils import atomic_write_text
 
 if T.TYPE_CHECKING:
     from ..logging_ import Logger
@@ -63,7 +62,7 @@ class CookieRepository:
         """
         line = '; '.join(f'{k}={v}' for k, v in new_cookie.items())
         with self._lock:
-            _atomic_write_text(self._paths.cookie_path, line)
+            atomic_write_text(self._paths.cookie_path, line)
 
     def write(self, text: str) -> None:
         """Overwrite ``cookie.txt`` with an arbitrary cookie string.
@@ -73,7 +72,7 @@ class CookieRepository:
         trailing newline stripped). Thread-safe via the internal lock.
         """
         with self._lock:
-            _atomic_write_text(self._paths.cookie_path, text.strip())
+            atomic_write_text(self._paths.cookie_path, text.strip())
 
     def exists_and_nonempty(self) -> bool:
         """Return ``True`` if ``cookie.txt`` exists and has non-blank content."""
@@ -126,16 +125,3 @@ def _parse_cookie_line(line: str) -> dict[str, str]:
         else:
             out[key.strip()] = value
     return out
-
-
-def _atomic_write_text(path: pathlib.Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=path.name + '.', dir=str(path.parent))
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as fh:
-            fh.write(content)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
