@@ -500,3 +500,50 @@ def test_check_tasks_caches_anime_name_on_entry(tmp_path: pathlib.Path) -> None:
     assert sn_arg == 77
     assert uid_arg == 'user_abc'
     assert name_arg == '某某'
+
+
+def test_sn_dict_includes_custom_name(tmp_path: pathlib.Path) -> None:
+    """_load_sn_dict_from_db includes custom_name in the per-sn dict."""
+    entries = [
+        AnimeListEntryDTO(sn=88, enabled=True, mode='single', tag='', user_id='u1', custom_name='自訂名稱'),
+    ]
+    loop, _w, _q, _r, _c, _sn, _md, _al = _build(
+        tmp_path,
+        anime_list_entries=entries,
+    )
+    result = loop._load_sn_dict_from_db('latest')
+
+    assert 88 in result
+    assert result[88]['custom_name'] == '自訂名稱'
+
+
+def test_sn_dict_custom_name_empty_when_not_set(tmp_path: pathlib.Path) -> None:
+    """_load_sn_dict_from_db sets custom_name to '' when the field is None."""
+    entries = [
+        AnimeListEntryDTO(sn=89, enabled=True, mode='single', tag='', user_id='u1', custom_name=None),
+    ]
+    loop, _w, _q, _r, _c, _sn, _md, _al = _build(
+        tmp_path,
+        anime_list_entries=entries,
+    )
+    result = loop._load_sn_dict_from_db('latest')
+
+    assert result[89]['custom_name'] == ''
+
+
+def test_make_task_info_carries_custom_name(tmp_path: pathlib.Path) -> None:
+    """_make_task_info reads custom_name out of info dict and puts it on TaskInfo."""
+    loop, _w, _q, _r, _c, _sn, _md, _al = _build(tmp_path)
+    info: dict[str, str] = {'mode': 'single', 'tag': '', 'season': '1', 'custom_name': '覆蓋名稱'}
+    task = loop._make_task_info(50, info, 'single')
+
+    assert task.custom_name == '覆蓋名稱'
+
+
+def test_make_task_info_custom_name_none_when_empty(tmp_path: pathlib.Path) -> None:
+    """_make_task_info maps empty-string custom_name to None on TaskInfo."""
+    loop, _w, _q, _r, _c, _sn, _md, _al = _build(tmp_path)
+    info: dict[str, str] = {'mode': 'single', 'tag': '', 'season': '1', 'custom_name': ''}
+    task = loop._make_task_info(51, info, 'single')
+
+    assert task.custom_name is None

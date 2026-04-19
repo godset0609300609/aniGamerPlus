@@ -226,6 +226,7 @@ class UpdateLoop:
                 'tag': row.tag or '',
                 'season': str(row.season),
                 'owner_id': row.user_id or '',
+                'custom_name': row.custom_name or '',
             }
 
         if not result and not self._legacy_warning_emitted:
@@ -275,11 +276,13 @@ class UpdateLoop:
     ) -> TaskInfo:
         from .queue_ import TaskInfo
 
+        raw_custom = info.get('custom_name') or ''
         return TaskInfo(
             sn=int(sn),
             tag=info.get('tag', ''),
             mode=mode,
             season=int(info.get('season') or '1'),
+            custom_name=raw_custom or None,
         )
 
     def _announce_waiting(

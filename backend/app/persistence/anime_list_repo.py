@@ -34,6 +34,7 @@ class AnimeListEntryDTO:
     tag: str = ''
     season: int = 1
     anime_name: str | None = None  # cached series name (populated by UpdateLoop)
+    custom_name: str | None = None  # user override for the name used in filenames
     comment: str = ''
     sort_order: int = 0
     user_id: str | None = None  # populated on read; ignored on write
@@ -47,6 +48,7 @@ def _to_dto(orm: AnimeListEntryRow) -> AnimeListEntryDTO:
         tag=orm.tag,
         season=orm.season,
         anime_name=orm.anime_name,
+        custom_name=orm.custom_name,
         comment=orm.comment,
         sort_order=orm.sort_order,
         user_id=orm.user_id,
@@ -100,6 +102,7 @@ class AnimeListEntryRepository:
                     tag=entry.tag,
                     season=entry.season,
                     anime_name=entry.anime_name,
+                    custom_name=entry.custom_name,
                     comment=entry.comment,
                     sort_order=entry.sort_order,
                 )

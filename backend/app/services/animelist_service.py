@@ -175,6 +175,7 @@ class AnimeListService:
             mode=dto.mode,  # type: ignore[arg-type]
             tag=dto.tag,
             season=dto.season,
+            custom_name=dto.custom_name,
             anime_name=dto.anime_name,
             comment=dto.comment,
             owner_id=user_id,
@@ -189,6 +190,7 @@ class AnimeListService:
             mode=entry.mode,
             tag=entry.tag,
             season=entry.season,
+            custom_name=entry.custom_name,
             comment=entry.comment,
             sort_order=sort_order,
         )

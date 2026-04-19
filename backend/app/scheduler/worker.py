@@ -158,6 +158,7 @@ class DownloadWorker:
                 resolution=str(settings.download_resolution),
                 bangumi_tag=info.tag,
                 season=info.season,
+                custom_name=info.custom_name,
                 realtime_show_file_size=realtime_show_file_size,
                 classify=settings.classify_bangumi,
                 include_resolution_in_filename=False,  # auto-mode excludes resolution

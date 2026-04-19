@@ -338,3 +338,50 @@ def test_season_defaults_to_one(tmp_path: pathlib.Path) -> None:
         assert r.season == 1
     finally:
         db.dispose()
+
+
+def test_custom_name_round_trips(tmp_path: pathlib.Path) -> None:
+    """custom_name is persisted and returned via list_for_user."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        repo = AnimeListEntryRepository(db)
+        _seed_user(user_repo, 'u1')
+
+        entry = AnimeListEntryDTO(sn=77, custom_name='自訂名稱テスト')
+        repo.replace_all_for_user('u1', [entry])
+        r = repo.list_for_user('u1')[0]
+        assert r.custom_name == '自訂名稱テスト'
+    finally:
+        db.dispose()
+
+
+def test_custom_name_defaults_to_none(tmp_path: pathlib.Path) -> None:
+    """custom_name is NULL by default."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        repo = AnimeListEntryRepository(db)
+        _seed_user(user_repo, 'u1')
+
+        repo.replace_all_for_user('u1', [AnimeListEntryDTO(sn=88)])
+        r = repo.list_for_user('u1')[0]
+        assert r.custom_name is None
+    finally:
+        db.dispose()
+
+
+def test_custom_name_round_trips_via_list_all(tmp_path: pathlib.Path) -> None:
+    """custom_name is returned correctly via list_all too."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        repo = AnimeListEntryRepository(db)
+        _seed_user(user_repo, 'u1')
+
+        repo.replace_all_for_user('u1', [AnimeListEntryDTO(sn=99, custom_name='Override')])
+        all_entries = repo.list_all()
+        assert len(all_entries) == 1
+        assert all_entries[0].custom_name == 'Override'
+    finally:
+        db.dispose()
