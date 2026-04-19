@@ -642,3 +642,62 @@ def test_realistic_mixed_stream_smoke(
     messages = [e['message'] for e in snap]
     assert '自動掃描 偵測新集數' in messages
     assert '下載失敗 sn=1234' in messages
+
+
+# ---------------------------------------------------------------------------
+# Cause B regression: build_log_config must set disable_existing_loggers=False
+# ---------------------------------------------------------------------------
+
+
+def _make_minimal_paths(tmp_path: pathlib.Path) -> object:
+    """Return a minimal paths object with logs_dir pointing at tmp_path."""
+
+    class _Paths:
+        pass
+
+    p = _Paths()
+    p.logs_dir = tmp_path / 'logs'  # type: ignore[attr-defined]
+    p.logs_dir.mkdir()  # type: ignore[attr-defined]
+    return p
+
+
+def test_build_log_config_sets_disable_existing_loggers_false(
+    tmp_path: pathlib.Path,
+) -> None:
+    """build_log_config must always include disable_existing_loggers=False so
+    uvicorn's second dictConfig call does not silence app.* loggers."""
+    paths = _make_minimal_paths(tmp_path)
+    cfg = build_log_config(paths, save_logs=False, quantity_of_logs=7)  # type: ignore[arg-type]
+    assert cfg.get('disable_existing_loggers') is False, (
+        'build_log_config must set disable_existing_loggers=False '
+        'to survive uvicorn calling dictConfig a second time'
+    )
+
+
+def test_dictconfig_twice_keeps_app_logger_enabled(
+    _reset_ring_buffer_singleton: None,
+    tmp_path: pathlib.Path,
+) -> None:
+    """A second logging.config.dictConfig call (simulating uvicorn.run(log_config=...))
+    must NOT silence existing app.* loggers."""
+    paths = _make_minimal_paths(tmp_path)
+
+    # First dictConfig — establishes the baseline (matches app startup).
+    logging.config.dictConfig(build_log_config(paths, save_logs=False, quantity_of_logs=7))  # type: ignore[arg-type]
+    logger = logging.getLogger('app.smoke_double_dictconfig')
+    logger.info('first')
+
+    # Second dictConfig — simulates uvicorn.run(app, log_config=...) internals.
+    logging.config.dictConfig(build_log_config(paths, save_logs=False, quantity_of_logs=7))  # type: ignore[arg-type]
+    logger.info('second')
+
+    rb = _lc.get_ring_buffer_handler()
+    snap = rb.snapshot()
+    messages = [e['message'] for e in snap if e['name'] == 'app.smoke_double_dictconfig']
+    assert len(messages) == 2, (
+        f'Expected 2 records after double dictConfig, got {len(messages)}: {messages!r}. '
+        'disable_existing_loggers=False must prevent the second dictConfig from '
+        'silencing the app.* logger tree.'
+    )
+    assert 'first' in messages
+    assert 'second' in messages
