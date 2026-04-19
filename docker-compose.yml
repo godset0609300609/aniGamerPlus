@@ -7,7 +7,7 @@ services:
       target: backend
     image: anigamerplus-backend:latest
     container_name: anigamerplus-scheduler
-    command: [ "uv", "run", "anigamerplus-scheduler" ]
+    command: ["scheduler"]
     environment:
       - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET
         must be set in .env}
@@ -22,7 +22,7 @@ services:
     image: anigamerplus-backend:latest
     container_name: anigamerplus-api
     depends_on: [ scheduler ]
-    command: [ "uv", "run", "anigamerplus-api" ]
+    command: ["api"]
     environment:
       - ANIGAMERPLUS_SCHEDULER_URL=http://scheduler:5001
       - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET

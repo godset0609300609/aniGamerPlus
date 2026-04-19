@@ -33,10 +33,10 @@
 常用指令:
 
 - 後端 (FastAPI): `cd backend && uv sync && uv run anigamerplus-server`
-- 前端 (Vite dev): `cd frontend && npm install && npm run dev`
+- 前端 (Vite dev): `cd frontend && pnpm install && pnpm run dev`
 - 命令列下載: `cd backend && uv run anigamerplus -s <sn>` (舊版 `python3 aniGamerPlus.py -s <sn>`)
 - 後端測試: `cd backend && uv run pytest` (目前 225+ 項, `filterwarnings = ["error"]`)
-- 前端測試 + 類型檢查 + 打包: `cd frontend && npm run test && npm run typecheck && npm run build` (目前 39 項)
+- 前端測試 + 類型檢查 + 打包: `cd frontend && pnpm run test && pnpm run typecheck && pnpm run build` (目前 39 項)
 
 舊版單體 Flask Dashboard 已被拆出的 Vue 前端取代; 原本的 `Anime.py` / `Config.py` / `aniGamerPlus.py` / `Danmu.py` / `ColorPrint.py` 已在 v2 cutover 刪除. 若需查閱舊程式碼請切到 v1 標籤.
 
@@ -86,7 +86,7 @@ cd backend && uv run anigamerplus-server
 
 Web 前端開發模式 (與後端分離):
 ```bash
-cd frontend && npm install && npm run dev
+cd frontend && pnpm install && pnpm run dev
 ```
 
 ## Docker 運行
@@ -119,6 +119,31 @@ docker compose up -d
    python -c "import secrets; print(secrets.token_urlsafe(32))"
    ```
 2. `config.json` 中的 `bangumi_dir` 請保持為空，下載目錄已透過 volume 掛載至 `/app/bangumi`。
+
+### 容器進入點 (entrypoint dispatcher)
+
+後端 image 使用統一的進入點腳本 `/app/docker-entrypoint.sh`，透過第一個引數決定執行哪個服務：
+
+| 引數 | 對應指令 | 說明 |
+| --- | --- | --- |
+| `scheduler` | `uv run anigamerplus-scheduler` | 下載排程服務（預設在 compose 中執行） |
+| `api` | `uv run anigamerplus-api` | FastAPI 後端（預設 `CMD`） |
+| `admin` | `uv run anigamerplus-admin` | 管理員 CLI |
+| `cli` | `uv run anigamerplus` | 單次手動下載 |
+| 其他 | 直接傳遞 | 例如 `sh`、`uv run pytest` 等任意指令 |
+
+常用管理指令：
+
+```bash
+# 列出所有使用者
+docker compose run --rm api admin list
+
+# 提升使用者權限
+docker compose run --rm api admin promote <discord_id>
+
+# 單次手動下載
+docker compose run --rm api cli -s <sn>
+```
 
 ## 鳴謝
 
