@@ -1,10 +1,11 @@
 # ---------- Stage 1: frontend build (intermediate) ----------
 FROM node:22-slim AS frontend-build
+RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /frontend
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+COPY frontend/package.json frontend/pnpm-lock.yaml* ./
+RUN pnpm install --frozen-lockfile || pnpm install
 COPY frontend/ .
-RUN npm run build
+RUN pnpm run build
 
 # ---------- Stage 2: nginx serving frontend ----------
 FROM nginx:alpine AS frontend
