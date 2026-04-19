@@ -465,7 +465,7 @@ def build_log_config(
         'ring_buffer': {
             '()': f'{__name__}.get_ring_buffer_handler',
             'level': 'INFO',
-            'filters': ['stdout_display', 'audit_logger'],
+            'filters': ['audit_logger'],
         },
     }
     if save_logs:
