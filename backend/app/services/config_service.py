@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import typing as T
 
+import anyio.to_thread
+
 from ..models import WebSettings
 from ..settings_id_list import WEB_SETTINGS_KEYS
 from ._factory import container_bound
@@ -30,15 +32,15 @@ class ConfigService:
 
     # -- read ---------------------------------------------------------------
 
-    def read(self) -> WebSettings:
-        return self._repo.load().web_subset()
+    async def read(self) -> WebSettings:
+        return await anyio.to_thread.run_sync(lambda: self._repo.load().web_subset())
 
     def schema_keys(self) -> list[str]:
         return list(self.WEB_KEYS)
 
     # -- write --------------------------------------------------------------
 
-    def write(self, settings: WebSettings) -> None:
+    async def write(self, settings: WebSettings) -> None:
         """Merge ``settings`` (web subset) back onto the full :class:`AppSettings`.
 
         Reads the current full settings, overlays ONLY the fields defined on
@@ -50,20 +52,24 @@ class ConfigService:
         the latter does a shallow merge, so if a future payload ever
         contained a nested model the whole sub-model would be replaced.
         """
-        current = self._repo.load()
-        incoming = settings.model_dump(by_alias=False)
 
-        # Only the intersection of the payload and ``WebSettings``' field
-        # set is trusted; extra keys in the payload are dropped. We copy
-        # the current settings and mutate field-by-field so nested models
-        # are untouched.
-        allowed_fields = set(WebSettings.model_fields.keys())
-        updated = current.model_copy(deep=True)
-        for field_name in allowed_fields:
-            if field_name in incoming:
-                setattr(updated, field_name, incoming[field_name])
+        def _do_write() -> None:
+            current = self._repo.load()
+            incoming = settings.model_dump(by_alias=False)
 
-        self._repo.save(updated)
+            # Only the intersection of the payload and ``WebSettings``' field
+            # set is trusted; extra keys in the payload are dropped. We copy
+            # the current settings and mutate field-by-field so nested models
+            # are untouched.
+            allowed_fields = set(WebSettings.model_fields.keys())
+            updated = current.model_copy(deep=True)
+            for field_name in allowed_fields:
+                if field_name in incoming:
+                    setattr(updated, field_name, incoming[field_name])
+
+            self._repo.save(updated)
+
+        await anyio.to_thread.run_sync(_do_write)
 
 
 get_config_service = container_bound(lambda c: ConfigService(c.settings_repo))

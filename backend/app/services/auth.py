@@ -6,6 +6,7 @@ import base64
 import secrets
 import typing as T
 
+import anyio.to_thread
 import fastapi
 import fastapi.security
 
@@ -34,13 +35,14 @@ class AuthService:
     def _dashboard(self) -> DashboardSettings:
         return self._repo.load().dashboard
 
-    def is_enabled(self) -> bool:
-        return bool(self._dashboard().BasicAuth)
+    async def is_enabled(self) -> bool:
+        dashboard = await anyio.to_thread.run_sync(self._dashboard)
+        return bool(dashboard.BasicAuth)
 
     # -- HTTP -------------------------------------------------------------
 
-    def verify_http(self, credentials: fastapi.security.HTTPBasicCredentials | None) -> str:
-        dashboard = self._dashboard()
+    async def verify_http(self, credentials: fastapi.security.HTTPBasicCredentials | None) -> str:
+        dashboard = await anyio.to_thread.run_sync(self._dashboard)
         if not dashboard.BasicAuth:
             return 'anonymous'
         if credentials is None:
@@ -59,8 +61,8 @@ class AuthService:
 
     # -- WebSocket --------------------------------------------------------
 
-    def verify_ws(self, authorization: str | None) -> bool:
-        dashboard = self._dashboard()
+    async def verify_ws(self, authorization: str | None) -> bool:
+        dashboard = await anyio.to_thread.run_sync(self._dashboard)
         if not dashboard.BasicAuth:
             return True
         if not authorization or not authorization.lower().startswith('basic '):
@@ -89,9 +91,9 @@ get_auth_service = container_bound(lambda c: AuthService(c.settings_repo))
 """FastAPI dependency resolver for :class:`AuthService`."""
 
 
-def require_auth(
+async def require_auth(
     credentials: T.Annotated[fastapi.security.HTTPBasicCredentials | None, fastapi.Depends(_security)],
     service: T.Annotated[AuthService, fastapi.Depends(get_auth_service)],
 ) -> str:
     """Dependency that enforces Basic Auth when the dashboard enables it."""
-    return service.verify_http(credentials)
+    return await service.verify_http(credentials)

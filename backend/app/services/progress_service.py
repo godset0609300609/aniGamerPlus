@@ -26,7 +26,10 @@ completed.
 
 from __future__ import annotations
 
+import functools
 import typing as T
+
+import anyio.to_thread
 
 from ..models import TaskProgressEntry, TaskProgressSnapshot
 from ..persistence.user_repo import UserRow
@@ -51,7 +54,7 @@ class ProgressService:
         self._user_repo = user_repo
         self._proxy = scheduler_proxy
 
-    def snapshot(self, user: UserRow) -> TaskProgressSnapshot:
+    async def snapshot(self, user: UserRow) -> TaskProgressSnapshot:
         """Return a progress snapshot filtered by the caller's role.
 
         Data source priority:
@@ -66,18 +69,21 @@ class ProgressService:
           each entry whose ``owner_id`` is known.
         * downloader: only tasks whose ``owner_id`` matches ``user.id``.
         """
+        # Both ProgressBus.snapshot() and SchedulerProxy.latest_snapshot()
+        # are sync-fast in-memory reads — wrap in run_sync for consistency.
         if self._proxy is not None:
-            raw: dict[int, TaskProgress] = self._proxy.latest_snapshot()
+            raw: dict[int, TaskProgress] = await anyio.to_thread.run_sync(self._proxy.latest_snapshot)
         else:
-            raw = self._bus.snapshot()
+            raw = await anyio.to_thread.run_sync(self._bus.snapshot)
 
         if user.role == 'admin':
             # Build a username cache to avoid N+1 repo queries.
             owner_ids = {e.owner_id for e in raw.values() if e.owner_id is not None}
             username_cache: dict[str, str] = {}
-            if self._user_repo is not None:
+            user_repo = self._user_repo
+            if user_repo is not None:
                 for uid in owner_ids:
-                    row = self._user_repo.get(uid)
+                    row = await anyio.to_thread.run_sync(functools.partial(user_repo.get, uid))
                     if row is not None:
                         username_cache[uid] = row.username
 
