@@ -15,30 +15,54 @@ printed to stderr and exit with code 1.
 
 from __future__ import annotations
 
-import argparse
 import sys
+import typing as T
+
+import typer
+
+app = typer.Typer(
+    name='anigamerplus-admin',
+    help='aniGamerPlus admin tool — manage Discord OAuth user roles',
+    no_args_is_help=True,
+    add_completion=False,
+)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog='anigamerplus-admin',
-        description='aniGamerPlus admin tool — manage Discord OAuth user roles',
-    )
-    sub = parser.add_subparsers(dest='command', metavar='command')
-    sub.required = True
+@app.command('list')
+def cmd_list_command() -> None:
+    """List all registered users."""
+    from .core import build_container
 
-    # list
-    sub.add_parser('list', help='List all registered users')
+    container = build_container()
+    sys.exit(cmd_list(container.user_repo))
 
-    # promote
-    promote_p = sub.add_parser('promote', help='Promote a user to admin role')
-    promote_p.add_argument('discord_id', help='Discord snowflake ID of the user')
 
-    # demote
-    demote_p = sub.add_parser('demote', help='Demote a user to downloader role')
-    demote_p.add_argument('discord_id', help='Discord snowflake ID of the user')
+@app.command('promote')
+def cmd_promote_command(
+    discord_id: T.Annotated[str, typer.Argument(help='Discord snowflake ID of the user')],
+) -> None:
+    """Promote a user to admin role."""
+    from .core import build_container
 
-    return parser
+    container = build_container()
+    sys.exit(cmd_promote(container.user_repo, discord_id))
+
+
+@app.command('demote')
+def cmd_demote_command(
+    discord_id: T.Annotated[str, typer.Argument(help='Discord snowflake ID of the user')],
+) -> None:
+    """Demote a user to downloader role."""
+    from .core import build_container
+
+    container = build_container()
+    sys.exit(cmd_demote(container.user_repo, discord_id))
+
+
+# ---------------------------------------------------------------------------
+# Internal command functions — kept public for direct testing without spawning
+# a subprocess or building the container.
+# ---------------------------------------------------------------------------
 
 
 def cmd_list(user_repo: object) -> int:
@@ -91,24 +115,3 @@ def cmd_demote(user_repo: object, discord_id: str) -> int:
     repo.set_role(discord_id, 'downloader')
     print(f"Demoted user '{discord_id}' ({existing.username}) to downloader.")
     return 0
-
-
-def main() -> None:
-    """Entry point for the ``anigamerplus-admin`` script."""
-    parser = build_parser()
-    args = parser.parse_args()
-
-    from .core import build_container
-
-    container = build_container()
-    user_repo = container.user_repo
-
-    if args.command == 'list':
-        sys.exit(cmd_list(user_repo))
-    elif args.command == 'promote':
-        sys.exit(cmd_promote(user_repo, args.discord_id))
-    elif args.command == 'demote':
-        sys.exit(cmd_demote(user_repo, args.discord_id))
-    else:
-        parser.print_help()
-        sys.exit(1)
