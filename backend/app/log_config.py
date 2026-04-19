@@ -61,6 +61,31 @@ class _DisplayFilter:
         return not (self._stdout and display is False)
 
 
+#: Logger names representing audit-level output (HTTP access, outbound
+#: requests, websocket chatter) that should NOT appear in the live panel /
+#: stdout.  Extracted as a module-level constant so ``push_parsed_entry`` can
+#: reuse it without instantiating a filter object.
+_AUDIT_LOGGER_NAMES: frozenset[str] = frozenset(
+    {
+        'uvicorn.access',
+        'httpx',
+        'httpcore',
+        'websockets.server',
+        'websockets.client',
+    }
+)
+
+#: Substrings in ``uvicorn.error`` INFO messages that represent per-connection
+#: lifecycle noise.  Extracted at module level so ``push_parsed_entry`` can
+#: reuse them without instantiating a filter object.
+_CONNECTION_LIFECYCLE_PATTERNS: tuple[str, ...] = (
+    'connection open',
+    'connection closed',
+    ' - "WebSocket ',
+    ' [accepted]',
+)
+
+
 class _AuditLoggerFilter:
     """Drop records from logger names that represent audit-level logs
     which shouldn't appear in the live log panel / stdout.
@@ -74,18 +99,8 @@ class _AuditLoggerFilter:
     wired there.
     """
 
-    _AUDIT_LOGGERS: T.ClassVar[frozenset[str]] = frozenset(
-        {
-            'uvicorn.access',
-            'httpx',
-            'httpcore',
-            'websockets.server',
-            'websockets.client',
-        }
-    )
-
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
-        return record.name not in self._AUDIT_LOGGERS
+        return record.name not in _AUDIT_LOGGER_NAMES
 
 
 class _UvicornConnectionLifecycleFilter:
@@ -96,20 +111,13 @@ class _UvicornConnectionLifecycleFilter:
     without carrying actionable info.
     """
 
-    _NOISY_PATTERNS: T.ClassVar[tuple[str, ...]] = (
-        'connection open',
-        'connection closed',
-        ' - "WebSocket ',
-        ' [accepted]',
-    )
-
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
         if record.name != 'uvicorn.error':
             return True
         if record.levelno > logging.INFO:  # WARNING / ERROR / CRITICAL always pass
             return True
         message = record.getMessage()
-        return all(pattern not in message for pattern in self._NOISY_PATTERNS)
+        return all(pattern not in message for pattern in _CONNECTION_LIFECYCLE_PATTERNS)
 
 
 def _safe_put_nowait(q: asyncio.Queue[T.Any], item: T.Any) -> None:
@@ -228,10 +236,28 @@ class RingBufferHandler(logging.Handler):
     def push_parsed_entry(self, entry: dict[str, T.Any]) -> None:
         """Inject an already-parsed entry (e.g. from :class:`LogFileTailer`).
 
+        Apply the same audit filtering that the ``emit()`` path enforces via
+        the logging filter chain — tailed entries that originated in another
+        process bypass the Python filter machinery, so we replicate the rules
+        here.  Filtering is done before the dedup check so we do not waste
+        ``_recent_keys`` slots on entries we are about to discard anyway.
+
         The entry is silently dropped when its key matches a recently emitted
         record (dedup against API-process-own logs).  Otherwise it is appended
         to the ring buffer and fan-out to all subscribers.
         """
+        # --- Audit filter (mirrors _AuditLoggerFilter) ---
+        name = str(entry.get('name', ''))
+        if name in _AUDIT_LOGGER_NAMES:
+            return
+        # --- Connection lifecycle filter (mirrors _UvicornConnectionLifecycleFilter) ---
+        if name == 'uvicorn.error':
+            level = str(entry.get('level', ''))
+            if level.upper() == 'INFO':
+                message = str(entry.get('message', ''))
+                if any(p in message for p in _CONNECTION_LIFECYCLE_PATTERNS):
+                    return
+
         key = self._key_of(entry)
         with self._lock:
             if key in self._recent_keys:
@@ -718,6 +744,8 @@ class LogFileTailer:
 __all__ = [
     'LOG_FORMAT',
     'DATE_FORMAT',
+    '_AUDIT_LOGGER_NAMES',
+    '_CONNECTION_LIFECYCLE_PATTERNS',
     'RingBufferHandler',
     'get_ring_buffer_handler',
     'LogFileTailer',
