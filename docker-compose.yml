@@ -7,31 +7,32 @@ services:
       target: backend
     image: anigamerplus-backend:latest
     container_name: anigamerplus-scheduler
-    command: ["uv", "run", "anigamerplus-scheduler"]
+    command: [ "uv", "run", "anigamerplus-scheduler" ]
     environment:
-      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET must be set in .env}
+      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET
+        must be set in .env}
     volumes:
       - ./downloads:/app/bangumi
       - ./config.json:/app/config.json
       - ./aniGamer.db:/app/aniGamer.db
     restart: unless-stopped
-    networks: [internal]
+    networks: [ internal ]
 
   api:
     image: anigamerplus-backend:latest
     container_name: anigamerplus-api
-    depends_on: [scheduler]
-    command: ["uv", "run", "anigamerplus-api"]
+    depends_on: [ scheduler ]
+    command: [ "uv", "run", "anigamerplus-api" ]
     environment:
       - ANIGAMERPLUS_SCHEDULER_URL=http://scheduler:5001
-      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET must be set in .env}
-      - ANIGAMERPLUS_DISABLE_SCHEDULER=1
+      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET
+        must be set in .env}
     volumes:
       - ./downloads:/app/bangumi
       - ./config.json:/app/config.json
       - ./aniGamer.db:/app/aniGamer.db
     restart: unless-stopped
-    networks: [internal]
+    networks: [ internal ]
 
   web:
     build:
@@ -39,11 +40,11 @@ services:
       target: frontend
     image: anigamerplus-web:latest
     container_name: anigamerplus-web
-    depends_on: [api]
+    depends_on: [ api ]
     ports:
       - "${WEB_PORT:-8080}:80"
     restart: unless-stopped
-    networks: [internal]
+    networks: [ internal ]
 
 networks:
   internal:
