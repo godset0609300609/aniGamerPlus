@@ -105,6 +105,7 @@ class UpdateLoop:
             display=False,
         )
 
+        newly_added = 0
         sn_items = list(sn_dict.items())
         for idx, (sn, info) in enumerate(sn_items):
             # (A) Log "正在檢查 {name}" BEFORE fetching — use the cached name
@@ -190,6 +191,7 @@ class UpdateLoop:
                     target_sn,
                     self._make_task_info(target_sn, info, mode),
                 )
+                newly_added += 1
                 self._logger.info(
                     target_sn,
                     '偵測新集數',
@@ -209,6 +211,13 @@ class UpdateLoop:
             is_last = idx == len(sn_items) - 1
             if not is_last and self._parse_cooldown is not None:
                 self._parse_cooldown.wait()
+
+        self._logger.info(
+            None,
+            '更新資訊',
+            f'本次更新添加了 {newly_added} 個新任務, 目前佇列中共有 {self._queue.size()} 個任務',
+            display=False,
+        )
 
     def run_forever(self) -> None:
         """Main loop. Returns only if :meth:`stop` is called."""
