@@ -24,7 +24,7 @@ class HealthService:
     def __init__(self, paths: WorkspacePaths) -> None:
         self._paths = paths
 
-    def snapshot(self) -> Health:
+    async def snapshot(self) -> Health:
         # The legacy ``aniGamerPlus_version`` key lived in ``config.json``;
         # the new :class:`AppSettings` schema drops it. We still surface the
         # workspace root via ``working_dir`` so ops can confirm the service
@@ -57,7 +57,7 @@ async def health(
     Returns the overall service health including the scheduler subprocess
     status fetched from ``/internal/health`` via the proxy.
     """
-    base = service.snapshot()
+    base = await service.snapshot()
 
     # Attempt to fetch scheduler health via the proxy stored in app state.
     # main.py's lifespan sets ``app.state.scheduler_proxy`` when a proxy is wired.

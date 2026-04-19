@@ -16,6 +16,7 @@ import collections.abc
 import secrets
 import typing as T
 
+import anyio.to_thread
 import fastapi
 import httpx
 
@@ -142,12 +143,11 @@ async def callback(
     role: str | None = 'admin' if discord_id in bootstrap_ids else None
 
     # Upsert — preserves existing role unless we're setting one explicitly.
-    user_repo.upsert(
-        id=discord_id,
-        username=username,
-        avatar_url=avatar_url,
-        role=role,
-    )
+    _did = discord_id
+    _un = username
+    _av = avatar_url
+    _ro = role
+    await anyio.to_thread.run_sync(lambda: user_repo.upsert(id=_did, username=_un, avatar_url=_av, role=_ro))
 
     # Set the session.
     request.session['user_id'] = discord_id
@@ -192,7 +192,8 @@ async def me(
             status_code=fastapi.status.HTTP_401_UNAUTHORIZED,
             detail='Authentication required',
         )
-    user = user_repo.get(user_id)
+    uid = user_id
+    user = await anyio.to_thread.run_sync(lambda: user_repo.get(uid))
     if user is None:
         raise fastapi.HTTPException(
             status_code=fastapi.status.HTTP_401_UNAUTHORIZED,

@@ -31,7 +31,7 @@ async def get_anime_list(
     user: T.Annotated[UserRow, fastapi.Depends(require_any_user)],
     service: T.Annotated[AnimeListService, fastapi.Depends(get_animelist_service)],
 ) -> AnimeListPayload:
-    return AnimeListPayload(entries=service.list_entries(user))
+    return AnimeListPayload(entries=await service.list_entries(user))
 
 
 @router.put('/anime-list', response_model=SimpleStatus)
@@ -40,5 +40,5 @@ async def put_anime_list(
     user: T.Annotated[UserRow, fastapi.Depends(require_any_user)],
     service: T.Annotated[AnimeListService, fastapi.Depends(get_animelist_service)],
 ) -> SimpleStatus:
-    service.replace_entries(user, payload.entries)
+    await service.replace_entries(user, payload.entries)
     return SimpleStatus()

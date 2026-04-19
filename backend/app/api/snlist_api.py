@@ -20,7 +20,7 @@ async def get_sn_list(
     _: T.Annotated[UserRow, fastapi.Depends(require_admin_user)],
     service: T.Annotated[SnListService, fastapi.Depends(get_snlist_service)],
 ) -> str:
-    return service.read()
+    return await service.read()
 
 
 @router.put('/sn_list', response_model=SimpleStatus)
@@ -30,5 +30,5 @@ async def put_sn_list(
     service: T.Annotated[SnListService, fastapi.Depends(get_snlist_service)],
 ) -> SimpleStatus:
     body = (await request.body()).decode('utf-8')
-    service.write(body)
+    await service.write(body)
     return SimpleStatus()

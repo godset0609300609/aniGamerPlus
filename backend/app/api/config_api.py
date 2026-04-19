@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typing as T
 
+import anyio.to_thread
 import fastapi
 
 from ..models import ConfigSchema, CookieUpdateRequest, SimpleStatus, WebSettings
@@ -36,7 +37,7 @@ async def read_config(
     _: T.Annotated[UserRow, fastapi.Depends(require_any_user)],
     service: T.Annotated[ConfigService, fastapi.Depends(get_config_service)],
 ) -> WebSettings:
-    return service.read()
+    return await service.read()
 
 
 @router.put('/config', response_model=SimpleStatus)
@@ -45,7 +46,7 @@ async def write_config(
     _: T.Annotated[UserRow, fastapi.Depends(require_admin_user)],
     service: T.Annotated[ConfigService, fastapi.Depends(get_config_service)],
 ) -> SimpleStatus:
-    service.write(payload)
+    await service.write(payload)
     return SimpleStatus()
 
 
@@ -56,7 +57,8 @@ async def put_cookie(
     repo: T.Annotated[CookieRepository, fastapi.Depends(get_cookie_repo)],
 ) -> SimpleStatus:
     """Set the Bahamut cookie string.  Admin only.  Never returned back."""
-    repo.write(payload.cookie)
+    cookie = payload.cookie
+    await anyio.to_thread.run_sync(lambda: repo.write(cookie))
     return SimpleStatus()
 
 
@@ -66,4 +68,5 @@ async def cookie_status(
     repo: T.Annotated[CookieRepository, fastapi.Depends(get_cookie_repo)],
 ) -> dict[str, bool]:
     """Return whether a cookie is currently configured (true/false only)."""
-    return {'configured': repo.exists_and_nonempty()}
+    configured = await anyio.to_thread.run_sync(repo.exists_and_nonempty)
+    return {'configured': configured}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typing as T
 
+import anyio.to_thread
 import fastapi
 
 from ..models import ManualTaskRequest, SimpleStatus, TaskHistoryEntryOut
@@ -68,7 +69,9 @@ async def task_history(
     * downloader: sees only their own history.
     """
     user_filter: str | None = None if user.role == 'admin' else user.id
-    entries = history_repo.list_recent(days=days, user_id=user_filter)
+    d = days
+    u = user_filter
+    entries = await anyio.to_thread.run_sync(lambda: history_repo.list_recent(days=d, user_id=u))
     return [_entry_to_out(e) for e in entries]
 
 
