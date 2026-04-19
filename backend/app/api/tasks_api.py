@@ -1,0 +1,88 @@
+"""Manual download task endpoint and task history endpoint."""
+
+from __future__ import annotations
+
+import typing as T
+
+import fastapi
+
+from ..models import ManualTaskRequest, SimpleStatus, TaskHistoryEntryOut
+from ..persistence.task_history_repo import TaskHistoryEntry, TaskHistoryRepository
+from ..persistence.user_repo import UserRow
+from ..services.task_service import TaskService, get_task_service
+from .deps import require_any_user
+
+router = fastapi.APIRouter(tags=['tasks'])
+
+
+# ---------------------------------------------------------------------------
+# TaskHistoryRepository dependency
+# ---------------------------------------------------------------------------
+
+
+def _get_task_history_repo() -> TaskHistoryRepository:
+    from ..core import build_container
+
+    return build_container().task_history_repo
+
+
+get_task_history_repo: T.Callable[[], TaskHistoryRepository] = _get_task_history_repo
+
+
+def _entry_to_out(entry: TaskHistoryEntry) -> TaskHistoryEntryOut:
+    """Convert a repo :class:`TaskHistoryEntry` to the API output model."""
+    return TaskHistoryEntryOut(
+        id=entry.id,
+        sn=entry.sn,
+        filename=entry.filename,
+        bangumi_name=entry.bangumi_name,
+        episode=entry.episode,
+        resolution=entry.resolution,
+        final_status=entry.final_status,
+        retries=entry.retries,
+        started_at=entry.started_at.isoformat() if entry.started_at is not None else None,
+        finished_at=entry.finished_at.isoformat() if entry.finished_at is not None else '',
+        owner_id=entry.owner_id,
+    )
+
+
+@router.post('/tasks/manual', response_model=SimpleStatus)
+async def manual_task(
+    payload: ManualTaskRequest,
+    user: T.Annotated[UserRow, fastapi.Depends(require_any_user)],
+    service: T.Annotated[TaskService, fastapi.Depends(get_task_service)],
+) -> SimpleStatus:
+    await service.enqueue(payload, user)
+    return SimpleStatus()
+
+
+@router.get('/tasks/history', response_model=list[TaskHistoryEntryOut])
+async def task_history(
+    user: T.Annotated[UserRow, fastapi.Depends(require_any_user)],
+    history_repo: T.Annotated[TaskHistoryRepository, fastapi.Depends(get_task_history_repo)],
+    days: int = fastapi.Query(default=7, ge=1, le=90, description='Days to look back'),
+) -> list[TaskHistoryEntryOut]:
+    """Return task history from the DB for the last ``days`` days.
+
+    * admin: sees all users' history.
+    * downloader: sees only their own history.
+    """
+    user_filter: str | None = None if user.role == 'admin' else user.id
+    entries = history_repo.list_recent(days=days, user_id=user_filter)
+    return [_entry_to_out(e) for e in entries]
+
+
+@router.delete('/tasks/{sn}')
+async def cancel_task(
+    sn: int,
+    user: T.Annotated[UserRow, fastapi.Depends(require_any_user)],
+    service: T.Annotated[TaskService, fastapi.Depends(get_task_service)],
+) -> dict[str, str]:
+    """Cancel a running/queued task.
+
+    Downloader role can only cancel their own tasks; admin can cancel any.
+    Returns 404 if the task is not visible to the caller.
+    Returns 503 if the scheduler is unreachable.
+    """
+    await service.cancel_task(sn, user)
+    return {'status': 'ok'}
