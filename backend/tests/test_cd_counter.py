@@ -420,3 +420,230 @@ def test_wait_second_caller_does_not_flip_status_until_lock_acquired(
     assert b_status_while_a_sleeps == ['正在解析'], (
         f"Expected B status to be '正在解析' while A holds the lock, got {b_status_while_a_sleeps!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Mutation-kill tests — added to achieve full-kill on cd_counter.py
+# ---------------------------------------------------------------------------
+
+
+def test_default_label_is_exact_string(tmp_path: pathlib.Path) -> None:
+    """Default label must be exactly '下載冷卻', not any other string.
+
+    Kills: __init__ mutmut_1 (label = 'XX下載冷卻XX').
+    """
+    cooldown = DownloadCooldown(5, _logger(tmp_path))
+    assert cooldown._label == '下載冷卻'
+
+
+def test_sleep_callable_is_set_on_init(tmp_path: pathlib.Path) -> None:
+    """_sleep must be set to time.sleep (callable) after __init__, not None.
+
+    Kills: __init__ mutmut_12 (_sleep = None).
+    """
+    import time as _time
+
+    cooldown = DownloadCooldown(5, _logger(tmp_path))
+    # Must be a callable — calling it must not raise AttributeError
+    assert callable(cooldown._sleep)
+    # Must be the real time.sleep (or injected via _set_sleep)
+    assert cooldown._sleep is _time.sleep
+
+
+def test_wait_display_false_on_log(tmp_path: pathlib.Path) -> None:
+    """wait() must log with display=False (not True or None).
+
+    Kills: wait mutmut_7 (display=None), mutmut_11 (removed), mutmut_12 (display=True).
+    """
+    log_calls: list[dict] = []
+
+    class _SpyLogger:
+        def info(self, sn: object, tag: str, msg: str, *, display: bool = True, **kw: object) -> None:
+            log_calls.append({'tag': tag, 'display': display})
+
+    cooldown = DownloadCooldown(3, _SpyLogger(), label='测试冷卻')  # type: ignore[arg-type]
+    cooldown._set_sleep(lambda _: None)
+    cooldown.wait()
+
+    assert log_calls, 'wait() must emit at least one log'
+    # All log emissions from wait() must use display=False (background log, not UI toast)
+    for call in log_calls:
+        assert call['display'] is False, (
+            f"wait() logged with display={call['display']!r}, expected False"
+        )
+
+
+def test_wait_progress_bus_requires_both_bus_and_sn(tmp_path: pathlib.Path) -> None:
+    """progress_bus + sn guard must use AND, not OR.
+
+    Kills: wait mutmut_13 (and → or in 'if progress_bus is not None and sn is not None').
+
+    When only sn is provided (no progress_bus), calling set_cooldown would AttributeError;
+    the guard must short-circuit on progress_bus=None.
+    """
+    from app.downloader.progress import ProgressBus
+
+    bus = ProgressBus()
+    bus.start(42, 'ep42.mp4')
+
+    cooldown, slept_for = _fake_cooldown(tmp_path, 2)
+
+    # With progress_bus=None and a valid sn — must NOT try to call set_cooldown.
+    # If the guard were `or`, it would try bus.set_cooldown with bus=None → AttributeError.
+    cooldown.wait(progress_bus=None, sn=42)  # should not raise
+    assert slept_for == [2.0]
+
+    # With a valid bus and sn=None — must NOT try to call set_cooldown.
+    slept_for.clear()
+    cooldown.wait(progress_bus=bus, sn=None)  # should not raise
+    assert slept_for == [2.0]
+
+
+def test_wait_update_status_passes_sn_not_none(tmp_path: pathlib.Path) -> None:
+    """update_status must be called with the real sn, not None.
+
+    Kills: wait mutmut_17 (update_status(None, status_during)).
+    """
+    from app.downloader.progress import ProgressBus
+
+    bus = ProgressBus()
+    bus.start(50, 'ep50.mp4', status='正在解析')
+
+    update_calls: list[tuple[int | None, str]] = []
+    _orig_update = bus.update_status
+
+    def _spy(sn: int | None, status: str) -> None:
+        update_calls.append((sn, status))
+        if sn is not None:
+            _orig_update(sn, status)
+
+    bus.update_status = _spy  # type: ignore[method-assign]
+
+    cooldown, _ = _fake_cooldown(tmp_path, 1)
+    cooldown.wait(progress_bus=bus, sn=50, status_during='下載冷卻')
+
+    assert len(update_calls) == 1
+    called_sn, called_status = update_calls[0]
+    assert called_sn == 50, f'update_status sn must be 50, got {called_sn!r}'
+    assert called_status == '下載冷卻'
+
+
+def test_wait_finally_clear_requires_both_bus_and_sn(tmp_path: pathlib.Path) -> None:
+    """clear_cooldown guard in the finally block must use AND, not OR.
+
+    Kills: wait mutmut_26 (and → or in 'if progress_bus is not None and sn is not None').
+
+    When progress_bus=None + valid sn, using OR would cause clear_cooldown call on None.
+    """
+    # progress_bus=None, valid sn — if guard is OR, clear_cooldown(42) on None raises
+    cooldown, _ = _fake_cooldown(tmp_path, 1)
+    cooldown.wait(progress_bus=None, sn=42)  # must not raise
+
+    # valid bus, sn=None — if guard is OR, clear_cooldown(None) would be wrong
+    from app.downloader.progress import ProgressBus
+
+    bus = ProgressBus()
+    bus.start(43, 'ep43.mp4')
+    clear_calls: list[int | None] = []
+    _orig_clear = bus.clear_cooldown
+
+    def _spy_clear(sn: int) -> None:
+        clear_calls.append(sn)
+        _orig_clear(sn)
+
+    bus.clear_cooldown = _spy_clear  # type: ignore[method-assign]
+    cooldown.wait(progress_bus=bus, sn=None)
+    # clear_cooldown must NOT have been called when sn=None
+    assert clear_calls == [], f'clear_cooldown must not fire when sn=None, got {clear_calls!r}'
+
+
+def test_schedule_release_skips_sleep_when_zero_seconds(tmp_path: pathlib.Path) -> None:
+    """When seconds == 0, schedule_release must NOT call sleep at all.
+
+    Kills: schedule_release mutmut_1 (> 0 → >= 0) and mutmut_2 (> 0 → > 1).
+    Both mutants would cause sleep(0) to be called when seconds == 0.
+    """
+    slept_for: list[float] = []
+    done = threading.Event()
+
+    cooldown = DownloadCooldown(0, _logger(tmp_path))
+    cooldown._set_sleep(lambda s: slept_for.append(s))
+    cooldown.schedule_release(done.set)
+
+    assert done.wait(timeout=2)
+    assert slept_for == [], (
+        f'schedule_release must not sleep when seconds == 0, but slept_for = {slept_for!r}'
+    )
+
+
+def test_schedule_release_sleeps_exactly_configured_seconds(tmp_path: pathlib.Path) -> None:
+    """schedule_release must sleep exactly the configured seconds (not 0 when seconds == 2).
+
+    Kills: schedule_release mutmut_2 (> 0 → > 1): with seconds=2 this mutant still sleeps,
+    so this test is a belt-and-suspenders kill confirming the boundary at 1.
+    """
+    slept_for: list[float] = []
+    done = threading.Event()
+
+    cooldown = DownloadCooldown(1, _logger(tmp_path))
+    cooldown._set_sleep(lambda s: slept_for.append(s))
+    cooldown.schedule_release(done.set)
+
+    assert done.wait(timeout=2)
+    assert slept_for == [1.0], (
+        f'schedule_release must sleep 1.0 s when seconds == 1, got {slept_for!r}'
+    )
+
+
+def test_schedule_release_error_log_uses_label_and_message_and_display_false(
+    tmp_path: pathlib.Path,
+) -> None:
+    """When the release callback raises, schedule_release must log the error with:
+    - sn = None
+    - tag = self._label
+    - detail containing 'release callback failed'
+    - display = False
+
+    Kills: schedule_release mutmut_4 (label → None), mutmut_5 (message → None),
+    mutmut_6 (display=False → None), mutmut_7 (removed sn arg), mutmut_8 (removed label),
+    mutmut_9 (removed message), mutmut_10 (removed display=), mutmut_11 (display=True).
+    """
+    error_calls: list[dict] = []
+
+    class _SpyLogger:
+        def error(
+            self,
+            sn: object,
+            tag: str,
+            detail: str = '',
+            *,
+            display: bool = True,
+            **kw: object,
+        ) -> None:
+            error_calls.append({'sn': sn, 'tag': tag, 'detail': detail, 'display': display})
+
+    cooldown = DownloadCooldown(0, _SpyLogger(), label='error_label')  # type: ignore[arg-type]
+
+    bomb = RuntimeError('test-bomb')
+    done = threading.Event()
+
+    def _raising_cb() -> None:
+        done.set()
+        raise bomb
+
+    cooldown.schedule_release(_raising_cb)
+    assert done.wait(timeout=2)
+    # Give the thread time to reach the except block
+    import time
+    time.sleep(0.05)
+
+    assert len(error_calls) == 1, f'Expected 1 error log, got {error_calls!r}'
+    call = error_calls[0]
+    assert call['sn'] is None, f"sn must be None, got {call['sn']!r}"
+    assert call['tag'] == 'error_label', f"tag must be 'error_label', got {call['tag']!r}"
+    assert 'release callback failed' in call['detail'], (
+        f"detail must mention 'release callback failed', got {call['detail']!r}"
+    )
+    assert call['display'] is False, (
+        f"display must be False (background log), got {call['display']!r}"
+    )

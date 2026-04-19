@@ -14,7 +14,8 @@
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
     "e2e": "playwright test",
-    "e2e:ui": "playwright test --ui"
+    "e2e:ui": "playwright test --ui",
+    "mutation": "stryker run"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
@@ -24,6 +25,9 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/typescript-checker": "^9.6.1",
+    "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/node": "^22.9.0",
     "@vitejs/plugin-vue": "^5.2.0",
     "@vitest/coverage-v8": "^2.1.9",
