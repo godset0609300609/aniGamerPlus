@@ -141,7 +141,7 @@ class SchedulerProxy:
                 # traceback, keep retrying.
                 delay = _BACKOFF_SEQUENCE[min(attempt, len(_BACKOFF_SEQUENCE) - 1)]
                 delay = min(delay, _BACKOFF_CAP)
-                self._logger.info(
+                self._logger.error(
                     'SchedulerProxy WS disconnected (retry in %.0fs): %s',
                     delay,
                     type(exc).__name__,

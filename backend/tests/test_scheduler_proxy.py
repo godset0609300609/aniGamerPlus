@@ -521,7 +521,7 @@ def _run_proxy_subscription_once(
 ) -> tuple[list[logging.LogRecord], list[logging.LogRecord]]:
     """Run ``run_progress_subscription`` for one iteration with a custom handler.
 
-    Returns ``(info_records, warning_records)`` captured by a dedicated
+    Returns ``(error_records, warning_records)`` captured by a dedicated
     ``logging.Handler`` installed directly on the proxy's logger — this
     approach is resilient to ``propagate=False`` or suite-level level mutations
     that can cause ``caplog`` to see an empty record list.
@@ -562,9 +562,9 @@ def _run_proxy_subscription_once(
     asyncio.run(_run())
 
     proxy._logger.removeHandler(handler)
-    info_records = [r for r in captured if r.levelno == _logging.INFO and 'disconnected' in r.getMessage()]
+    error_records = [r for r in captured if r.levelno == _logging.ERROR and 'disconnected' in r.getMessage()]
     warning_records = [r for r in captured if r.levelno == _logging.WARNING and 'disconnected' in r.getMessage()]
-    return info_records, warning_records
+    return error_records, warning_records
 
 
 @pytest.mark.parametrize(
@@ -584,43 +584,43 @@ def _run_proxy_subscription_once(
         'TimeoutError',
     ],
 )
-def test_known_disconnect_exceptions_log_info_and_retry(
+def test_known_disconnect_exceptions_log_error_and_retry(
     proxy: SchedulerProxy,
     exc_factory: object,
 ) -> None:
     """Each exception in the widened 'known disconnect' list must be caught with
-    INFO-level logging (no traceback bubble) and trigger a retry."""
-    info_records, _warn = _run_proxy_subscription_once(proxy, exc_factory)
-    assert info_records, f'Expected INFO reconnect log for {exc_factory}; got nothing'
-    for rec in info_records:
-        assert rec.exc_info is None, f'Expected no exc_info on INFO record: {rec}'
+    ERROR-level logging (no traceback bubble) and trigger a retry."""
+    error_records, _warn = _run_proxy_subscription_once(proxy, exc_factory)
+    assert error_records, f'Expected ERROR reconnect log for {exc_factory}; got nothing'
+    for rec in error_records:
+        assert rec.exc_info is None, f'Expected no exc_info on ERROR record: {rec}'
 
 
-def test_websocket_connection_closed_logs_info_no_traceback(proxy: SchedulerProxy) -> None:
+def test_websocket_connection_closed_logs_error_no_traceback(proxy: SchedulerProxy) -> None:
     """websockets.exceptions.ConnectionClosed must be treated as a known
-    disconnect: INFO log, no traceback, retry continues."""
+    disconnect: ERROR log, no traceback, retry continues."""
     import websockets.exceptions
 
     class _FakeConnClosed(websockets.exceptions.ConnectionClosed):
         def __init__(self) -> None:
             super().__init__(None, None)  # type: ignore[arg-type]
 
-    info_records, _warn = _run_proxy_subscription_once(proxy, _FakeConnClosed)
-    assert info_records, f'Expected INFO reconnect log for ConnectionClosed; got nothing'
-    for rec in info_records:
+    error_records, _warn = _run_proxy_subscription_once(proxy, _FakeConnClosed)
+    assert error_records, f'Expected ERROR reconnect log for ConnectionClosed; got nothing'
+    for rec in error_records:
         assert rec.exc_info is None
 
 
-def test_websocket_exception_logs_info_no_traceback(proxy: SchedulerProxy) -> None:
+def test_websocket_exception_logs_error_no_traceback(proxy: SchedulerProxy) -> None:
     """websockets.exceptions.WebSocketException (base) must be treated as known disconnect."""
     import websockets.exceptions
 
-    info_records, _warn = _run_proxy_subscription_once(
+    error_records, _warn = _run_proxy_subscription_once(
         proxy,
         lambda: websockets.exceptions.WebSocketException('generic ws error'),
     )
-    assert info_records, 'Expected INFO reconnect log for WebSocketException; got nothing'
-    for rec in info_records:
+    assert error_records, 'Expected ERROR reconnect log for WebSocketException; got nothing'
+    for rec in error_records:
         assert rec.exc_info is None
 
 
