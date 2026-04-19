@@ -518,6 +518,92 @@ def _clean_test_loggers() -> None:  # type: ignore[return]
         lgr.setLevel(logging.NOTSET)
 
 
+# ---------------------------------------------------------------------------
+# push_parsed_entry audit filtering (cross-process tailer bypass fix)
+# ---------------------------------------------------------------------------
+
+
+def _make_entry(
+    name: str = 'app.main',
+    level: str = 'INFO',
+    message: str = 'hello',
+) -> dict:  # type: ignore[type-arg]
+    return {
+        'timestamp': '2026-04-19T12:00:00+00:00',
+        'level': level,
+        'name': name,
+        'message': message,
+        'sn': None,
+    }
+
+
+@pytest.mark.parametrize(
+    'logger_name',
+    ['uvicorn.access', 'httpx', 'httpcore', 'websockets.server', 'websockets.client'],
+)
+def test_push_parsed_entry_drops_audit_logger_names(
+    _reset_ring_buffer_singleton: None,
+    logger_name: str,
+) -> None:
+    """push_parsed_entry must silently drop entries whose name is in the audit blocklist."""
+    handler = _lc.get_ring_buffer_handler()
+    handler.push_parsed_entry(_make_entry(name=logger_name, message='audit-noise'))
+    snap = handler.snapshot()
+    assert not any(e['name'] == logger_name for e in snap), (
+        f'{logger_name} entry must be dropped by push_parsed_entry audit filter'
+    )
+
+
+def test_push_parsed_entry_drops_uvicorn_error_connection_open(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """push_parsed_entry must drop uvicorn.error INFO entries matching lifecycle patterns."""
+    handler = _lc.get_ring_buffer_handler()
+    handler.push_parsed_entry(_make_entry(name='uvicorn.error', level='INFO', message='connection open'))
+    snap = handler.snapshot()
+    assert not any('connection open' in e['message'] for e in snap), (
+        'uvicorn.error INFO connection-lifecycle entry must be dropped by push_parsed_entry'
+    )
+
+
+def test_push_parsed_entry_allows_uvicorn_error_real_error(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """push_parsed_entry must keep uvicorn.error ERROR entries even if message matches a lifecycle pattern."""
+    handler = _lc.get_ring_buffer_handler()
+    handler.push_parsed_entry(_make_entry(name='uvicorn.error', level='ERROR', message='connection open'))
+    snap = handler.snapshot()
+    assert any('connection open' in e['message'] for e in snap), (
+        'uvicorn.error ERROR entries must not be filtered by push_parsed_entry'
+    )
+
+
+def test_push_parsed_entry_allows_app_main(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """push_parsed_entry must keep normal app.main entries."""
+    handler = _lc.get_ring_buffer_handler()
+    handler.push_parsed_entry(_make_entry(name='app.main', message='test-tag'))
+    snap = handler.snapshot()
+    assert any(e['message'] == 'test-tag' for e in snap), (
+        'app.main entries must pass push_parsed_entry audit filter'
+    )
+
+
+def test_push_parsed_entry_dedup_still_works(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """Pushing the same app.main entry twice must produce only one entry in the snapshot."""
+    handler = _lc.get_ring_buffer_handler()
+    entry = _make_entry(name='app.main', message='dedup-check')
+    handler.push_parsed_entry(entry)
+    handler.push_parsed_entry(entry)
+    snap = handler.snapshot()
+    assert sum(1 for e in snap if e['message'] == 'dedup-check') == 1, (
+        'duplicate entry via push_parsed_entry must be deduplicated'
+    )
+
+
 def test_file_handler_still_sees_httpx(
     _reset_ring_buffer_singleton: None,
     _clean_test_loggers: None,
