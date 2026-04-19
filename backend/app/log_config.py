@@ -66,15 +66,50 @@ class _AuditLoggerFilter:
     which shouldn't appear in the live log panel / stdout.
 
     ``uvicorn.access`` emits one line per HTTP request
-    (``GET /api/health HTTP/1.1 200``) — useful for file-based auditing but
-    too noisy for the real-time log panel.  Records are still written to the
-    daily file handler because this filter is NOT wired there.
+    (``GET /api/health HTTP/1.1 200``), ``httpx`` / ``httpcore`` emit one line
+    per outbound request (health polling causes 2 per 10 s), and
+    ``websockets.*`` produce per-connection chatter — all useful for
+    file-based auditing but too noisy for the real-time log panel.  Records
+    are still written to the daily file handler because this filter is NOT
+    wired there.
     """
 
-    _AUDIT_LOGGERS: T.ClassVar[frozenset[str]] = frozenset({'uvicorn.access'})
+    _AUDIT_LOGGERS: T.ClassVar[frozenset[str]] = frozenset(
+        {
+            'uvicorn.access',
+            'httpx',
+            'httpcore',
+            'websockets.server',
+            'websockets.client',
+        }
+    )
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
         return record.name not in self._AUDIT_LOGGERS
+
+
+class _UvicornConnectionLifecycleFilter:
+    """Drop uvicorn.error INFO records describing per-connection lifecycle.
+
+    Real errors (ERROR/WARNING/CRITICAL) pass through. The patterns cover
+    HTTP/WS connection accept / open / close noise that pollutes the panel
+    without carrying actionable info.
+    """
+
+    _NOISY_PATTERNS: T.ClassVar[tuple[str, ...]] = (
+        'connection open',
+        'connection closed',
+        ' - "WebSocket ',
+        ' [accepted]',
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
+        if record.name != 'uvicorn.error':
+            return True
+        if record.levelno > logging.INFO:  # WARNING / ERROR / CRITICAL always pass
+            return True
+        message = record.getMessage()
+        return all(pattern not in message for pattern in self._NOISY_PATTERNS)
 
 
 def _safe_put_nowait(q: asyncio.Queue[T.Any], item: T.Any) -> None:
@@ -448,9 +483,9 @@ def build_log_config(
             'formatter': 'rich',
             # Rich handles its own coloring; the filter tree still honours
             # ``display=False`` so file-only records don't surface in the
-            # terminal.  audit_logger drops uvicorn.access HTTP lines from
-            # the live terminal too (they're persisted to the file handler).
-            'filters': ['stdout_display', 'audit_logger'],
+            # terminal.  audit_logger drops HTTP audit lines; the connection
+            # noise filter drops uvicorn.error per-connection chatter.
+            'filters': ['stdout_display', 'audit_logger', 'uvicorn_connection_noise'],
             'rich_tracebacks': True,
             'show_path': False,
             'show_time': True,
@@ -465,7 +500,7 @@ def build_log_config(
         'ring_buffer': {
             '()': f'{__name__}.get_ring_buffer_handler',
             'level': 'INFO',
-            'filters': ['audit_logger'],
+            'filters': ['audit_logger', 'uvicorn_connection_noise'],
         },
     }
     if save_logs:
@@ -510,11 +545,18 @@ def build_log_config(
                 '()': f'{__name__}._DisplayFilter',
                 'stdout': False,
             },
-            # Drops uvicorn.access (HTTP audit lines) from the live panel +
-            # stdout.  NOT wired to the file handler so audit logs are still
-            # persisted to the daily log file.
+            # Drops uvicorn.access / httpx / httpcore / websockets.* (HTTP and
+            # outbound-request audit lines) from the live panel + stdout.  NOT
+            # wired to the file handler so audit logs are still persisted to
+            # the daily log file.
             'audit_logger': {
                 '()': f'{__name__}._AuditLoggerFilter',
+            },
+            # Drops uvicorn.error INFO lines that describe per-connection
+            # lifecycle (open/close/WebSocket accepted).  Real errors and
+            # warnings always pass through.
+            'uvicorn_connection_noise': {
+                '()': f'{__name__}._UvicornConnectionLifecycleFilter',
             },
         },
         'handlers': handlers,
@@ -680,4 +722,5 @@ __all__ = [
     'get_ring_buffer_handler',
     'LogFileTailer',
     'build_log_config',
+    'DailyLogFileHandler',
 ]
