@@ -80,6 +80,11 @@ class TaskQueue:
         with self._lock:
             return int(sn) in self._processing
 
+    def size(self) -> int:
+        """Return the number of entries currently in the queue."""
+        with self._lock:
+            return len(self._entries)
+
     # ------------------------------------------------------------------ snapshot
 
     def snapshot(self) -> dict[int, TaskInfo]:

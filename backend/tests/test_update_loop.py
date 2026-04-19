@@ -637,3 +637,75 @@ def test_check_tasks_logs_name_before_fetch(tmp_path: pathlib.Path) -> None:
     assert 'テストアニメ' in checking_events[0][1], (
         f'Expected cached name in log, got: {checking_events[0][1]!r}'
     )
+
+
+# ------------------------------------------------------------------ summary log tests
+
+
+def test_check_tasks_emits_summary_log(tmp_path: pathlib.Path) -> None:
+    """After check_tasks: 3 sns, 2 newly added (1 already in queue), summary
+    line must show '添加了 2 個新任務' and the correct total queue size."""
+    meta_by_sn = {
+        10: _meta(10),
+        20: _meta(20),
+        30: _meta(30),
+    }
+    loop, _w, queue, repo, _c, _sn, _md, _al = _build(
+        tmp_path,
+        metadata_by_sn=meta_by_sn,
+    )
+    # Pre-add sn=10 to the queue so it won't be counted as newly added.
+    from app.scheduler.queue_ import TaskInfo
+
+    queue.add(10, TaskInfo(sn=10, tag='', mode='single'))
+
+    # Capture info log calls.
+    info_messages: list[str] = []
+    original_info = loop._logger.info
+
+    def capturing_info(sn: Any, tag: str, detail: str, **kwargs: Any) -> None:
+        info_messages.append(detail)
+        original_info(sn, tag, detail, **kwargs)
+
+    loop._logger.info = capturing_info  # type: ignore[method-assign]
+
+    loop.check_tasks({
+        10: {'mode': 'single', 'tag': ''},
+        20: {'mode': 'single', 'tag': ''},
+        30: {'mode': 'single', 'tag': ''},
+    })
+
+    summary_lines = [m for m in info_messages if '本次更新添加了' in m]
+    assert summary_lines, f'Expected summary log line, got messages: {info_messages}'
+    summary = summary_lines[0]
+    assert '添加了 2 個新任務' in summary, f'Expected 2 newly added, got: {summary!r}'
+    total = queue.size()
+    assert f'共有 {total} 個任務' in summary, f'Unexpected queue total in: {summary!r}'
+
+
+def test_check_tasks_summary_when_no_new_tasks(tmp_path: pathlib.Path) -> None:
+    """When all target sns are already in queue, summary shows '添加了 0 個新任務'."""
+    meta = _meta(42)
+    loop, _w, queue, repo, _c, _sn, _md, _al = _build(
+        tmp_path,
+        metadata_by_sn={42: meta},
+    )
+    # Pre-add the sn so it is already in queue.
+    from app.scheduler.queue_ import TaskInfo
+
+    queue.add(42, TaskInfo(sn=42, tag='', mode='single'))
+
+    info_messages: list[str] = []
+    original_info = loop._logger.info
+
+    def capturing_info(sn: Any, tag: str, detail: str, **kwargs: Any) -> None:
+        info_messages.append(detail)
+        original_info(sn, tag, detail, **kwargs)
+
+    loop._logger.info = capturing_info  # type: ignore[method-assign]
+
+    loop.check_tasks({42: {'mode': 'single', 'tag': ''}})
+
+    summary_lines = [m for m in info_messages if '本次更新添加了' in m]
+    assert summary_lines, f'Expected summary log line, got messages: {info_messages}'
+    assert '添加了 0 個新任務' in summary_lines[0], f'Expected 0 newly added, got: {summary_lines[0]!r}'
