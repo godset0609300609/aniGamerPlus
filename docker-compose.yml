@@ -16,6 +16,7 @@ services:
       - ./downloads:/app/bangumi
       - ./config.json:/app/config.json
       - ./aniGamer.db:/app/aniGamer.db
+      - ./logs:/app/logs
     restart: unless-stopped
     networks: [ internal ]
 
@@ -32,6 +33,7 @@ services:
       - ./downloads:/app/bangumi
       - ./config.json:/app/config.json
       - ./aniGamer.db:/app/aniGamer.db
+      - ./logs:/app/logs
     restart: unless-stopped
     networks: [ internal ]
 
