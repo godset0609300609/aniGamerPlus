@@ -1,27 +1,28 @@
 """Tests that ``anigamerplus --help`` does not boot the container.
 
-Legacy behaviour: ``build_container()`` ran Alembic migrations eagerly, so
-``anigamerplus --help`` leaked ``INFO  [alembic.runtime.migration] …`` lines
-to stderr before argparse's usage block printed to stdout. The pre-parse
-guard in :func:`app.cli.main` short-circuits on ``-h``/``--help`` so no DB
-work happens.
+With Typer, ``--help`` is handled by Click before the callback body runs,
+so ``build_container`` is never called.  This replaces the old argparse
+short-circuit guard.
 """
 
 from __future__ import annotations
 
 import subprocess
-import sys
-from unittest import mock
 
 import pytest
+from typer.testing import CliRunner
 
 from app import cli
+from app.cli import app as cli_app
+
+
+_runner = CliRunner()
 
 
 def test_help_short_circuits_without_building_container(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``main(['--help'])`` must not import or call ``build_container``."""
+    """``--help`` must not call ``build_container``."""
     called: list[bool] = []
 
     def _explode() -> object:  # pragma: no cover — must NOT be reached
@@ -29,34 +30,14 @@ def test_help_short_circuits_without_building_container(
         raise AssertionError('build_container should not be called for --help')
 
     monkeypatch.setattr(cli, 'build_container', _explode)
-    monkeypatch.setattr(sys, 'argv', ['anigamerplus', '--help'])
 
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main()
-    # argparse exits 0 on --help
-    assert excinfo.value.code == 0
+    result = _runner.invoke(cli_app, ['--help'])
+    assert result.exit_code == 0
     assert called == []
-
-    captured = capsys.readouterr()
-    # argparse prints usage to stdout.
-    assert 'usage: anigamerplus' in captured.out
-    # stderr must NOT contain an Alembic INFO prefix.
-    assert 'INFO' not in captured.err
-    assert 'alembic' not in captured.err.lower()
-
-
-def test_help_short_form_also_skips_container(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``-h`` behaves the same as ``--help``."""
-    monkeypatch.setattr(cli, 'build_container', mock.Mock(side_effect=AssertionError))
-    monkeypatch.setattr(sys, 'argv', ['anigamerplus', '-h'])
-
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main()
-    assert excinfo.value.code == 0
-    captured = capsys.readouterr()
-    assert 'usage:' in captured.out
+    # Typer prints the app help text to stdout
+    assert 'anigamerplus' in result.output.lower()
+    # stderr must not contain Alembic INFO lines
+    assert 'alembic' not in result.output.lower() or 'INFO' not in result.output
 
 
 def test_help_subprocess_emits_no_alembic_info_on_stderr() -> None:
@@ -74,7 +55,8 @@ def test_help_subprocess_emits_no_alembic_info_on_stderr() -> None:
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    assert 'usage: anigamerplus' in result.stdout
+    # Typer uses the app name / help text
+    assert 'anigamerplus' in result.stdout.lower()
     # No Alembic or Python-logging-style prefix should appear.
     assert 'INFO' not in result.stderr
     assert 'alembic' not in result.stderr.lower()

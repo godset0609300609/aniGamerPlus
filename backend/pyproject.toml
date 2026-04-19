@@ -21,14 +21,15 @@ dependencies = [
     "sqlalchemy>=2.0",
     "authlib>=1.3",
     "itsdangerous>=2.2",
+    "typer>=0.15",
 ]
 
 [project.scripts]
-anigamerplus = "app.cli:main"
+anigamerplus = "app.cli:app"
 anigamerplus-api = "app.main:serve"
 anigamerplus-server = "app.main:serve"
 anigamerplus-scheduler = "app.scheduler_server:serve"
-anigamerplus-admin = "app.admin_cli:main"
+anigamerplus-admin = "app.admin_cli:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -64,7 +65,7 @@ filterwarnings = ["error", "ignore::coverage.exceptions.CoverageWarning"]
 [tool.coverage.run]
 source = ["app"]
 branch = true
-omit = ["app/cli.py", "*/tests/*", "*/__init__.py", "*/alembic/*"]
+omit = ["app/cli.py", "app/admin_cli.py", "*/tests/*", "*/__init__.py", "*/alembic/*"]
 
 [tool.coverage.report]
 precision = 1

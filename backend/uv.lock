@@ -36,6 +36,7 @@ dependencies = [
     { name = "requests" },
     { name = "sqlalchemy" },
     { name = "termcolor" },
+    { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -68,6 +69,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.32" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "termcolor", specifier = ">=2.5" },
+    { name = "typer", specifier = ">=0.15" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
 
