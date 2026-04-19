@@ -9,6 +9,7 @@ services:
     container_name: anigamerplus-scheduler
     command: ["scheduler"]
     environment:
+      - ANIGAMERPLUS_SCHEDULER_HOST=0.0.0.0
       - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET
         must be set in .env}
     volumes:

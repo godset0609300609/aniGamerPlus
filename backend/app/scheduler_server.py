@@ -1,7 +1,8 @@
 """Internal FastAPI server for the scheduler process.
 
-Listens on 127.0.0.1:5001 and exposes routes prefixed with /internal/*.
-All routes are protected by a shared-secret header check.
+Listens on the configured internal address (default 127.0.0.1:5001, override
+via ANIGAMERPLUS_SCHEDULER_HOST/PORT) and exposes routes prefixed with
+/internal/*.  All routes are protected by a shared-secret header check.
 
 Entry point: ``anigamerplus-scheduler``
 """
@@ -95,7 +96,11 @@ _SERVER_START_TIME: float = time.monotonic()
 
 
 def build_scheduler_app(container: Container) -> fastapi.FastAPI:
-    """Build the internal FastAPI app listening on 127.0.0.1:5001."""
+    """Build the internal FastAPI app.
+
+    Listens on the configured internal address (default 127.0.0.1:5001,
+    override via ANIGAMERPLUS_SCHEDULER_HOST/PORT).
+    """
 
     @contextlib.asynccontextmanager
     async def _lifespan(app: fastapi.FastAPI) -> collections.abc.AsyncIterator[None]:
@@ -349,10 +354,11 @@ def serve() -> None:
     logging.config.dictConfig(build_log_config(_paths, save_logs=True, quantity_of_logs=7))
     container = build_container()
     app = build_scheduler_app(container)
+    host = os.environ.get('ANIGAMERPLUS_SCHEDULER_HOST', '127.0.0.1')
     port = int(os.environ.get('ANIGAMERPLUS_SCHEDULER_PORT', '5001'))
     uvicorn.run(
         app,
-        host='127.0.0.1',
+        host=host,
         port=port,
         log_level='info',
         log_config=build_log_config(_paths, save_logs=True, quantity_of_logs=7),

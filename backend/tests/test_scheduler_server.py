@@ -511,3 +511,95 @@ def test_manual_task_post_finish_is_called_even_if_runner_raises(
     assert 777 in finish_calls, (
         f'progress_bus.finish(777) was not called after runner raised; finish_calls={finish_calls}'
     )
+
+
+# ---------------------------------------------------------------------------
+# serve() host/port env var resolution
+# ---------------------------------------------------------------------------
+
+
+def test_serve_passes_custom_host_to_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """serve() must forward ANIGAMERPLUS_SCHEDULER_HOST to uvicorn.run as host=."""
+    import types as _types
+
+    monkeypatch.setenv('ANIGAMERPLUS_SCHEDULER_HOST', '0.0.0.0')
+    monkeypatch.setenv('ANIGAMERPLUS_SCHEDULER_PORT', '5001')
+    monkeypatch.setenv('ANIGAMERPLUS_INTERNAL_SECRET', _TEST_SECRET)
+    monkeypatch.setattr(scheduler_server_module, '_RESOLVED_SECRET', None)
+
+    captured: dict[str, Any] = {}
+
+    def _fake_uvicorn_run(app: Any, **kwargs: Any) -> None:  # noqa: ARG001
+        captured.update(kwargs)
+
+    fake_container, _runner, _bus = _fake_container(_TEST_SECRET)
+
+    monkeypatch.setattr(scheduler_server_module, 'build_container', lambda: fake_container)
+    monkeypatch.setattr(scheduler_server_module.uvicorn, 'run', _fake_uvicorn_run)
+
+    # WorkspacePaths.detect() is called inside serve(); provide a minimal stub.
+    import app.persistence.paths as _paths_mod
+
+    fake_paths = _types.SimpleNamespace(logs_dir=pathlib.Path(tempfile.gettempdir()))
+    monkeypatch.setattr(_paths_mod.WorkspacePaths, 'detect', staticmethod(lambda: fake_paths))
+
+    scheduler_server_module.serve()
+
+    assert captured.get('host') == '0.0.0.0'
+
+
+def test_serve_defaults_host_to_loopback_when_env_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """serve() must default host to '127.0.0.1' when env var is not set."""
+    import types as _types
+
+    monkeypatch.delenv('ANIGAMERPLUS_SCHEDULER_HOST', raising=False)
+    monkeypatch.setenv('ANIGAMERPLUS_INTERNAL_SECRET', _TEST_SECRET)
+    monkeypatch.setattr(scheduler_server_module, '_RESOLVED_SECRET', None)
+
+    captured: dict[str, Any] = {}
+
+    def _fake_uvicorn_run(app: Any, **kwargs: Any) -> None:  # noqa: ARG001
+        captured.update(kwargs)
+
+    fake_container, _runner, _bus = _fake_container(_TEST_SECRET)
+
+    monkeypatch.setattr(scheduler_server_module, 'build_container', lambda: fake_container)
+    monkeypatch.setattr(scheduler_server_module.uvicorn, 'run', _fake_uvicorn_run)
+
+    import app.persistence.paths as _paths_mod
+
+    fake_paths = _types.SimpleNamespace(logs_dir=pathlib.Path(tempfile.gettempdir()))
+    monkeypatch.setattr(_paths_mod.WorkspacePaths, 'detect', staticmethod(lambda: fake_paths))
+
+    scheduler_server_module.serve()
+
+    assert captured.get('host') == '127.0.0.1'
+
+
+def test_serve_passes_custom_port_to_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """serve() must forward ANIGAMERPLUS_SCHEDULER_PORT to uvicorn.run as port= (int)."""
+    import types as _types
+
+    monkeypatch.delenv('ANIGAMERPLUS_SCHEDULER_HOST', raising=False)
+    monkeypatch.setenv('ANIGAMERPLUS_SCHEDULER_PORT', '9999')
+    monkeypatch.setenv('ANIGAMERPLUS_INTERNAL_SECRET', _TEST_SECRET)
+    monkeypatch.setattr(scheduler_server_module, '_RESOLVED_SECRET', None)
+
+    captured: dict[str, Any] = {}
+
+    def _fake_uvicorn_run(app: Any, **kwargs: Any) -> None:  # noqa: ARG001
+        captured.update(kwargs)
+
+    fake_container, _runner, _bus = _fake_container(_TEST_SECRET)
+
+    monkeypatch.setattr(scheduler_server_module, 'build_container', lambda: fake_container)
+    monkeypatch.setattr(scheduler_server_module.uvicorn, 'run', _fake_uvicorn_run)
+
+    import app.persistence.paths as _paths_mod
+
+    fake_paths = _types.SimpleNamespace(logs_dir=pathlib.Path(tempfile.gettempdir()))
+    monkeypatch.setattr(_paths_mod.WorkspacePaths, 'detect', staticmethod(lambda: fake_paths))
+
+    scheduler_server_module.serve()
+
+    assert captured.get('port') == 9999
