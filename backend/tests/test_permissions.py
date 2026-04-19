@@ -325,7 +325,8 @@ def test_admin_sees_all_entries(_perm_app: fastapi.FastAPI, fake_container: Any)
 # ---------------------------------------------------------------------------
 
 
-def test_downloader_sees_only_own_progress(_perm_app: fastapi.FastAPI, fake_container: Any) -> None:
+@pytest.mark.anyio
+async def test_downloader_sees_only_own_progress(_perm_app: fastapi.FastAPI, fake_container: Any) -> None:
     """Downloader's progress snapshot only contains their own tasks."""
     bus = fake_container.progress_bus
     bus.start(1001, 'task_A.mp4', owner_id=_DOWNLOADER_USER.id)
@@ -337,14 +338,14 @@ def test_downloader_sees_only_own_progress(_perm_app: fastapi.FastAPI, fake_cont
     progress_service = ProgressService(bus, fake_container.user_repo)
     _perm_app.dependency_overrides[get_progress_service] = lambda: progress_service
 
-    client = _make_client(_perm_app, _DOWNLOADER_USER)
     # We can't easily test the WS endpoint here; test the service directly.
-    snapshot = progress_service.snapshot(_DOWNLOADER_USER)
+    snapshot = await progress_service.snapshot(_DOWNLOADER_USER)
     assert '1001' in snapshot.tasks
     assert '1002' not in snapshot.tasks
 
 
-def test_admin_sees_all_progress(_perm_app: fastapi.FastAPI, fake_container: Any) -> None:
+@pytest.mark.anyio
+async def test_admin_sees_all_progress(_perm_app: fastapi.FastAPI, fake_container: Any) -> None:
     """Admin's progress snapshot contains tasks from all users."""
     bus = fake_container.progress_bus
     bus.start(2001, 'task_C.mp4', owner_id=_DOWNLOADER_USER.id)
@@ -353,6 +354,6 @@ def test_admin_sees_all_progress(_perm_app: fastapi.FastAPI, fake_container: Any
     from app.services.progress_service import ProgressService
 
     progress_service = ProgressService(bus, fake_container.user_repo)
-    snapshot = progress_service.snapshot(_ADMIN_USER)
+    snapshot = await progress_service.snapshot(_ADMIN_USER)
     assert '2001' in snapshot.tasks
     assert '2002' in snapshot.tasks

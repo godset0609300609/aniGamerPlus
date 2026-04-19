@@ -52,25 +52,28 @@ def _downloader_user(uid: str = 'svc-test-dl') -> UserRow:
 # ---------------------------------------------------------------------------
 
 
-def test_config_service_reads_whitelisted_keys(
+@pytest.mark.anyio
+async def test_config_service_reads_whitelisted_keys(
     fake_container: FakeContainer,
 ) -> None:
     service = ConfigService(fake_container.settings_repo)
-    settings = service.read()
+    settings = await service.read()
     assert isinstance(settings, WebSettings)
     assert settings.download_resolution == '1080'
     assert settings.multi_thread == 1
 
 
-def test_config_service_round_trip(fake_container: FakeContainer) -> None:
+@pytest.mark.anyio
+async def test_config_service_round_trip(fake_container: FakeContainer) -> None:
     service = ConfigService(fake_container.settings_repo)
-    new = service.read().model_copy(update={'multi_thread': 4})
-    service.write(new)
+    new = (await service.read()).model_copy(update={'multi_thread': 4})
+    await service.write(new)
     persisted = fake_container.settings_repo.load()
     assert persisted.multi_thread == 4
 
 
-def test_config_service_preserves_nested_models(
+@pytest.mark.anyio
+async def test_config_service_preserves_nested_models(
     fake_container: FakeContainer,
 ) -> None:
     """Writing a WebSettings payload must not clobber the nested models
@@ -90,8 +93,8 @@ def test_config_service_preserves_nested_models(
     )
 
     service = ConfigService(fake_container.settings_repo)
-    payload = service.read().model_copy(update={'multi_thread': 4})
-    service.write(payload)
+    payload = (await service.read()).model_copy(update={'multi_thread': 4})
+    await service.write(payload)
 
     persisted = fake_container.settings_repo.load()
     # Nested dashboard survived the partial overlay.
@@ -106,11 +109,12 @@ def test_config_service_preserves_nested_models(
 # ---------------------------------------------------------------------------
 
 
-def test_snlist_service_roundtrip(fake_container: FakeContainer) -> None:
+@pytest.mark.anyio
+async def test_snlist_service_roundtrip(fake_container: FakeContainer) -> None:
     service = SnListService(fake_container.sn_list_repo)
-    assert service.read() == ''
-    service.write('11111 latest\n22222 all')
-    assert service.read() == '11111 latest\n22222 all'
+    assert await service.read() == ''
+    await service.write('11111 latest\n22222 all')
+    assert await service.read() == '11111 latest\n22222 all'
 
 
 # ---------------------------------------------------------------------------
@@ -265,28 +269,31 @@ async def test_task_service_delegates_to_proxy_when_up(
 # ---------------------------------------------------------------------------
 
 
-def test_progress_service_reads_bus_entries_admin(
+@pytest.mark.anyio
+async def test_progress_service_reads_bus_entries_admin(
     fake_container: FakeContainer,
 ) -> None:
     fake_container.progress_bus.start(1, 'a', status='x')
     fake_container.progress_bus.update_rate(1, 10.0)
     user = _admin_user()
-    snap = ProgressService(fake_container.progress_bus).snapshot(user)
+    snap = await ProgressService(fake_container.progress_bus).snapshot(user)
     assert list(snap.tasks) == ['1']
     assert snap.tasks['1'].rate == 10.0
     assert snap.tasks['1'].status == 'x'
     assert snap.tasks['1'].filename == 'a'
 
 
-def test_progress_service_empty_when_no_entries(
+@pytest.mark.anyio
+async def test_progress_service_empty_when_no_entries(
     fake_container: FakeContainer,
 ) -> None:
     user = _admin_user()
-    snap = ProgressService(fake_container.progress_bus).snapshot(user)
+    snap = await ProgressService(fake_container.progress_bus).snapshot(user)
     assert snap.tasks == {}
 
 
-def test_progress_service_includes_terminal_statuses(
+@pytest.mark.anyio
+async def test_progress_service_includes_terminal_statuses(
     fake_container: FakeContainer,
 ) -> None:
     """Terminal-status entries must now be INCLUDED in the snapshot so the
@@ -301,7 +308,7 @@ def test_progress_service_includes_terminal_statuses(
     bus.start(3, 'waiting.mp4', status='等待下載')
 
     user = _admin_user()
-    snap = ProgressService(bus).snapshot(user)
+    snap = await ProgressService(bus).snapshot(user)
     # All three entries must be present — including the terminal one.
     assert set(snap.tasks.keys()) == {'1', '2', '3'}
     assert snap.tasks['1'].status == '正在下載'
@@ -309,7 +316,8 @@ def test_progress_service_includes_terminal_statuses(
     assert snap.tasks['3'].status == '等待下載'
 
 
-def test_progress_service_includes_all_terminal_markers(
+@pytest.mark.anyio
+async def test_progress_service_includes_all_terminal_markers(
     fake_container: FakeContainer,
 ) -> None:
     """All recognised terminal statuses are included in the snapshot."""
@@ -320,14 +328,15 @@ def test_progress_service_includes_all_terminal_markers(
     bus.start(13, 'd.mp4', status='正在上傳')
 
     user = _admin_user()
-    snap = ProgressService(bus).snapshot(user)
+    snap = await ProgressService(bus).snapshot(user)
     # All four entries must appear; the frontend is responsible for routing
     # terminal vs. active entries into the correct UI column.
     assert set(snap.tasks.keys()) == {'10', '11', '12', '13'}
     assert snap.tasks['13'].status == '正在上傳'
 
 
-def test_progress_service_downloader_sees_only_own_tasks(
+@pytest.mark.anyio
+async def test_progress_service_downloader_sees_only_own_tasks(
     fake_container: FakeContainer,
 ) -> None:
     """Downloader role only sees tasks whose owner_id matches."""
@@ -337,12 +346,13 @@ def test_progress_service_downloader_sees_only_own_tasks(
     bus.start(100, 'mine.mp4', status='正在下載', owner_id=user.id)
     bus.start(101, 'theirs.mp4', status='正在下載', owner_id=other_uid)
 
-    snap = ProgressService(bus).snapshot(user)
+    snap = await ProgressService(bus).snapshot(user)
     assert '100' in snap.tasks
     assert '101' not in snap.tasks
 
 
-def test_progress_service_admin_sees_all_tasks(
+@pytest.mark.anyio
+async def test_progress_service_admin_sees_all_tasks(
     fake_container: FakeContainer,
 ) -> None:
     """Admin role sees every in-flight task regardless of owner."""
@@ -351,7 +361,7 @@ def test_progress_service_admin_sees_all_tasks(
     bus.start(200, 'a.mp4', status='正在下載', owner_id='dl-1')
     bus.start(201, 'b.mp4', status='正在下載', owner_id='dl-2')
 
-    snap = ProgressService(bus).snapshot(user)
+    snap = await ProgressService(bus).snapshot(user)
     assert '200' in snap.tasks
     assert '201' in snap.tasks
 
@@ -372,32 +382,35 @@ def _flip_basic_auth(fake_container: FakeContainer, *, user: str = 'u', pw: str 
     )
 
 
-def test_auth_service_anonymous_when_disabled(
+@pytest.mark.anyio
+async def test_auth_service_anonymous_when_disabled(
     fake_container: FakeContainer,
 ) -> None:
     auth = AuthService(fake_container.settings_repo)
-    assert not auth.is_enabled()
-    assert auth.verify_http(None) == 'anonymous'
-    assert auth.verify_ws(None) is True
+    assert not await auth.is_enabled()
+    assert await auth.verify_http(None) == 'anonymous'
+    assert await auth.verify_ws(None) is True
 
 
-def test_auth_service_rejects_bad_ws_header(
+@pytest.mark.anyio
+async def test_auth_service_rejects_bad_ws_header(
     fake_container: FakeContainer,
 ) -> None:
     _flip_basic_auth(fake_container)
     auth = AuthService(fake_container.settings_repo)
-    assert auth.verify_ws(None) is False
-    assert auth.verify_ws('Bearer xyz') is False
-    assert auth.verify_ws('Basic !!!not-base64!!!') is False
+    assert await auth.verify_ws(None) is False
+    assert await auth.verify_ws('Bearer xyz') is False
+    assert await auth.verify_ws('Basic !!!not-base64!!!') is False
 
 
-def test_auth_service_accepts_valid_ws_header(
+@pytest.mark.anyio
+async def test_auth_service_accepts_valid_ws_header(
     fake_container: FakeContainer,
 ) -> None:
     _flip_basic_auth(fake_container, user='u', pw='p')
     auth = AuthService(fake_container.settings_repo)
     header = 'Basic ' + base64.b64encode(b'u:p').decode()
-    assert auth.verify_ws(header) is True
+    assert await auth.verify_ws(header) is True
 
 
 # ---------------------------------------------------------------------------
