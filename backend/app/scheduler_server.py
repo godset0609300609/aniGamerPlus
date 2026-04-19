@@ -343,7 +343,8 @@ def serve() -> None:
     """Entry point for ``uv run anigamerplus-scheduler``."""
     container = build_container()
     app = build_scheduler_app(container)
-    uvicorn.run(app, host='127.0.0.1', port=5001, log_level='info')
+    port = int(os.environ.get('ANIGAMERPLUS_SCHEDULER_PORT', '5001'))
+    uvicorn.run(app, host='127.0.0.1', port=port, log_level='info')
 
 
 if __name__ == '__main__':
