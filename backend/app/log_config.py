@@ -23,14 +23,10 @@ import collections
 import contextlib
 import datetime
 import logging
-import logging.handlers
 import pathlib
 import re
-import sys
 import threading
 import typing as T
-
-import colorama
 
 if T.TYPE_CHECKING:
     from .persistence.paths import WorkspacePaths
@@ -41,47 +37,6 @@ if T.TYPE_CHECKING:
 #: logs look exactly like the terminal output.
 LOG_FORMAT = '%(asctime)s  %(levelname)-5s  %(name)s: %(message)s'
 DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
-
-
-# ``colorama.Fore.*`` lookups happen per-record, so resolve once.
-_LEVEL_COLOURS: dict[str, str] = {
-    'DEBUG': colorama.Fore.CYAN,
-    'INFO': '',
-    'WARNING': colorama.Fore.YELLOW + colorama.Style.BRIGHT,
-    'ERROR': colorama.Fore.RED + colorama.Style.BRIGHT,
-    'CRITICAL': colorama.Fore.RED + colorama.Style.BRIGHT,
-    # Our custom pseudo-level for ``Logger.success`` — the filter sets
-    # this on ``record.levelname`` before the formatter sees it.
-    'SUCCESS': colorama.Fore.GREEN + colorama.Style.BRIGHT,
-}
-
-
-class _StdoutColourFilter:
-    """Stamp ANSI colour codes onto ``record.levelname`` for stdout.
-
-    Implemented as a filter rather than a subclassed formatter so both
-    our logger tree and uvicorn's (which shares the same handler) get
-    coloured output without us having to monkey-patch uvicorn's
-    formatter. ``colored=False`` turns it into a pass-through so the
-    file handler never sees ANSI bytes.
-    """
-
-    def __init__(self, *, colored: bool) -> None:
-        self._colored = colored
-
-    def filter(self, record: T.Any) -> bool:  # noqa: A003 — stdlib API
-        # ``Logger.success`` sets ``record._success = True`` via ``extra``;
-        # rewrite the levelname so the formatter's ``%(levelname)-5s`` aligns
-        # and ``_LEVEL_COLOURS`` picks the green variant.
-        if getattr(record, '_success', False):
-            record.levelname = 'SUCCES'  # 6 chars — fits ``%-5s`` padding.
-        if self._colored:
-            colour = _LEVEL_COLOURS.get(record.levelname.strip(), '')
-            if not colour and getattr(record, '_success', False):
-                colour = _LEVEL_COLOURS['SUCCESS']
-            if colour:
-                record.levelname = f'{colour}{record.levelname}{colorama.Style.RESET_ALL}'
-        return True
 
 
 class _DisplayFilter:
@@ -443,26 +398,11 @@ class DailyLogFileHandler(logging.Handler):
                     entry.unlink()
 
 
-def _stdout_isatty() -> bool:
-    """Honour ``sys.stdout.isatty()`` but stay robust under capture."""
-    stream = sys.stdout
-    if stream is None:
-        return False
-    isatty = getattr(stream, 'isatty', None)
-    if isatty is None:
-        return False
-    try:
-        return bool(isatty())
-    except ValueError, OSError:
-        return False
-
-
 def build_log_config(
     paths: WorkspacePaths,
     *,
     save_logs: bool,
     quantity_of_logs: int,
-    colored_stdout: bool | None = None,
 ) -> dict[str, T.Any]:
     """Return a ``logging.config.dictConfig`` dict.
 
@@ -476,22 +416,24 @@ def build_log_config(
     quantity_of_logs:
         Daily rotation retention (``TimedRotatingFileHandler.backupCount``).
         Clamped to >= 1 to match the legacy behaviour.
-    colored_stdout:
-        Force colourisation on (True) / off (False), or let it auto-detect
-        via ``sys.stdout.isatty()`` (None / default).
     """
-    if colored_stdout is None:
-        colored_stdout = _stdout_isatty()
-
     retention = max(1, int(quantity_of_logs))
 
     handlers: dict[str, dict[str, T.Any]] = {
         'stdout': {
-            'class': 'logging.StreamHandler',
+            '()': 'rich.logging.RichHandler',
             'level': 'INFO',
-            'formatter': 'default',
-            'stream': 'ext://sys.stdout',
-            'filters': ['stdout_display', 'stdout_colour'],
+            'formatter': 'rich',
+            # Rich handles its own coloring; the filter tree still honours
+            # ``display=False`` so file-only records don't surface in the
+            # terminal.
+            'filters': ['stdout_display'],
+            'rich_tracebacks': True,
+            'show_path': False,
+            'show_time': True,
+            'markup': False,
+            'log_time_format': '[%Y-%m-%d %H:%M:%S]',
+            'omit_repeated_times': False,
         },
         # The ring buffer singleton is returned by the factory callable so
         # dictConfig reuses the module-level instance rather than constructing
@@ -524,16 +466,19 @@ def build_log_config(
         'version': 1,
         'disable_existing_loggers': False,
         'formatters': {
+            # Default format used for the file + ring buffer handlers. Keeps
+            # the parseable shape that :class:`LogFileTailer` expects.
             'default': {
                 'format': LOG_FORMAT,
                 'datefmt': DATE_FORMAT,
             },
+            # Rich handler adds its own time + level columns; we only need
+            # ``name: message`` as the core payload.
+            'rich': {
+                'format': '%(name)s: %(message)s',
+            },
         },
         'filters': {
-            'stdout_colour': {
-                '()': f'{__name__}._StdoutColourFilter',
-                'colored': bool(colored_stdout),
-            },
             'stdout_display': {
                 '()': f'{__name__}._DisplayFilter',
                 'stdout': True,

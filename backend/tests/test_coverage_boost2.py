@@ -1,7 +1,7 @@
 """Second coverage-boost test module: hitting remaining gaps.
 
 Covers:
-- app/log_config.py  (build_log_config save_logs=True, _stdout_isatty branches)
+- app/log_config.py  (build_log_config save_logs=True, RichHandler config)
 - app/logging_.py  (prune_old_logs, get_logger singleton, _ensure_dict_config)
 - app/persistence/settings_repo.py  (BOM strip, UnicodeDecodeError, _normalise clamps)
 - app/scheduler/manual_runner.py  (missing mode error branches, download error
@@ -71,49 +71,40 @@ def test_build_log_config_save_logs_false(tmp_path: pathlib.Path) -> None:
 
 
 def test_build_log_config_colored_stdout_forced_true(tmp_path: pathlib.Path) -> None:
-    """colored_stdout=True passes True through to the filter config."""
+    """build_log_config wires the stdout handler to RichHandler (color is automatic)."""
     from app.log_config import build_log_config
     from app.persistence.paths import WorkspacePaths
 
     paths = WorkspacePaths.detect(working_dir=tmp_path)
-    config = build_log_config(paths, save_logs=False, quantity_of_logs=3, colored_stdout=True)
-    # The stdout_colour filter should have colored=True
-    colour_filter = config['filters']['stdout_colour']
-    assert colour_filter['colored'] is True
+    config = build_log_config(paths, save_logs=False, quantity_of_logs=3)
+    # stdout handler must use RichHandler; no legacy stdout_colour filter present.
+    assert config['handlers']['stdout']['()'] == 'rich.logging.RichHandler'
+    assert 'stdout_colour' not in config['filters']
 
 
-def test_stdout_isatty_handles_oserror() -> None:
-    """_stdout_isatty() returns False when isatty() raises OSError."""
-    import sys
+def test_build_log_config_rich_handler_options(tmp_path: pathlib.Path) -> None:
+    """RichHandler is configured with expected options (no path, custom time format)."""
+    from app.log_config import build_log_config
+    from app.persistence.paths import WorkspacePaths
 
-    from app.log_config import _stdout_isatty
-
-    class _FakeStream:
-        def isatty(self) -> bool:
-            raise OSError('no tty')
-
-    original = sys.stdout
-    try:
-        sys.stdout = _FakeStream()  # type: ignore[assignment]
-        result = _stdout_isatty()
-        assert result is False
-    finally:
-        sys.stdout = original
+    paths = WorkspacePaths.detect(working_dir=tmp_path)
+    config = build_log_config(paths, save_logs=False, quantity_of_logs=3)
+    stdout = config['handlers']['stdout']
+    assert stdout['show_path'] is False
+    assert stdout['rich_tracebacks'] is True
+    assert stdout['omit_repeated_times'] is False
 
 
-def test_stdout_isatty_handles_none_stdout() -> None:
-    """_stdout_isatty() returns False when sys.stdout is None."""
-    import sys
+def test_build_log_config_rich_formatter(tmp_path: pathlib.Path) -> None:
+    """'rich' formatter contains only name+message (Rich adds time/level itself)."""
+    from app.log_config import build_log_config
+    from app.persistence.paths import WorkspacePaths
 
-    from app.log_config import _stdout_isatty
-
-    original = sys.stdout
-    try:
-        sys.stdout = None  # type: ignore[assignment]
-        result = _stdout_isatty()
-        assert result is False
-    finally:
-        sys.stdout = original
+    paths = WorkspacePaths.detect(working_dir=tmp_path)
+    config = build_log_config(paths, save_logs=False, quantity_of_logs=3)
+    rich_fmt = config['formatters']['rich']
+    assert '%(name)s' in rich_fmt['format']
+    assert '%(message)s' in rich_fmt['format']
 
 
 # ---------------------------------------------------------------------------

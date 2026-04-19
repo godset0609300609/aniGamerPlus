@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import collections.abc
 import contextlib
+import logging.config
 import os
 import secrets
 import threading
@@ -17,7 +18,8 @@ import uvicorn
 from .api import router as api_router
 from .api.auth_api import router as auth_router
 from .core import Container, build_container
-from .log_config import LogFileTailer, get_ring_buffer_handler
+from .log_config import LogFileTailer, build_log_config, get_ring_buffer_handler
+from .persistence.paths import WorkspacePaths
 
 #: Env-var that, when set to anything truthy, disables the background
 #: scheduler thread spawned by the FastAPI lifespan hook. Used by the
@@ -87,6 +89,11 @@ class DashboardApp:
             host=host,
             port=port,
             log_level='info',
+            log_config=build_log_config(
+                self._container.paths,
+                save_logs=settings.save_logs,
+                quantity_of_logs=settings.quantity_of_logs,
+            ),
             ssl_certfile=ssl_certfile,
             ssl_keyfile=ssl_keyfile,
         )
@@ -276,6 +283,10 @@ app: fastapi.FastAPI = create_app()
 
 def serve() -> None:
     """Entry point for ``uv run anigamerplus-api`` / ``anigamerplus-server``."""
+    # Apply our log config BEFORE build_container so Alembic migration log
+    # lines are captured by our handlers rather than the root logger default.
+    _paths = WorkspacePaths.detect()
+    logging.config.dictConfig(build_log_config(_paths, save_logs=True, quantity_of_logs=7))
     DashboardApp(build_container()).run()
 
 
