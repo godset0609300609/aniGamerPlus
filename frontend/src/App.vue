@@ -58,14 +58,20 @@ const showShell = computed(() => !loading.value && user.value !== null)
       @retry="health.ping()"
     />
 
-    <!-- Degraded banner — scheduler unreachable but API is up -->
-    <el-alert
+    <!-- Degraded banner — scheduler unreachable but API is up.
+         Rendered in a fixed-position slot so it overlays the page without
+         shifting layout or causing a whole-page scrollbar. -->
+    <div
       v-else-if="health.state.value === 'degraded'"
-      title="排程服務暫時無回應，手動任務可能延遲"
-      type="warning"
-      :closable="false"
-      class="ag-degraded-banner"
-    />
+      class="ag-degraded-banner-slot"
+    >
+      <el-alert
+        title="排程服務暫時無回應，手動任務可能延遲"
+        type="warning"
+        :closable="false"
+        class="ag-degraded-banner"
+      />
+    </div>
 
     <el-header class="ag-header">
       <div class="ag-brand">
@@ -169,7 +175,19 @@ const showShell = computed(() => !loading.value && user.value !== null)
   color: #4caf50 !important;
   border-color: #4caf50 !important;
 }
+/* Degraded banner overlay — sits above all content without shifting layout */
+.ag-degraded-banner-slot {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  /* Transparent to pointer events on the slot itself; the alert inside is
+     still interactive so a future close button would work. */
+  pointer-events: none;
+}
 .ag-degraded-banner {
   border-radius: 0;
+  pointer-events: auto;
 }
 </style>
