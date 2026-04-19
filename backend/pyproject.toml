@@ -54,6 +54,7 @@ dev = [
     "pytest-cov>=6.0",
     "coverage[toml]>=7.0",
     "ruff>=0.15.11",
+    "mutmut>=2.5",
 ]
 
 [tool.pytest.ini_options]
@@ -89,6 +90,14 @@ warn_unused_configs = true
 check_untyped_defs = true
 ignore_missing_imports = true
 exclude = ["^tests/", "^alembic/"]
+
+[tool.mutmut]
+paths_to_mutate = ["app/"]
+# tests_dir is omitted so that pytest_add_cli_args_test_selection controls the test scope.
+# Full-repo run: remove pytest_add_cli_args_test_selection or override on CLI.
+pytest_add_cli_args = ["--no-cov", "--override-ini=addopts="]
+pytest_add_cli_args_test_selection = ["tests/test_cd_counter.py"]
+also_copy = ["alembic/", "alembic.ini", "config.json", "cookie.txt", "README.md"]
 
 [tool.ruff]
 target-version = "py314"

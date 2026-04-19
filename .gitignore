@@ -140,3 +140,7 @@ node_modules/
 frontend/playwright-report/
 frontend/test-results/
 frontend/blob-report/
+
+# Mutation testing output
+backend/mutants/
+frontend/reports/mutation/

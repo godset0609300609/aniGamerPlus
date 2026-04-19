@@ -1,0 +1,90 @@
+name: Mutation Testing (Nightly)
+
+# Gated with if: false — does not trigger.
+# Remove the gate to enable nightly mutation testing.
+on:
+  # Uncomment to enable nightly runs:
+  # schedule:
+  #   - cron: '0 2 * * *'  # 02:00 UTC every night
+  workflow_dispatch: {}  # allow manual trigger from GitHub UI
+
+jobs:
+  mutmut-backend:
+    # Gate: change to `if: true` (or remove) to enable
+    if: false
+    name: mutmut (backend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run mutmut on demo module
+        run: |
+          uv run mutmut run 'app.scheduler.cd_counter.*'
+          uv run mutmut export-cicd-stats
+
+      - name: Upload mutation stats
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutmut-backend-stats
+          path: backend/mutants/mutmut-cicd-stats.json
+
+      # Uncomment to enforce a kill threshold (requires exit-code support):
+      # - name: Assert kill threshold
+      #   run: |
+      #     python -c "
+      #     import json, sys
+      #     with open('mutants/mutmut-cicd-stats.json') as f:
+      #         s = json.load(f)
+      #     score = s['killed'] / s['total'] * 100
+      #     print(f'Mutation score: {score:.1f}%')
+      #     sys.exit(0 if score >= 95 else 1)
+      #     "
+
+  stryker-frontend:
+    # Gate: change to `if: true` (or remove) to enable
+    if: false
+    name: Stryker (frontend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Stryker on demo module
+        run: |
+          npx stryker run --mutate "src/composables/useTaskCategory.ts"
+
+      - name: Upload Stryker HTML report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stryker-frontend-report
+          path: frontend/reports/mutation/
