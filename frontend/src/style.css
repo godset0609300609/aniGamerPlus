@@ -1,0 +1,50 @@
+:root {
+  color-scheme: light;
+  --ag-primary: #4caf50;
+  --ag-danger: #dc3545;
+  --ag-bg: #f5f7fa;
+  --ag-text: #1f2d3d;
+  --ag-section-title: #1f2d3d;
+  --ag-help-bg: #f5f7fa;
+}
+
+html.dark {
+  color-scheme: dark;
+  --ag-bg: #141414;
+  --ag-text: #e5e7eb;
+  --ag-section-title: #f3f4f6;
+  --ag-help-bg: #1f2937;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--ag-bg);
+  color: var(--ag-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei',
+    sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.ag-container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.ag-section {
+  margin-bottom: 32px;
+}
+
+.ag-section-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 16px 0;
+  color: var(--ag-section-title);
+}
+
+.ag-monitor-card {
+  margin-bottom: 12px;
+}
