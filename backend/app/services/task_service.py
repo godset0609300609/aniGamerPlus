@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typing as T
 
+import anyio.to_thread
 import fastapi
 
 from ..models import ManualTaskRequest
@@ -80,7 +81,7 @@ class TaskService:
         In fallback mode (no proxy wired) the task is dispatched in-process
         in a background thread (CLI / legacy compatibility).
         """
-        settings = self._settings_repo.load()
+        settings = await anyio.to_thread.run_sync(self._settings_repo.load)
         resolution = self._pick_resolution(request.resolution, settings.download_resolution)
         mode = request.mode if request.mode in self.VALID_MODES else 'single'
         thread_limit = min(request.thread, self._MAX_MULTI_THREAD)
@@ -146,7 +147,7 @@ class TaskService:
         """
         # Verify the caller can see this task — check via progress snapshot.
         if self._progress_service is not None:
-            snap = self._progress_service.snapshot(user)
+            snap = await self._progress_service.snapshot(user)
             if str(sn) not in snap.tasks:
                 raise fastapi.HTTPException(
                     status_code=404,

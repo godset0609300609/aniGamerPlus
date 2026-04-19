@@ -25,9 +25,11 @@ Permission rules
 
 from __future__ import annotations
 
+import functools
 import re
 import typing as T
 
+import anyio.to_thread
 import fastapi
 
 from ..models import AnimeListEntry, AnimeListMode
@@ -66,7 +68,7 @@ class AnimeListService:
 
     # -- RBAC-aware read -------------------------------------------------
 
-    def list_entries(self, user: UserRow) -> _List[AnimeListEntry]:
+    async def list_entries(self, user: UserRow) -> _List[AnimeListEntry]:
         """Return the anime list for the given user.
 
         * admin: returns all entries across all users; populates
@@ -76,27 +78,30 @@ class AnimeListService:
         """
         if self._anime_list_entry_repo is None:
             # Fallback to legacy flat-file path (e.g. during migration).
-            return self.list()
+            return await self.list()
 
+        entry_repo = self._anime_list_entry_repo
         if user.role == 'admin':
-            dtos = self._anime_list_entry_repo.list_all()
+            dtos = await anyio.to_thread.run_sync(entry_repo.list_all)
             # Build username cache to avoid N+1 queries.
             user_ids = {dto.user_id for dto in dtos if dto.user_id is not None}
             username_cache: dict[str, str] = {}
-            if self._user_repo is not None:
+            user_repo = self._user_repo
+            if user_repo is not None:
                 for uid in user_ids:
-                    row = self._user_repo.get(uid)
+                    row = await anyio.to_thread.run_sync(functools.partial(user_repo.get, uid))
                     if row is not None:
                         username_cache[uid] = row.username
             entries = [self._dto_to_entry(dto, username_cache) for dto in dtos]
         else:
-            dtos = self._anime_list_entry_repo.list_for_user(user.id)
+            user_id = user.id
+            dtos = await anyio.to_thread.run_sync(lambda: entry_repo.list_for_user(user_id))
             entries = [self._dto_to_entry(dto, {}) for dto in dtos]
 
-        self._enrich(entries)
+        await self._enrich(entries)
         return entries
 
-    def replace_entries(self, user: UserRow, entries: _List[AnimeListEntry]) -> None:
+    async def replace_entries(self, user: UserRow, entries: _List[AnimeListEntry]) -> None:
         """Replace the anime list entries according to the caller's role.
 
         * admin: accepts entries that may carry an explicit ``owner_id``; any
@@ -106,9 +111,10 @@ class AnimeListService:
           whose ``owner_id`` is set to a different user id raises HTTP 400.
           ``owner_id=None`` entries are silently assigned to the caller.
         """
-        if self._anime_list_entry_repo is None:
+        entry_repo_rw = self._anime_list_entry_repo
+        if entry_repo_rw is None:
             # Fallback to legacy flat-file path.
-            self.replace_all(entries)
+            await self.replace_all(entries)
             return
 
         if user.role == 'admin':
@@ -121,14 +127,14 @@ class AnimeListService:
             # Ensure owners absent from the save payload get their slice
             # cleared.  Also always include the calling admin so that
             # deleting their last entry persists as an empty list.
-            existing_owner_ids = self._anime_list_entry_repo.list_all_owner_ids()
+            existing_owner_ids = await anyio.to_thread.run_sync(entry_repo_rw.list_all_owner_ids)
             groups.setdefault(user.id, [])
             for oid in existing_owner_ids:
                 groups.setdefault(oid, [])
 
             for owner_id, owner_entries in groups.items():
                 dtos = [self._entry_to_dto(e, idx) for idx, e in enumerate(owner_entries)]
-                self._anime_list_entry_repo.replace_all_for_user(owner_id, dtos)
+                await anyio.to_thread.run_sync(functools.partial(entry_repo_rw.replace_all_for_user, owner_id, dtos))
         else:
             # Downloader: reject entries with a foreign owner_id.
             for entry in entries:
@@ -138,21 +144,21 @@ class AnimeListService:
                         detail=(f'Entry sn={entry.sn} owner_id={entry.owner_id!r} does not belong to the current user'),
                     )
             dtos = [self._entry_to_dto(e, idx) for idx, e in enumerate(entries)]
-            self._anime_list_entry_repo.replace_all_for_user(user.id, dtos)
+            await anyio.to_thread.run_sync(functools.partial(entry_repo_rw.replace_all_for_user, user.id, dtos))
 
     # -- legacy flat-file read (UpdateLoop / SnListService compat) -------
 
-    def list(self) -> _List[AnimeListEntry]:
-        raw = self._sn_list_repo.read_raw()
+    async def list(self) -> _List[AnimeListEntry]:
+        raw = await anyio.to_thread.run_sync(self._sn_list_repo.read_raw)
         entries = self._parse(raw)
-        self._enrich(entries)
+        await self._enrich(entries)
         return entries
 
     # -- legacy flat-file write ------------------------------------------
 
-    def replace_all(self, entries: _List[AnimeListEntry]) -> None:
+    async def replace_all(self, entries: _List[AnimeListEntry]) -> None:
         text = self._serialize(entries)
-        self._sn_list_repo.write_raw(text)
+        await anyio.to_thread.run_sync(functools.partial(self._sn_list_repo.write_raw, text))
 
     # -- DTO ↔ model conversion ------------------------------------------
 
@@ -289,7 +295,7 @@ class AnimeListService:
 
     # -- enrichment ------------------------------------------------------
 
-    def _enrich(self, entries: _List[AnimeListEntry]) -> None:
+    async def _enrich(self, entries: _List[AnimeListEntry]) -> None:
         """Populate ``anime_name`` + counts by querying the DB per sn.
 
         When ``entry.anime_name`` is already set (cached by UpdateLoop),
@@ -310,7 +316,7 @@ class AnimeListService:
 
             if not resolved_name:
                 # Fall back to the downloaded-episodes table.
-                row = self._anime_repo.read(entry.sn)
+                row = await anyio.to_thread.run_sync(functools.partial(self._anime_repo.read, entry.sn))
                 if row is None:
                     continue
                 resolved_name = row.anime_name
@@ -318,7 +324,9 @@ class AnimeListService:
                     continue
                 entry.anime_name = resolved_name
 
-            known, downloaded = self._anime_repo.count_by_anime_name(resolved_name)
+            known, downloaded = await anyio.to_thread.run_sync(
+                functools.partial(self._anime_repo.count_by_anime_name, resolved_name)
+            )
             entry.known_episodes = known
             entry.downloaded_episodes = downloaded
 
