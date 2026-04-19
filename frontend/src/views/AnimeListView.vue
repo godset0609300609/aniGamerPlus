@@ -31,6 +31,28 @@ function commitTagDraft(row: AnimeListEntry): void {
   }
 }
 
+// --- Custom name draft map ---
+const customNameDrafts = reactive(new Map<AnimeListEntry, string>())
+
+function getCustomNameValue(row: AnimeListEntry): string {
+  return customNameDrafts.has(row) ? (customNameDrafts.get(row) as string) : (row.custom_name ?? '')
+}
+
+function setCustomNameDraft(row: AnimeListEntry, value: string): void {
+  customNameDrafts.set(row, value)
+}
+
+function commitCustomNameDraft(row: AnimeListEntry): void {
+  if (customNameDrafts.has(row)) {
+    const draft = customNameDrafts.get(row) as string
+    const normalised = draft.trim() === '' ? null : draft
+    if (normalised !== row.custom_name) {
+      row.custom_name = normalised
+    }
+    customNameDrafts.delete(row)
+  }
+}
+
 const entries = ref<AnimeListEntry[]>([])
 const original = ref<string>('[]')
 const loading = ref(false)
@@ -139,6 +161,7 @@ function addEntry(): void {
     mode: null,
     tag: '',
     season: 1,
+    custom_name: null,
     comment: '',
     anime_name: null,
     downloaded_episodes: 0,
@@ -190,13 +213,14 @@ onMounted(load)
         <div class="ag-help">
           <div>
             每列代表一部追蹤中的番劇。可直接在表格中編輯
-            <strong>群組</strong>（@分類）、<strong>啟用 / 停用</strong>、<strong>下載模式</strong>、<strong>季</strong>
-            與 <strong>註釋</strong>。
+            <strong>群組</strong>（@分類）、<strong>啟用 / 停用</strong>、<strong>下載模式</strong>、<strong>季</strong>、
+            <strong>自訂名稱</strong>與 <strong>註釋</strong>。
           </div>
           <ul>
             <li>群組欄位即原始檔案中的 <code>@分類</code>，留空代表未分類。</li>
             <li>下載模式留空表示使用設定頁的預設模式。</li>
             <li>「季」欄位決定檔名格式，例如 S01E01。預設為 1。</li>
+            <li>「自訂名稱」可覆蓋下載後檔名中使用的番劇名稱；留空則自動使用偵測到的名稱。</li>
             <li>番劇名稱與集數由後端根據掃描結果自動填入，無法手動編輯。</li>
           </ul>
         </div>
@@ -260,6 +284,21 @@ onMounted(load)
                 v-else
                 class="ag-muted"
               >（尚未下載）</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            label="自訂名稱"
+            width="160"
+          >
+            <template #default="{ row }">
+              <el-input
+                :model-value="getCustomNameValue(row)"
+                placeholder="（預設使用抓到的名稱）"
+                size="small"
+                @update:model-value="setCustomNameDraft(row, $event)"
+                @blur="commitCustomNameDraft(row)"
+                @keyup.enter="commitCustomNameDraft(row)"
+              />
             </template>
           </el-table-column>
           <el-table-column
