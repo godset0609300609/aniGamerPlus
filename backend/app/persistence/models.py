@@ -121,6 +121,9 @@ class AnimeListEntryRow(Base):
     anime_name: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(
         sqlalchemy.String(256), nullable=True, default=None
     )
+    custom_name: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(
+        sqlalchemy.String(256), nullable=True, default=None
+    )
     comment: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column(
         sqlalchemy.String, nullable=False, default='', server_default=sqlalchemy.text("''")
     )
