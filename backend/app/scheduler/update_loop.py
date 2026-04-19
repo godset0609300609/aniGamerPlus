@@ -27,6 +27,7 @@ if T.TYPE_CHECKING:
     from ..persistence.repositories import AnimeRepository
     from ..persistence.settings_repo import SettingsRepository
     from ..persistence.sn_list_repo import SnListRepository
+    from .cd_counter import DownloadCooldown
     from .queue_ import TaskInfo, TaskQueue
     from .watchdog import SchedulerWatchdog
     from .worker import DownloadWorker
@@ -52,6 +53,7 @@ class UpdateLoop:
         cookie_repo: CookieRepository,
         progress_bus: ProgressBus | None = None,
         watchdog: SchedulerWatchdog | None = None,
+        parse_cooldown: DownloadCooldown | None = None,
     ) -> None:
         self._settings_repo = settings_repo
         self._sn_list_repo = sn_list_repo
@@ -68,6 +70,9 @@ class UpdateLoop:
         # worker has picked the task up.
         self._progress_bus = progress_bus
         self._watchdog = watchdog
+        # Optional: pool-wide gap between successive sn fetches, matching the
+        # legacy ``parse_cd`` behaviour.  No cooldown when None.
+        self._parse_cooldown = parse_cooldown
         self._stop_event = threading.Event()
         self._sleep = time.sleep  # injectable for tests
         # Guard so the legacy-file warning fires only once per scheduler boot.
@@ -100,7 +105,30 @@ class UpdateLoop:
             display=False,
         )
 
-        for sn, info in sn_dict.items():
+        sn_items = list(sn_dict.items())
+        for idx, (sn, info) in enumerate(sn_items):
+            # (A) Log "正在檢查 {name}" BEFORE fetching — use the cached name
+            # from the anime_list_entries table if available, otherwise fall
+            # back to the bare sn identifier.
+            cached_name: str | None = None
+            try:
+                entry = next(
+                    (e for e in self._anime_list_entry_repo.list_all() if e.sn == int(sn)),
+                    None,
+                )
+                if entry is not None:
+                    cached_name = entry.anime_name or entry.custom_name
+            except Exception:  # noqa: BLE001 — best-effort; never block the scan
+                pass
+            display_name = f'《{cached_name}》' if cached_name else f'sn={sn}'
+            self._logger.info(
+                sn,
+                '更新資訊',
+                f'正在檢查{display_name}',
+                display=False,
+            )
+
+            # (B) Fetch metadata (existing behaviour).
             try:
                 metadata = self._metadata_extractor.fetch(int(sn))
             except exceptions.InvalidCookieError as exc:
@@ -175,6 +203,12 @@ class UpdateLoop:
                     owner_id=owner_id,
                 )
                 self._spawn_worker(target_sn)
+
+            # (D) Apply parse_cd cooldown after this sn's work, except after
+            # the last item — no benefit in sleeping when there's nothing next.
+            is_last = idx == len(sn_items) - 1
+            if not is_last and self._parse_cooldown is not None:
+                self._parse_cooldown.wait()
 
     def run_forever(self) -> None:
         """Main loop. Returns only if :meth:`stop` is called."""
