@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import errno
+import os
 import pathlib
 import threading
+import unittest.mock
 
 import pytest
 
 from app.logging_ import Logger
 from app.persistence.cookie_repo import CookieRepository, _parse_cookie_line
+from app.persistence.file_utils import atomic_write_text
 from app.persistence.paths import WorkspacePaths
 
 
@@ -69,3 +73,71 @@ def test_renew_is_thread_safe(repo: CookieRepository, paths: WorkspacePaths) -> 
     assert 'shared' in parsed
     # The shared value is always numeric string of digits, never garbled.
     assert parsed['shared'].isdigit()
+
+
+# ---------------------------------------------------------------------------
+# atomic_write_text — EBUSY / fallback behaviour
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_write_falls_back_on_ebusy(tmp_path: pathlib.Path) -> None:
+    """EBUSY from os.replace must trigger an in-place write and temp cleanup."""
+    target = tmp_path / 'cookie.txt'
+    target.write_text('old', encoding='utf-8')
+
+    replace_calls: list[tuple[str, str]] = []
+
+    def patched_replace(src: str, dst: str) -> None:
+        replace_calls.append((src, dst))
+        raise OSError(errno.EBUSY, 'Device or resource busy', src)
+
+    with unittest.mock.patch('app.persistence.file_utils.os.replace', side_effect=patched_replace):
+        atomic_write_text(target, 'hello')
+
+    # os.replace was attempted exactly once.
+    assert len(replace_calls) == 1
+    # The file now contains the new content (in-place fallback worked).
+    assert target.read_text(encoding='utf-8') == 'hello'
+    # The temp file was cleaned up — no leftover siblings.
+    siblings = [p for p in tmp_path.iterdir() if p != target]
+    assert siblings == [], f'unexpected temp files left: {siblings}'
+
+
+def test_atomic_write_still_uses_replace_when_possible(tmp_path: pathlib.Path) -> None:
+    """Normal path: os.replace is called and the file gets the new content."""
+    target = tmp_path / 'cookie.txt'
+
+    replace_calls: list[tuple[str, str]] = []
+    original_replace = os.replace
+
+    def tracking_replace(src: str, dst: str) -> None:
+        replace_calls.append((src, dst))
+        original_replace(src, dst)
+
+    with unittest.mock.patch('app.persistence.file_utils.os.replace', side_effect=tracking_replace):
+        atomic_write_text(target, 'world')
+
+    assert len(replace_calls) == 1
+    assert target.read_text(encoding='utf-8') == 'world'
+    # No leftover temp file after successful replace.
+    siblings = [p for p in tmp_path.iterdir() if p != target]
+    assert siblings == []
+
+
+def test_atomic_write_propagates_non_ebusy_oserror(tmp_path: pathlib.Path) -> None:
+    """Non-EBUSY OSError (e.g. EPERM) must propagate, not be swallowed."""
+    target = tmp_path / 'cookie.txt'
+
+    def failing_replace(src: str, dst: str) -> None:
+        raise OSError(errno.EPERM, 'Operation not permitted', src)
+
+    with (
+        unittest.mock.patch('app.persistence.file_utils.os.replace', side_effect=failing_replace),
+        pytest.raises(OSError) as exc_info,
+    ):
+        atomic_write_text(target, 'data')
+
+    assert exc_info.value.errno == errno.EPERM
+    # Temp file must be cleaned up even though we re-raised.
+    siblings = [p for p in tmp_path.iterdir() if p != target]
+    assert siblings == []

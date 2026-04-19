@@ -9,17 +9,16 @@ paths instead of the legacy retry loop.
 from __future__ import annotations
 
 import codecs
-import contextlib
 import json
 import os
 import pathlib
-import tempfile
 import typing as T
 
 import chardet
 
 from ..models import AppSettings
 from . import settings_migration
+from .file_utils import atomic_write_text
 
 if T.TYPE_CHECKING:
     from ..logging_ import Logger
@@ -60,7 +59,7 @@ class SettingsRepository:
     def save(self, settings: AppSettings) -> None:
         """Write ``settings`` to disk in the legacy-compatible shape."""
         payload = self._denormalise(settings).model_dump(by_alias=True, exclude_none=False)
-        self._atomic_write(
+        atomic_write_text(
             self._paths.config_path,
             json.dumps(payload, ensure_ascii=False, indent=4),
         )
@@ -106,19 +105,6 @@ class SettingsRepository:
 
         result: dict[str, T.Any] = json.loads(text)
         return result
-
-    def _atomic_write(self, path: pathlib.Path, content: str) -> None:
-        """Write ``content`` to ``path`` via a temp file + os.replace."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=path.name + '.', dir=str(path.parent))
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as fh:
-                fh.write(content)
-            os.replace(tmp, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
 
     # ------------------------------------------------------------------ normalise
 

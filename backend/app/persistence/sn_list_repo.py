@@ -8,11 +8,10 @@ class with typed return values.
 from __future__ import annotations
 
 import codecs
-import contextlib
-import os
 import re
-import tempfile
 import typing as T
+
+from .file_utils import atomic_write_text
 
 if T.TYPE_CHECKING:
     from ..logging_ import Logger
@@ -46,17 +45,7 @@ class SnListRepository:
         return data.decode('utf-8')
 
     def write_raw(self, content: str) -> None:
-        path = self._paths.sn_list_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=path.name + '.', dir=str(path.parent))
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as fh:
-                fh.write(content)
-            os.replace(tmp, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
+        atomic_write_text(self._paths.sn_list_path, content)
 
     # ------------------------------------------------------------------ parse
 
