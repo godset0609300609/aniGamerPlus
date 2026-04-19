@@ -551,3 +551,54 @@ def test_concurrent_workers_respect_download_limiter(tmp_path: pathlib.Path) -> 
         t.join(timeout=5)
 
     assert max_in_flight[0] == 1
+
+
+def test_task_info_carries_custom_name(tmp_path: pathlib.Path) -> None:
+    """TaskInfo stores custom_name and it defaults to None."""
+    info_with = TaskInfo(sn=1, tag='', mode='single', custom_name='覆蓋名')
+    assert info_with.custom_name == '覆蓋名'
+
+    info_without = TaskInfo(sn=2, tag='', mode='single')
+    assert info_without.custom_name is None
+
+
+def test_worker_passes_custom_name_to_anime_download(tmp_path: pathlib.Path) -> None:
+    """Worker forwards TaskInfo.custom_name to anime.download() as a kwarg."""
+    fake_anime = FakeAnime(
+        sn=90,
+        download_result=DownloadResult(
+            success=True,
+            file_path=tmp_path / 'a.mp4',
+            size_mb=500,
+        ),
+    )
+    h = _build(tmp_path, fake_anime=fake_anime)
+    h.queue.add(90, TaskInfo(sn=90, tag='', mode='single', custom_name='自訂名稱'))
+    h.queue.mark_processing(90)
+
+    h.worker.run(90)
+
+    download_calls = [kw for name, kw in fake_anime.calls if name == 'download']
+    assert len(download_calls) == 1
+    assert download_calls[0].get('custom_name') == '自訂名稱'
+
+
+def test_worker_passes_none_custom_name_when_not_set(tmp_path: pathlib.Path) -> None:
+    """When TaskInfo.custom_name is None, anime.download receives custom_name=None."""
+    fake_anime = FakeAnime(
+        sn=91,
+        download_result=DownloadResult(
+            success=True,
+            file_path=tmp_path / 'a.mp4',
+            size_mb=500,
+        ),
+    )
+    h = _build(tmp_path, fake_anime=fake_anime)
+    h.queue.add(91, TaskInfo(sn=91, tag='', mode='single', custom_name=None))
+    h.queue.mark_processing(91)
+
+    h.worker.run(91)
+
+    download_calls = [kw for name, kw in fake_anime.calls if name == 'download']
+    assert len(download_calls) == 1
+    assert download_calls[0].get('custom_name') is None

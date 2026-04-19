@@ -49,6 +49,7 @@ class FilenameBuilder:
         resolution: str,
         *,
         season: int = 1,
+        custom_name: str | None = None,
         include_resolution: bool = True,
         without_suffix: bool = False,
     ) -> str:
@@ -62,9 +63,12 @@ class FilenameBuilder:
         Pass ``False`` for auto-mode (scheduled scan) downloads so those
         filenames omit the resolution suffix.  The setting flag is still
         checked — both must be True for the suffix to appear.
+
+        ``custom_name``, when non-empty, overrides ``meta.bangumi_name``
+        for the name portion of the filename only.
         """
         episode = self._format_episode(meta, season=season)
-        name = self._compose_base(meta, episode)
+        name = self._compose_base(meta, episode, custom_name=custom_name)
 
         if include_resolution and self._settings.add_resolution_to_video_filename:
             name = f'{name} ({resolution}p)'
@@ -82,9 +86,10 @@ class FilenameBuilder:
         temp_suffix: str,
         *,
         season: int = 1,
+        custom_name: str | None = None,
     ) -> str:
         """Filename used while the download is in flight."""
-        stem = self.build(meta, resolution, season=season, without_suffix=True)
+        stem = self.build(meta, resolution, season=season, custom_name=custom_name, without_suffix=True)
         name = (
             f'{stem}{self._settings.customized_video_filename_suffix}'
             f'.{temp_suffix}.{self._settings.video_filename_extension}'
@@ -98,15 +103,21 @@ class FilenameBuilder:
         bangumi_tag: str,
         season: int,
         *,
+        custom_name: str | None = None,
         classify: bool,
     ) -> pathlib.Path:
         """Return the directory the final file should live in.
 
         Mirrors ``Anime.download``'s ``bangumi_tag`` + ``classify`` +
         ``classify_season`` fork. The series folder uses the bare
-        ``bangumi_name``; ``season`` affects only the filename, not the
-        directory structure (unless ``classify_season`` is also True,
-        which uses the title-embedded season annotation as before).
+        ``bangumi_name`` (or ``custom_name`` when supplied); ``season``
+        affects only the filename, not the directory structure (unless
+        ``classify_season`` is also True, which uses the title-embedded
+        season annotation as before).
+
+        ``custom_name``, when non-empty, overrides ``meta.bangumi_name``
+        for the series folder name so that the temp → final move stays
+        within the same tree.
         """
         out = pathlib.Path(bangumi_dir)
         if bangumi_tag:
@@ -118,7 +129,8 @@ class FilenameBuilder:
             root, sub = self._season_root_and_sub(meta)
             return out / self.legalize(root) / sub
 
-        return out / self.legalize(meta.bangumi_name)
+        resolved = (custom_name or '').strip() or meta.bangumi_name
+        return out / self.legalize(resolved)
 
     @staticmethod
     def legalize(name: str) -> str:
@@ -187,16 +199,23 @@ class FilenameBuilder:
         # Non-numeric episode label (特別篇, 電影, etc.) — append as-is.
         return f'S{season_str}{episode}'
 
-    def _compose_base(self, meta: AnimeMetadata, episode: str) -> str:
+    def _compose_base(
+        self,
+        meta: AnimeMetadata,
+        episode: str,
+        *,
+        custom_name: str | None = None,
+    ) -> str:
         settings = self._settings
         # Plex naming already wraps the episode token in square-bracket Plex
         # notation (e.g. ``[S01E05]``); preserve legacy concatenation for that
         # path.  Standard (non-plex) path uses `` - `` as separator.
         separator = '' if settings.plex_naming else ' - '
         if settings.add_bangumi_name_to_video_filename:
+            resolved_name = (custom_name or '').strip() or meta.bangumi_name
             return (
                 f'{settings.customized_video_filename_prefix}'
-                f'{meta.bangumi_name}'
+                f'{resolved_name}'
                 f'{settings.customized_bangumi_name_suffix}'
                 f'{separator}{episode}'
             )

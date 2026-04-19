@@ -22,6 +22,7 @@ class TaskInfo:
     tag: str
     mode: str
     season: int = 1
+    custom_name: str | None = None
 
 
 class TaskQueue:

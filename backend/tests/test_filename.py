@@ -292,3 +292,143 @@ def test_build_temp_still_includes_resolution_for_uniqueness() -> None:
     # Since add_resolution_to_video_filename=True, the temp stem includes (360p).
     assert '(360p)' in name
     assert 'MERGING' in name
+
+
+# ---------------------------------------------------------------------------
+# custom_name override tests
+# ---------------------------------------------------------------------------
+
+
+def test_build_uses_custom_name_when_present() -> None:
+    """When custom_name is supplied, it replaces bangumi_name in the filename."""
+    settings = AppSettings(
+        add_bangumi_name_to_video_filename=True,
+        add_resolution_to_video_filename=False,
+        video_filename_extension='mp4',
+    )
+    fb = FilenameBuilder(settings)
+    name = fb.build(
+        _meta(bangumi_name='自動偵測名稱', episode='1'),
+        resolution='1080',
+        season=1,
+        custom_name='自訂覆蓋名稱',
+    )
+    assert '自訂覆蓋名稱' in name
+    assert '自動偵測名稱' not in name
+    assert name == '自訂覆蓋名稱 - S01E01.mp4'
+
+
+def test_build_falls_back_to_bangumi_name_when_custom_name_none() -> None:
+    """None custom_name → falls back to meta.bangumi_name."""
+    settings = AppSettings(
+        add_bangumi_name_to_video_filename=True,
+        add_resolution_to_video_filename=False,
+        video_filename_extension='mp4',
+    )
+    fb = FilenameBuilder(settings)
+    name = fb.build(
+        _meta(bangumi_name='自動偵測名稱', episode='2'),
+        resolution='1080',
+        season=1,
+        custom_name=None,
+    )
+    assert name == '自動偵測名稱 - S01E02.mp4'
+
+
+def test_build_falls_back_to_bangumi_name_when_custom_name_empty() -> None:
+    """Empty-string custom_name → falls back to meta.bangumi_name."""
+    settings = AppSettings(
+        add_bangumi_name_to_video_filename=True,
+        add_resolution_to_video_filename=False,
+        video_filename_extension='mp4',
+    )
+    fb = FilenameBuilder(settings)
+    name = fb.build(
+        _meta(bangumi_name='自動偵測名稱', episode='3'),
+        resolution='1080',
+        season=1,
+        custom_name='',
+    )
+    assert name == '自動偵測名稱 - S01E03.mp4'
+
+
+def test_build_trims_whitespace_in_custom_name() -> None:
+    """Leading/trailing whitespace in custom_name is stripped."""
+    settings = AppSettings(
+        add_bangumi_name_to_video_filename=True,
+        add_resolution_to_video_filename=False,
+        video_filename_extension='mp4',
+    )
+    fb = FilenameBuilder(settings)
+    name = fb.build(
+        _meta(bangumi_name='原名', episode='1'),
+        resolution='1080',
+        season=1,
+        custom_name='  前後空白  ',
+    )
+    assert name == '前後空白 - S01E01.mp4'
+
+
+def test_build_whitespace_only_custom_name_falls_back(tmp_path: pathlib.Path) -> None:
+    """Whitespace-only custom_name is treated as empty → falls back."""
+    settings = AppSettings(
+        add_bangumi_name_to_video_filename=True,
+        add_resolution_to_video_filename=False,
+        video_filename_extension='mp4',
+    )
+    fb = FilenameBuilder(settings)
+    name = fb.build(
+        _meta(bangumi_name='原名', episode='1'),
+        resolution='1080',
+        season=1,
+        custom_name='   ',
+    )
+    assert name == '原名 - S01E01.mp4'
+
+
+def test_classify_dir_uses_custom_name_when_present(tmp_path: pathlib.Path) -> None:
+    """classify_dir substitutes custom_name for the series folder."""
+    fb = FilenameBuilder(AppSettings(classify_season=False))
+    out = fb.classify_dir(
+        _meta(bangumi_name='偵測名'),
+        bangumi_dir=tmp_path,
+        bangumi_tag='',
+        season=1,
+        custom_name='自訂資料夾',
+        classify=True,
+    )
+    assert out == tmp_path / '自訂資料夾'
+
+
+def test_classify_dir_falls_back_to_bangumi_name_when_no_custom(tmp_path: pathlib.Path) -> None:
+    """classify_dir uses bangumi_name when custom_name is None."""
+    fb = FilenameBuilder(AppSettings(classify_season=False))
+    out = fb.classify_dir(
+        _meta(bangumi_name='偵測名'),
+        bangumi_dir=tmp_path,
+        bangumi_tag='',
+        season=1,
+        custom_name=None,
+        classify=True,
+    )
+    assert out == tmp_path / '偵測名'
+
+
+def test_build_temp_uses_custom_name(tmp_path: pathlib.Path) -> None:
+    """build_temp propagates custom_name so the temp dir stays consistent."""
+    settings = AppSettings(
+        add_bangumi_name_to_video_filename=True,
+        add_resolution_to_video_filename=True,
+        video_filename_extension='mp4',
+    )
+    fb = FilenameBuilder(settings)
+    name = fb.build_temp(
+        _meta(bangumi_name='原名', episode='5'),
+        resolution='720',
+        temp_suffix='MERGING',
+        season=2,
+        custom_name='自訂',
+    )
+    assert '自訂' in name
+    assert '原名' not in name
+    assert 'MERGING' in name

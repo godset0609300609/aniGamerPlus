@@ -189,6 +189,7 @@ class AnimeListEntry(pydantic.BaseModel):
     mode: AnimeListMode | None = None  # None = fall back to settings default
     tag: str = ''  # category name (the ``@`` line)
     season: int = 1  # series season number; drives S{season:02d}E{ep:02d} filename
+    custom_name: str | None = None  # user override for the name used in filenames
     comment: str = ''  # inline ``#`` text (without the ``#`` prefix)
 
     # Owner fields: None means "assign to the calling user" on write.

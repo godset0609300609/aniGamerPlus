@@ -189,6 +189,7 @@ class Anime:
         bangumi_tag: str = '',
         realtime_show_file_size: bool = False,
         season: int = 1,
+        custom_name: str | None = None,
         classify: bool = True,
         include_resolution_in_filename: bool = True,
     ) -> DownloadResult:
@@ -231,6 +232,7 @@ class Anime:
                 save_dir,
                 bangumi_tag,
                 season,
+                custom_name=custom_name,
                 classify=classify,
                 include_resolution_in_filename=include_resolution_in_filename,
             )
@@ -389,6 +391,7 @@ class Anime:
         bangumi_tag: str,
         season: int,
         *,
+        custom_name: str | None = None,
         classify: bool,
         include_resolution_in_filename: bool = True,
     ) -> _PreparedPaths:
@@ -398,6 +401,7 @@ class Anime:
             meta,
             resolution,
             season=season,
+            custom_name=custom_name,
             include_resolution=include_resolution_in_filename,
         )
 
@@ -408,7 +412,9 @@ class Anime:
         )
         temp_root = pathlib.Path(self._settings.temp_dir or self._paths.temp_dir_default)
 
-        target_dir = self._filename_builder.classify_dir(meta, base_bangumi_dir, bangumi_tag, season, classify=classify)
+        target_dir = self._filename_builder.classify_dir(
+            meta, base_bangumi_dir, bangumi_tag, season, custom_name=custom_name, classify=classify
+        )
         target_dir.mkdir(parents=True, exist_ok=True)
         temp_root.mkdir(parents=True, exist_ok=True)
 
@@ -416,8 +422,12 @@ class Anime:
 
         segment_temp_dir = temp_root / f'{self._sn}-downloading-by-aniGamerPlus'
 
-        merging_name = self._filename_builder.build_temp(meta, resolution, temp_suffix='MERGING', season=season)
-        downloading_name = self._filename_builder.build_temp(meta, resolution, temp_suffix='DOWNLOADING', season=season)
+        merging_name = self._filename_builder.build_temp(
+            meta, resolution, temp_suffix='MERGING', season=season, custom_name=custom_name
+        )
+        downloading_name = self._filename_builder.build_temp(
+            meta, resolution, temp_suffix='DOWNLOADING', season=season, custom_name=custom_name
+        )
 
         return _PreparedPaths(
             filename=filename,
