@@ -701,3 +701,42 @@ def test_dictconfig_twice_keeps_app_logger_enabled(
     )
     assert 'first' in messages
     assert 'second' in messages
+
+
+# ---------------------------------------------------------------------------
+# Cause A regression: run_baseline_migrations must not wipe dictConfig
+# ---------------------------------------------------------------------------
+
+
+def test_alembic_migration_does_not_wipe_dict_config(
+    _reset_ring_buffer_singleton: None,
+    tmp_path: pathlib.Path,
+) -> None:
+    """run_baseline_migrations() must not call alembic's fileConfig which would
+    overwrite our dictConfig and disable existing loggers (Cause A)."""
+    from app.logging_ import Logger
+    from app.persistence.db import Database
+
+    # Apply our dictConfig first — establishes the ring_buffer handler chain.
+    paths = _make_minimal_paths(tmp_path)
+    logging.config.dictConfig(build_log_config(paths, save_logs=False, quantity_of_logs=7))  # type: ignore[arg-type]
+
+    # Run migrations — this is the operation that previously called
+    # alembic fileConfig(disable_existing_loggers=True).
+    logger_obj = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
+    db_path = tmp_path / 'test.db'
+    db = Database(f'sqlite:///{db_path}', logger_obj)
+    db.run_baseline_migrations()
+    db.dispose()
+
+    # Emit via app.main AFTER migrations — must still reach the ring buffer.
+    post_migration_logger = logging.getLogger('app.main.migration_test')
+    post_migration_logger.info('Bootstrap from log file after migrations')
+
+    rb = _lc.get_ring_buffer_handler()
+    snap = rb.snapshot()
+    app_messages = [e['message'] for e in snap if e['name'].startswith('app.')]
+    assert any('Bootstrap from log file after migrations' in m for m in app_messages), (
+        'app.main INFO record emitted AFTER run_baseline_migrations() must still '
+        'reach the ring buffer. alembic fileConfig must not disable existing loggers.'
+    )

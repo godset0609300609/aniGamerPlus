@@ -98,6 +98,10 @@ class Database:
         cfg = alembic.config.Config(str(_ALEMBIC_INI))
         cfg.set_main_option('script_location', str(_ALEMBIC_DIR))
         cfg.set_main_option('sqlalchemy.url', self._url)
+        # Skip alembic's fileConfig() call so it cannot overwrite the
+        # dictConfig we already applied (fileConfig defaults to
+        # disable_existing_loggers=True which would silence app.* loggers).
+        cfg.attributes['skip_log_config'] = True
         # Alembic writes to stdout by default; keep that quiet unless the
         # caller opted into ``echo``. The logger still captures explicit events.
         alembic.command.upgrade(cfg, 'head')
