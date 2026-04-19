@@ -30,8 +30,8 @@ from app.persistence import models as _models  # noqa: F401,E402  (register mapp
 
 config = alembic.context.config
 
-if config.config_file_name is not None:
-    logging.config.fileConfig(config.config_file_name)
+if config.config_file_name is not None and not config.attributes.get('skip_log_config', False):
+    logging.config.fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
