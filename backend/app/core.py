@@ -151,6 +151,7 @@ class Container:
             cookie_repo=self.cookie_repo,
             progress_bus=self.progress_bus,
             watchdog=watchdog,
+            parse_cooldown=self.parse_cooldown,
         )
 
 

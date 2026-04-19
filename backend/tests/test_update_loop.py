@@ -141,6 +141,16 @@ def _meta(sn: int, *, episode_list: dict[str, int] | None = None) -> AnimeMetada
     )
 
 
+class _FakeParseCooldown:
+    """Records how many times ``wait`` was called, without actually sleeping."""
+
+    def __init__(self) -> None:
+        self.wait_calls: int = 0
+
+    def wait(self, **_kwargs: Any) -> None:
+        self.wait_calls += 1
+
+
 def _build(
     tmp_path: pathlib.Path,
     *,
@@ -150,6 +160,7 @@ def _build(
     metadata_by_sn: dict[int, AnimeMetadata] | None = None,
     metadata_raises: BaseException | None = None,
     progress_bus: ProgressBus | None = None,
+    parse_cooldown: _FakeParseCooldown | None = None,
 ) -> tuple[
     UpdateLoop,
     _FakeWorker,
@@ -188,6 +199,7 @@ def _build(
         logger=logger,
         cookie_repo=cookie_repo,  # type: ignore[arg-type]
         progress_bus=progress_bus,
+        parse_cooldown=parse_cooldown,  # type: ignore[arg-type]
     )
     return loop, worker, queue, anime_repo, cookie_repo, sn_list_repo, metadata, anime_list_entry_repo
 
@@ -547,3 +559,81 @@ def test_make_task_info_custom_name_none_when_empty(tmp_path: pathlib.Path) -> N
     task = loop._make_task_info(51, info, 'single')
 
     assert task.custom_name is None
+
+
+# ------------------------------------------------------------------ parse cooldown tests
+
+
+def test_check_tasks_parse_cooldown_called_n_minus_1_times(tmp_path: pathlib.Path) -> None:
+    """With N sns, parse_cooldown.wait must be called N-1 times (skip last)."""
+    cd = _FakeParseCooldown()
+    meta_by_sn = {
+        10: _meta(10),
+        20: _meta(20),
+        30: _meta(30),
+    }
+    loop, _w, _q, _r, _c, _sn, _md, _al = _build(
+        tmp_path,
+        metadata_by_sn=meta_by_sn,
+        parse_cooldown=cd,
+    )
+    loop.check_tasks({10: {'mode': 'single', 'tag': ''}, 20: {'mode': 'single', 'tag': ''}, 30: {'mode': 'single', 'tag': ''}})
+
+    assert cd.wait_calls == 2, f'Expected 2 cooldown waits for 3 sns, got {cd.wait_calls}'
+
+
+def test_check_tasks_no_cooldown_for_single_item(tmp_path: pathlib.Path) -> None:
+    """With exactly 1 sn, parse_cooldown.wait must NOT be called."""
+    cd = _FakeParseCooldown()
+    loop, _w, _q, _r, _c, _sn, _md, _al = _build(
+        tmp_path,
+        metadata_by_sn={42: _meta(42)},
+        parse_cooldown=cd,
+    )
+    loop.check_tasks({42: {'mode': 'single', 'tag': ''}})
+
+    assert cd.wait_calls == 0, f'Expected 0 cooldown waits for 1 sn, got {cd.wait_calls}'
+
+
+def test_check_tasks_logs_name_before_fetch(tmp_path: pathlib.Path) -> None:
+    """「更新資訊 正在檢查…」log must be emitted BEFORE the metadata fetch."""
+    # Seed the entry repo with a cached name so the log shows it.
+    entries = [
+        AnimeListEntryDTO(sn=77, enabled=True, mode='single', tag='', user_id='u1', anime_name='テストアニメ'),
+    ]
+    log_events: list[tuple[str, str, str]] = []  # (tag, detail, phase)
+    fetch_calls: list[int] = []
+
+    class _TrackedExtractor:
+        def fetch(self, sn: int) -> AnimeMetadata:
+            fetch_calls.append(sn)
+            return _meta(sn)
+
+    loop, _w, _q, _r, _c, _sn, _md, _al = _build(
+        tmp_path,
+        anime_list_entries=entries,
+        metadata_by_sn={77: _meta(77)},
+    )
+    # Replace the metadata extractor with the tracking one.
+    loop._metadata_extractor = _TrackedExtractor()  # type: ignore[assignment]
+
+    original_info = loop._logger.info
+
+    def capturing_info(sn: Any, tag: str, detail: str, **kwargs: Any) -> None:
+        # Record fetch state at time of this log call.
+        log_events.append((tag, detail, 'before_fetch' if not fetch_calls else 'after_fetch'))
+        original_info(sn, tag, detail, **kwargs)
+
+    loop._logger.info = capturing_info  # type: ignore[method-assign]
+
+    loop.check_tasks({77: {'mode': 'single', 'tag': ''}})
+
+    # Find the 「正在檢查」log entry.
+    checking_events = [(tag, detail, phase) for tag, detail, phase in log_events if '正在檢查' in detail]
+    assert checking_events, 'Expected a 正在檢查 log entry'
+    assert checking_events[0][2] == 'before_fetch', (
+        f'正在檢查 log was emitted {checking_events[0][2]}, expected before_fetch'
+    )
+    assert 'テストアニメ' in checking_events[0][1], (
+        f'Expected cached name in log, got: {checking_events[0][1]!r}'
+    )
