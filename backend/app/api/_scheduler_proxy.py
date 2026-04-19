@@ -21,6 +21,7 @@ import time
 import typing as T
 
 import httpx
+import websockets.exceptions
 
 if T.TYPE_CHECKING:
     from ..downloader.progress import TaskProgress
@@ -125,7 +126,33 @@ class SchedulerProxy:
                 attempt = 0
             except asyncio.CancelledError:
                 return
+            except (
+                ConnectionRefusedError,
+                ConnectionResetError,
+                ConnectionAbortedError,
+                OSError,
+                websockets.exceptions.ConnectionClosed,
+                websockets.exceptions.InvalidHandshake,
+                websockets.exceptions.WebSocketException,
+                TimeoutError,
+            ) as exc:
+                # Known expected conditions (scheduler restart / startup race /
+                # network blip / keep-alive timeout): log concisely, no
+                # traceback, keep retrying.
+                delay = _BACKOFF_SEQUENCE[min(attempt, len(_BACKOFF_SEQUENCE) - 1)]
+                delay = min(delay, _BACKOFF_CAP)
+                self._logger.info(
+                    'SchedulerProxy WS disconnected (retry in %.0fs): %s',
+                    delay,
+                    type(exc).__name__,
+                )
+                attempt += 1
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    return
             except Exception as exc:  # noqa: BLE001
+                # Unexpected errors still get WARN + full traceback.
                 delay = _BACKOFF_SEQUENCE[min(attempt, len(_BACKOFF_SEQUENCE) - 1)]
                 delay = min(delay, _BACKOFF_CAP)
                 self._logger.warning(
