@@ -48,7 +48,7 @@ def main(
     ctx: typer.Context,
     sn: T.Annotated[
         int | None,
-        typer.Option('--sn', '-s', help='視頻sn碼(數字)'),
+        typer.Option('--sn', '-s', help='影片sn碼(數字)'),
     ] = None,
     resolution: T.Annotated[
         str | None,
