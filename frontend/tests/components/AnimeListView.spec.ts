@@ -36,6 +36,7 @@ function makeEntry(overrides: Partial<AnimeListEntry> = {}): AnimeListEntry {
     mode: null,
     tag: '',
     season: 1,
+    custom_name: null,
     comment: '',
     anime_name: null,
     downloaded_episodes: 0,
@@ -545,6 +546,108 @@ describe('AnimeListView — groupLabel', () => {
 
     const vm = wrapper.vm as unknown as { groupLabel: (tag: string) => string }
     expect(vm.groupLabel('秋番')).toBe('秋番')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// custom_name column tests
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — custom_name column', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockElMessageBoxConfirm.mockResolvedValue(undefined)
+  })
+
+  it('renders the 自訂名稱 column for each row', async () => {
+    list.mockResolvedValueOnce(
+      payload([makeEntry({ sn: 200, custom_name: null, anime_name: 'テスト' })]),
+    )
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    // There should be a td with data-label="自訂名稱"
+    const customNameCell = wrapper.find('td[data-label="自訂名稱"]')
+    expect(customNameCell.exists()).toBe(true)
+  })
+
+  it('shows placeholder when custom_name is null', async () => {
+    list.mockResolvedValueOnce(
+      payload([makeEntry({ sn: 201, custom_name: null })]),
+    )
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const customInput = wrapper.find('td[data-label="自訂名稱"] input.el-input')
+    expect(customInput.exists()).toBe(true)
+    expect((customInput.element as HTMLInputElement).placeholder).toBe('（預設使用抓到的名稱）')
+  })
+
+  it('input reflects existing custom_name value', async () => {
+    list.mockResolvedValueOnce(
+      payload([makeEntry({ sn: 202, custom_name: '既有覆蓋' })]),
+    )
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const customInput = wrapper.find('td[data-label="自訂名稱"] input.el-input')
+    expect((customInput.element as HTMLInputElement).value).toBe('既有覆蓋')
+  })
+
+  it('blur commits draft and marks dirty', async () => {
+    list.mockResolvedValueOnce(
+      payload([makeEntry({ sn: 203, custom_name: null, tag: '群' })]),
+    )
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { entries: AnimeListEntry[]; dirty: boolean }
+    const customInput = wrapper.find('td[data-label="自訂名稱"] input.el-input')
+    const inputEl = customInput.element as HTMLInputElement
+
+    // Type a new name
+    inputEl.value = '新自訂名'
+    await customInput.trigger('input')
+    // Not yet committed — entry.custom_name still null
+    expect(vm.entries[0]!.custom_name).toBeNull()
+
+    // Blur commits
+    await customInput.trigger('blur')
+    expect(vm.entries[0]!.custom_name).toBe('新自訂名')
+    expect(vm.dirty).toBe(true)
+  })
+
+  it('blank value on blur sets custom_name to null', async () => {
+    list.mockResolvedValueOnce(
+      payload([makeEntry({ sn: 204, custom_name: '既有', tag: '群' })]),
+    )
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { entries: AnimeListEntry[] }
+    const customInput = wrapper.find('td[data-label="自訂名稱"] input.el-input')
+    const inputEl = customInput.element as HTMLInputElement
+
+    // Clear the field
+    inputEl.value = ''
+    await customInput.trigger('input')
+    await customInput.trigger('blur')
+
+    // Empty string → null
+    expect(vm.entries[0]!.custom_name).toBeNull()
+  })
+
+  it('addEntry includes custom_name: null in the blank row', async () => {
+    list.mockResolvedValueOnce(payload([]))
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const addBtn = wrapper.findAll('button').find((b) => b.text().trim() === '新增項目')!
+    await addBtn.trigger('click')
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { entries: AnimeListEntry[] }
+    expect(vm.entries[0]!.custom_name).toBeNull()
   })
 })
 

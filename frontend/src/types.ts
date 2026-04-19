@@ -108,6 +108,7 @@ export interface AnimeListEntry {
   mode: AnimeListMode | null
   tag: string
   season: number
+  custom_name: string | null
   comment: string
   anime_name: string | null
   downloaded_episodes: number

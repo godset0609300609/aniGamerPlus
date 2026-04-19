@@ -9,6 +9,7 @@ function makeEntry(overrides: Partial<AnimeListEntry> = {}): AnimeListEntry {
     mode: 'latest',
     tag: '',
     season: 1,
+    custom_name: null,
     comment: '',
     anime_name: null,
     downloaded_episodes: 0,
