@@ -496,3 +496,112 @@ def test_popen_never_uses_shell_true(
 
     assert isinstance(captured['cmd'], list)
     assert captured['kwargs'].get('shell', False) is False
+
+
+# ---------------------------------------------------------------------------
+# feat(downloader): 正在移動檔案 status + log messages
+# ---------------------------------------------------------------------------
+
+
+def test_moving_file_status_set_before_replace(
+    tmp_path: pathlib.Path,
+    logger: Logger,
+    progress: ProgressBus,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``update_status(sn, '正在移動檔案')`` must be called before the file rename
+    completes, and ``update_status(sn, '下載完成')`` must be called after."""
+    downloading_file = tmp_path / 'downloading.mp4'
+    out_file = tmp_path / 'out.mp4'
+
+    fake = _FakePopen(
+        stderr_lines=[],
+        returncode=0,
+        produce_output_file=downloading_file,
+        output_file_size=1 * 1024 * 1024,
+    )
+    monkeypatch.setattr(
+        'app.downloader.ffmpeg_downloader.subprocess.Popen',
+        lambda *a, **kw: fake,
+    )
+
+    status_sequence: list[str] = []
+
+    orig_update_status = progress.update_status
+
+    def _record_status(sn: int, status: str) -> None:
+        status_sequence.append(status)
+        orig_update_status(sn, status)
+
+    monkeypatch.setattr(progress, 'update_status', _record_status)
+
+    dl = FFmpegDownloader(_settings(), _FakeFFmpegRunner(), progress, logger)
+    dl.download(
+        1,
+        'https://cdn/x.m3u8',
+        out_file,
+        downloading_file,
+        'out.mp4',
+        't',
+        total_duration_seconds=None,
+        realtime_show=False,
+    )
+
+    # '正在移動檔案' must appear before '下載完成' in the sequence.
+    assert '正在移動檔案' in status_sequence
+    assert '下載完成' in status_sequence
+    idx_moving = status_sequence.index('正在移動檔案')
+    idx_done = status_sequence.index('下載完成')
+    assert idx_moving < idx_done, (
+        f"'正在移動檔案' ({idx_moving}) must come before '下載完成' ({idx_done})"
+    )
+
+
+def test_moving_file_info_logs_emitted(
+    tmp_path: pathlib.Path,
+    logger: Logger,
+    progress: ProgressBus,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two ``logger.info`` calls should be emitted around the file rename:
+    one 'from temp' message and one 'moved to' message."""
+    downloading_file = tmp_path / 'downloading.mp4'
+    out_file = tmp_path / 'out.mp4'
+
+    fake = _FakePopen(
+        stderr_lines=[],
+        returncode=0,
+        produce_output_file=downloading_file,
+        output_file_size=512 * 1024,
+    )
+    monkeypatch.setattr(
+        'app.downloader.ffmpeg_downloader.subprocess.Popen',
+        lambda *a, **kw: fake,
+    )
+
+    info_messages: list[str] = []
+    orig_info = logger.info
+
+    def _capture_info(sn: int, tag: str, msg: str, **kwargs: object) -> None:
+        info_messages.append(msg)
+        orig_info(sn, tag, msg, **kwargs)
+
+    monkeypatch.setattr(logger, 'info', _capture_info)
+
+    dl = FFmpegDownloader(_settings(), _FakeFFmpegRunner(), progress, logger)
+    dl.download(
+        1,
+        'https://cdn/x.m3u8',
+        out_file,
+        downloading_file,
+        'out.mp4',
+        't',
+        total_duration_seconds=None,
+        realtime_show=False,
+    )
+
+    # One "from temp" log and one "moved to" log must appear.
+    from_temp = [m for m in info_messages if '從 temp' in m]
+    moved_to = [m for m in info_messages if '已移動到' in m]
+    assert from_temp, f'Expected 從 temp log; got {info_messages}'
+    assert moved_to, f'Expected 已移動到 log; got {info_messages}'

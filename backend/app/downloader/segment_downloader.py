@@ -123,9 +123,22 @@ class SegmentDownloader:
         if not merging_file.exists():
             raise exceptions.TryTooManyTimeError(f'sn={sn} ffmpeg reported success but {merging_file} missing')
 
+        self._progress.update_status(sn, '正在移動檔案')
+        self._logger.info(
+            sn,
+            '移動檔案',
+            f'從 temp 移動到 {output_file.name}',
+            display=False,
+        )
         if output_file.exists():
             output_file.unlink()
         merging_file.replace(output_file)
+        self._logger.info(
+            sn,
+            '移動檔案',
+            f'已移動到 {output_file}',
+            display=False,
+        )
 
         self._progress.update_status(sn, '下載完成')
         return int(output_file.stat().st_size // (1024 * 1024))

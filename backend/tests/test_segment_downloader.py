@@ -536,3 +536,87 @@ def test_cancel_mid_chunk_retry_raises_and_cleans_temp(
 
     # The temp dir must have been cleaned up on cancel.
     assert not temp_dir.exists()
+
+
+# ---------------------------------------------------------------------------
+# feat(downloader): 正在移動檔案 status + log messages (segment path)
+# ---------------------------------------------------------------------------
+
+
+def test_segment_moving_file_status_before_replace(
+    tmp_path: pathlib.Path,
+    logger: Logger,
+    progress: ProgressBus,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``update_status(sn, '正在移動檔案')`` must be called before
+    ``update_status(sn, '下載完成')`` in the segment-downloader path."""
+    client = _FakeClient()
+    ffmpeg = _FakeFFmpeg(merging_file_size=1 * 1024 * 1024)
+    downloader = SegmentDownloader(client, _settings(), ffmpeg, progress, logger)
+
+    status_sequence: list[str] = []
+    orig_update_status = progress.update_status
+
+    def _record(sn: int, status: str) -> None:
+        status_sequence.append(status)
+        orig_update_status(sn, status)
+
+    monkeypatch.setattr(progress, 'update_status', _record)
+
+    downloader.download(
+        1,
+        _m3u8_url(),
+        tmp_path / 'out.mp4',
+        tmp_path / 'temp',
+        tmp_path / 'temp' / 'merge.mp4',
+        'out.mp4',
+        't',
+        realtime_show=False,
+    )
+
+    assert '正在移動檔案' in status_sequence
+    assert '下載完成' in status_sequence
+    idx_moving = status_sequence.index('正在移動檔案')
+    idx_done = status_sequence.index('下載完成')
+    assert idx_moving < idx_done, (
+        f"'正在移動檔案' ({idx_moving}) must precede '下載完成' ({idx_done})"
+    )
+
+
+def test_segment_moving_file_info_logs_emitted(
+    tmp_path: pathlib.Path,
+    logger: Logger,
+    progress: ProgressBus,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two ``logger.info`` calls must appear around the merge-file rename:
+    one 'from temp' message and one 'moved to' message."""
+    client = _FakeClient()
+    ffmpeg = _FakeFFmpeg(merging_file_size=512 * 1024)
+    downloader = SegmentDownloader(client, _settings(), ffmpeg, progress, logger)
+
+    info_messages: list[str] = []
+    orig_info = logger.info
+
+    def _capture(sn: int, tag: str, msg: str, **kwargs: object) -> None:
+        info_messages.append(msg)
+        orig_info(sn, tag, msg, **kwargs)
+
+    monkeypatch.setattr(logger, 'info', _capture)
+
+    downloader.download(
+        1,
+        _m3u8_url(),
+        tmp_path / 'out.mp4',
+        tmp_path / 'temp',
+        tmp_path / 'temp' / 'merge.mp4',
+        'out.mp4',
+        't',
+        realtime_show=False,
+    )
+
+    from_temp = [m for m in info_messages if '從 temp' in m]
+    moved_to = [m for m in info_messages if '已移動到' in m]
+    assert from_temp, f'Expected 從 temp log; got {info_messages}'
+    assert moved_to, f'Expected 已移動到 log; got {info_messages}'
