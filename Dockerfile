@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
 COPY backend/ /app/
+COPY docker/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 RUN uv sync --frozen --no-dev || uv sync --no-dev
 EXPOSE 5000 5001
-# No ENTRYPOINT — docker-compose 'command' decides scheduler vs api
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["api"]
