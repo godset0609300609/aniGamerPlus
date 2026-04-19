@@ -1,0 +1,132 @@
+"""Service exposing the downloader progress table as pydantic snapshots.
+
+When a :class:`~app.api._scheduler_proxy.SchedulerProxy` is wired, the
+snapshot is read from the proxy's cached WebSocket data.  Otherwise
+(legacy / CLI / scheduler-process mode) it reads directly from the
+in-process :class:`ProgressBus`.
+
+RBAC filtering
+--------------
+* admin: receives every in-flight task entry.
+* downloader: receives only entries whose ``owner_id`` matches the caller's
+  ``user.id``.
+
+The ``owner_username`` field is populated on admin snapshots by looking up
+the username for each ``owner_id`` via the :class:`UserRepository`.
+
+Terminal-status entries
+-----------------------
+Terminal entries (status in {"下載完成", "任務完成", …}) are **included** in
+the snapshot so the frontend can place them in the 近期完成 column via the
+WebSocket push (≤ 1 s latency) without waiting for the 60-second DB history
+poll.  ``ProgressBus`` keeps finished entries alive for 7 days, and the
+``finished_at`` field on the DTO tells the frontend exactly when the task
+completed.
+"""
+
+from __future__ import annotations
+
+import typing as T
+
+from ..models import TaskProgressEntry, TaskProgressSnapshot
+from ..persistence.user_repo import UserRow
+from ._factory import container_bound
+
+if T.TYPE_CHECKING:
+    from ..api._scheduler_proxy import SchedulerProxy
+    from ..downloader.progress import ProgressBus, TaskProgress
+    from ..persistence.user_repo import UserRepository
+
+
+class ProgressService:
+    """Snapshots the downloader's in-memory progress table."""
+
+    def __init__(
+        self,
+        progress_bus: ProgressBus,
+        user_repo: UserRepository | None = None,
+        scheduler_proxy: SchedulerProxy | None = None,
+    ) -> None:
+        self._bus = progress_bus
+        self._user_repo = user_repo
+        self._proxy = scheduler_proxy
+
+    def snapshot(self, user: UserRow) -> TaskProgressSnapshot:
+        """Return a progress snapshot filtered by the caller's role.
+
+        Data source priority:
+        1. ``scheduler_proxy.latest_snapshot()`` — multi-process mode.
+        2. ``progress_bus.snapshot()`` — in-process fallback (CLI / scheduler
+           process / proxy not wired).
+
+        If the proxy is wired but the scheduler is down, returns an empty
+        snapshot (the frontend shows a disconnect banner).
+
+        * admin: all in-flight tasks; ``owner_username`` is populated for
+          each entry whose ``owner_id`` is known.
+        * downloader: only tasks whose ``owner_id`` matches ``user.id``.
+        """
+        if self._proxy is not None:
+            raw: dict[int, TaskProgress] = self._proxy.latest_snapshot()
+        else:
+            raw = self._bus.snapshot()
+
+        if user.role == 'admin':
+            # Build a username cache to avoid N+1 repo queries.
+            owner_ids = {e.owner_id for e in raw.values() if e.owner_id is not None}
+            username_cache: dict[str, str] = {}
+            if self._user_repo is not None:
+                for uid in owner_ids:
+                    row = self._user_repo.get(uid)
+                    if row is not None:
+                        username_cache[uid] = row.username
+
+            tasks: dict[str, TaskProgressEntry] = {
+                str(sn): TaskProgressEntry(
+                    sn=sn,
+                    rate=entry.rate,
+                    status=entry.status,
+                    filename=entry.filename,
+                    bangumi_name=entry.bangumi_name,
+                    episode=entry.episode,
+                    resolution=entry.resolution,
+                    speed_mbps=entry.speed_mbps,
+                    eta_seconds=entry.eta_seconds,
+                    retries=entry.retries,
+                    started_at=(entry.started_at.isoformat() if entry.started_at is not None else None),
+                    finished_at=(entry.finished_at.isoformat() if entry.finished_at is not None else None),
+                    cooldown_until=(entry.cooldown_until.isoformat() if entry.cooldown_until is not None else None),
+                    owner_id=entry.owner_id,
+                    owner_username=username_cache.get(entry.owner_id) if entry.owner_id is not None else None,
+                )
+                for sn, entry in raw.items()
+            }
+        else:
+            # Downloader: only own tasks.
+            tasks = {
+                str(sn): TaskProgressEntry(
+                    sn=sn,
+                    rate=entry.rate,
+                    status=entry.status,
+                    filename=entry.filename,
+                    bangumi_name=entry.bangumi_name,
+                    episode=entry.episode,
+                    resolution=entry.resolution,
+                    speed_mbps=entry.speed_mbps,
+                    eta_seconds=entry.eta_seconds,
+                    retries=entry.retries,
+                    started_at=(entry.started_at.isoformat() if entry.started_at is not None else None),
+                    finished_at=(entry.finished_at.isoformat() if entry.finished_at is not None else None),
+                    cooldown_until=(entry.cooldown_until.isoformat() if entry.cooldown_until is not None else None),
+                    owner_id=None,
+                    owner_username=None,
+                )
+                for sn, entry in raw.items()
+                if entry.owner_id == user.id
+            }
+
+        return TaskProgressSnapshot(tasks=tasks)
+
+
+get_progress_service = container_bound(lambda c: ProgressService(c.progress_bus, c.user_repo, c.scheduler_proxy))
+"""FastAPI dependency resolver for :class:`ProgressService`."""

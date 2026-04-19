@@ -1,0 +1,70 @@
+"""Config service: bridges :class:`SettingsRepository` with the pydantic
+:class:`~app.models.WebSettings` model the frontend consumes.
+"""
+
+from __future__ import annotations
+
+import typing as T
+
+from ..models import WebSettings
+from ..settings_id_list import WEB_SETTINGS_KEYS
+from ._factory import container_bound
+
+if T.TYPE_CHECKING:
+    from ..persistence.settings_repo import SettingsRepository
+
+
+class ConfigService:
+    """Object-oriented wrapper around the config persistence layer.
+
+    The frontend operates on a flat 26-key subset of the full ``config.json``
+    schema (see :data:`WEB_SETTINGS_KEYS`). This service projects onto that
+    subset for reads, and merges an incoming :class:`WebSettings` back onto
+    the full :class:`AppSettings` for writes.
+    """
+
+    WEB_KEYS: tuple[str, ...] = tuple(WEB_SETTINGS_KEYS)
+
+    def __init__(self, settings_repo: SettingsRepository) -> None:
+        self._repo = settings_repo
+
+    # -- read ---------------------------------------------------------------
+
+    def read(self) -> WebSettings:
+        return self._repo.load().web_subset()
+
+    def schema_keys(self) -> list[str]:
+        return list(self.WEB_KEYS)
+
+    # -- write --------------------------------------------------------------
+
+    def write(self, settings: WebSettings) -> None:
+        """Merge ``settings`` (web subset) back onto the full :class:`AppSettings`.
+
+        Reads the current full settings, overlays ONLY the fields defined on
+        :class:`WebSettings`, and persists via the repo — preserving every
+        non-web key (FTP creds, notification tokens, nested models like
+        ``dashboard`` or ``coolq_settings``) exactly as they were on disk.
+
+        Uses per-field assignment rather than ``model_copy(update=...)``;
+        the latter does a shallow merge, so if a future payload ever
+        contained a nested model the whole sub-model would be replaced.
+        """
+        current = self._repo.load()
+        incoming = settings.model_dump(by_alias=False)
+
+        # Only the intersection of the payload and ``WebSettings``' field
+        # set is trusted; extra keys in the payload are dropped. We copy
+        # the current settings and mutate field-by-field so nested models
+        # are untouched.
+        allowed_fields = set(WebSettings.model_fields.keys())
+        updated = current.model_copy(deep=True)
+        for field_name in allowed_fields:
+            if field_name in incoming:
+                setattr(updated, field_name, incoming[field_name])
+
+        self._repo.save(updated)
+
+
+get_config_service = container_bound(lambda c: ConfigService(c.settings_repo))
+"""FastAPI dependency resolver for :class:`ConfigService`."""
