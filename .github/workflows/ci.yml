@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+# Cancel stale runs when new commits land on the same PR/branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (ruff + mypy + pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install Python 3.14
+        run: uv python install 3.14
+
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen --all-groups
+
+      - name: ruff check
+        run: uv run ruff check app tests
+
+      - name: ruff format --check
+        run: uv run ruff format --check app tests
+
+      - name: mypy
+        run: uv run mypy app
+
+      - name: pytest (with coverage)
+        run: uv run pytest
+
+      - name: Write coverage to job summary
+        if: always()
+        run: |
+          echo "## Backend coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          uv run coverage report --skip-covered --precision=1 >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload HTML coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-html
+          path: backend/htmlcov/
+          retention-days: 14
+
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-xml
+          path: backend/coverage.xml
+          retention-days: 14
+
+  frontend:
+    name: Frontend (vue-tsc + eslint + vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+          run_install: false
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: vue-tsc (typecheck)
+        run: pnpm run typecheck
+
+      - name: eslint
+        run: pnpm run lint
+
+      - name: vitest (with coverage)
+        run: pnpm run test:coverage
+
+      - name: Write coverage to job summary
+        if: always()
+        run: |
+          echo "## Frontend coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f coverage/coverage-summary.json ]; then
+            node -e "
+              const s = require('./coverage/coverage-summary.json').total;
+              const rows = ['lines','statements','branches','functions'].map(k => {
+                const m = s[k];
+                return '| ' + k + ' | ' + m.pct.toFixed(1) + '% | ' + m.covered + ' / ' + m.total + ' |';
+              });
+              process.stdout.write('| metric | pct | covered / total |\n| --- | --- | --- |\n' + rows.join('\n') + '\n');
+            " >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "_No coverage-summary.json produced._" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload HTML coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-html
+          path: frontend/coverage/
+          retention-days: 14
