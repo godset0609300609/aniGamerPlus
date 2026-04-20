@@ -80,6 +80,45 @@ class _CliAuditNoiseFilter:
         return not (record.name in self._AUDIT_LOGGERS and record.levelno < logging.WARNING)
 
 
+#: Signature strings that identify benign uvicorn WebSocket client-disconnect
+#: noise.  Extracted as a module-level constant so both :class:`_UvicornWsNoiseFilter`
+#: and :meth:`RingBufferHandler.push_parsed_entry` reference the same source of truth.
+_UVICORN_WS_NOISE_SIGS: tuple[str, ...] = (
+    'keepalive ping timeout',
+    'no close frame received',
+    'sent 1011',
+    'sent 1006',
+    'ConnectionClosedError',
+    'ConnectionClosedOK',
+    'WebSocket is closed',
+)
+
+
+class _UvicornWsNoiseFilter:
+    """Drop uvicorn.error records whose message or exception indicates a
+    benign client-disconnect WebSocket close (ping timeout, no close frame).
+
+    Browsers and mobile clients disconnect without clean close frames all
+    the time — uvicorn logs each as ERROR with a full traceback. The event
+    is expected, non-actionable, and dwarfs real server errors in the
+    panel. File handler still receives the record for audit.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
+        if record.name not in ('uvicorn.error', 'uvicorn.protocols.websockets'):
+            return True
+        msg = record.getMessage()
+        if any(sig in msg for sig in _UVICORN_WS_NOISE_SIGS):
+            return False
+        # Also inspect chained exceptions if exc_info is present
+        if record.exc_info and record.exc_info[1] is not None:
+            exc = record.exc_info[1]
+            exc_str = f'{type(exc).__name__}: {exc}'
+            if any(sig in exc_str for sig in _UVICORN_WS_NOISE_SIGS):
+                return False
+        return True
+
+
 class _PanelAllowlistFilter:
     """Allow only ``app.*`` records and real warnings/errors through.
 
@@ -230,8 +269,14 @@ class RingBufferHandler(logging.Handler):
         record (dedup against API-process-own logs).  Otherwise it is appended
         to the ring buffer and fan-out to all subscribers.
         """
-        # --- Panel allowlist (mirrors _PanelAllowlistFilter) ---
+        # --- WS noise filter (mirrors _UvicornWsNoiseFilter) ---
         name = str(entry.get('name', ''))
+        if name in ('uvicorn.error', 'uvicorn.protocols.websockets'):
+            msg = str(entry.get('message', ''))
+            if any(sig in msg for sig in _UVICORN_WS_NOISE_SIGS):
+                return  # drop benign disconnect before dedup + append
+
+        # --- Panel allowlist (mirrors _PanelAllowlistFilter) ---
         is_app = name == 'app' or name.startswith('app.')
         if not is_app:
             level = str(entry.get('level', '')).upper()
@@ -490,7 +535,7 @@ def build_log_config(
             'formatter': 'rich',
             # Rich handles its own coloring; stdout_display honours
             # ``display=False``; cli_audit_noise drops only spam loggers.
-            'filters': ['stdout_display', 'cli_audit_noise'],
+            'filters': ['stdout_display', 'cli_audit_noise', 'uvicorn_ws_noise'],
             'rich_tracebacks': True,
             'show_path': False,
             'show_time': True,
@@ -505,7 +550,7 @@ def build_log_config(
         'ring_buffer': {
             '()': f'{__name__}.get_ring_buffer_handler',
             'level': 'INFO',
-            'filters': ['panel_allowlist'],
+            'filters': ['panel_allowlist', 'uvicorn_ws_noise'],
         },
     }
     if save_logs:
@@ -563,6 +608,12 @@ def build_log_config(
             # user sees startup/shutdown messages.
             'cli_audit_noise': {
                 '()': f'{__name__}._CliAuditNoiseFilter',
+            },
+            # Drops benign uvicorn WS keepalive-timeout / no-close-frame
+            # records from stdout and ring_buffer (non-actionable churn).
+            # File handler is intentionally excluded for audit retention.
+            'uvicorn_ws_noise': {
+                '()': f'{__name__}._UvicornWsNoiseFilter',
             },
         },
         'handlers': handlers,
