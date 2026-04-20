@@ -3,9 +3,9 @@
  * backend health state.
  *
  * Hysteresis rules (prevents flapping):
- *  - 2 consecutive failures → transition to 'offline'
- *  - 1 success             → transition back to 'online'
- *  - 1 degraded response   → immediate 'degraded'
+ *  - 2 consecutive failures  → transition to 'offline'
+ *  - 2 consecutive degraded  → transition to 'degraded'
+ *  - 1 success               → transition back to 'online'
  */
 
 import { ref, type Ref } from 'vue'
@@ -14,6 +14,7 @@ export type HealthState = 'online' | 'degraded' | 'offline'
 
 const POLL_INTERVAL_MS = 10_000
 const FAILURE_THRESHOLD = 2
+const DEGRADED_THRESHOLD = 2
 
 export interface BackendHealth {
   state: Ref<HealthState>
@@ -44,6 +45,7 @@ export function useBackendHealth(options?: {
   const lastCheckAt = ref<number>(Date.now())
 
   let _failureCount = 0
+  let _degradedCount = 0
   let _intervalId: number | undefined = undefined
 
   async function ping(): Promise<void> {
@@ -67,17 +69,22 @@ export function useBackendHealth(options?: {
 
   function _onSuccess(): void {
     _failureCount = 0
+    _degradedCount = 0
     retryCount.value = 0
     state.value = 'online'
   }
 
   function _onDegraded(): void {
     _failureCount = 0
+    _degradedCount++
     retryCount.value = 0
-    state.value = 'degraded'
+    if (_degradedCount >= DEGRADED_THRESHOLD) {
+      state.value = 'degraded'
+    }
   }
 
   function _onFailure(): void {
+    _degradedCount = 0
     _failureCount++
     retryCount.value = _failureCount
     if (_failureCount >= FAILURE_THRESHOLD) {
