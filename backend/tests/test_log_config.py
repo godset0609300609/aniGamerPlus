@@ -27,6 +27,7 @@ from app.log_config import (
     _CliAuditNoiseFilter,
     _DisplayFilter,
     _PanelAllowlistFilter,
+    _UvicornWsNoiseFilter,
     build_log_config,
 )
 
@@ -250,11 +251,15 @@ def test_stdout_handler_uses_cli_audit_noise_filter_not_panel_allowlist(
 def test_ring_buffer_still_uses_panel_allowlist(
     tmp_path: pathlib.Path,
 ) -> None:
-    """ring_buffer handler must still use panel_allowlist filter."""
+    """ring_buffer handler must use panel_allowlist and uvicorn_ws_noise filters."""
     paths = _make_minimal_paths(tmp_path)
     cfg = build_log_config(paths, save_logs=False, quantity_of_logs=7)  # type: ignore[arg-type]
-    assert cfg['handlers']['ring_buffer']['filters'] == ['panel_allowlist'], (
-        'ring_buffer handler must use only panel_allowlist filter'
+    rb_filters = cfg['handlers']['ring_buffer']['filters']
+    assert 'panel_allowlist' in rb_filters, (
+        'ring_buffer handler must include panel_allowlist filter'
+    )
+    assert 'uvicorn_ws_noise' in rb_filters, (
+        'ring_buffer handler must include uvicorn_ws_noise filter'
     )
 
 
@@ -282,7 +287,7 @@ def _ring_buffer_only_cfg() -> dict:  # type: ignore[type-arg]
     """Return a minimal dictConfig dict wiring only the ring_buffer handler.
 
     Uses the same filter set that ``build_log_config`` produces for the
-    ring_buffer handler (panel_allowlist only; no stdout_display).
+    ring_buffer handler (panel_allowlist + uvicorn_ws_noise; no stdout_display).
     """
     return {
         'version': 1,
@@ -291,12 +296,15 @@ def _ring_buffer_only_cfg() -> dict:  # type: ignore[type-arg]
             'panel_allowlist': {
                 '()': f'{_lc.__name__}._PanelAllowlistFilter',
             },
+            'uvicorn_ws_noise': {
+                '()': f'{_lc.__name__}._UvicornWsNoiseFilter',
+            },
         },
         'handlers': {
             'ring_buffer': {
                 '()': f'{_lc.__name__}.get_ring_buffer_handler',
                 'level': 'INFO',
-                'filters': ['panel_allowlist'],
+                'filters': ['panel_allowlist', 'uvicorn_ws_noise'],
             },
         },
         'loggers': {},
@@ -828,4 +836,157 @@ def test_alembic_migration_does_not_wipe_dict_config(
     assert any('Bootstrap from log file after migrations' in m for m in app_messages), (
         'app.main INFO record emitted AFTER run_baseline_migrations() must still '
         'reach the ring buffer. alembic fileConfig must not disable existing loggers.'
+    )
+
+
+# ---------------------------------------------------------------------------
+# _UvicornWsNoiseFilter unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestUvicornWsNoiseFilter:
+    def setup_method(self) -> None:
+        self.f = _UvicornWsNoiseFilter()
+
+    def test_uvicorn_ws_noise_drops_keepalive_ping_timeout(self) -> None:
+        """uvicorn.error record with 'keepalive ping timeout' must be dropped."""
+        record = _make_record(
+            name='uvicorn.error',
+            msg='sent 1011 (internal error) keepalive ping timeout; no close frame received',
+            level=logging.ERROR,
+        )
+        assert self.f.filter(record) is False
+
+    def test_uvicorn_ws_noise_drops_1011(self) -> None:
+        """uvicorn.error record with 'sent 1011' must be dropped."""
+        record = _make_record(
+            name='uvicorn.error',
+            msg='sent 1011 (internal error) something',
+            level=logging.ERROR,
+        )
+        assert self.f.filter(record) is False
+
+    def test_uvicorn_ws_noise_drops_via_exc_info(self) -> None:
+        """Record with bland message but exc_info pointing to ConnectionClosedError must be dropped."""
+
+        class ConnectionClosedError(Exception):
+            pass
+
+        exc = ConnectionClosedError('keepalive ping timeout')
+        record = _make_record(
+            name='uvicorn.error',
+            msg='WebSocket handler error',
+            level=logging.ERROR,
+        )
+        record.exc_info = (type(exc), exc, None)  # type: ignore[assignment]
+        assert self.f.filter(record) is False
+
+    def test_uvicorn_ws_noise_allows_real_uvicorn_error(self) -> None:
+        """uvicorn.error record with unrelated message must pass through."""
+        record = _make_record(
+            name='uvicorn.error',
+            msg='Application error - 500',
+            level=logging.ERROR,
+        )
+        assert self.f.filter(record) is True
+
+    def test_uvicorn_ws_noise_allows_other_loggers(self) -> None:
+        """app.main record that happens to contain a noise signature must NOT be dropped."""
+        record = _make_record(
+            name='app.main',
+            msg='debug: keepalive ping timeout trace',
+            level=logging.ERROR,
+        )
+        assert self.f.filter(record) is True
+
+    def test_uvicorn_ws_noise_allows_uvicorn_protocols_websockets_real_error(self) -> None:
+        """uvicorn.protocols.websockets non-noise error must pass."""
+        record = _make_record(
+            name='uvicorn.protocols.websockets',
+            msg='Unhandled exception in ASGI application',
+            level=logging.ERROR,
+        )
+        assert self.f.filter(record) is True
+
+    def test_uvicorn_ws_noise_drops_websocket_is_closed(self) -> None:
+        """uvicorn.error record with 'WebSocket is closed' must be dropped."""
+        record = _make_record(
+            name='uvicorn.error',
+            msg='WebSocket is closed',
+            level=logging.ERROR,
+        )
+        assert self.f.filter(record) is False
+
+
+# ---------------------------------------------------------------------------
+# _UvicornWsNoiseFilter integration: ring buffer drops WS noise end-to-end
+# ---------------------------------------------------------------------------
+
+
+def test_uvicorn_ws_noise_drops_keepalive_from_ring_buffer(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """uvicorn.error ERROR with keepalive ping timeout must not appear in ring buffer."""
+    cfg = _ring_buffer_only_cfg()
+    cfg['loggers'] = {
+        'uvicorn.error': {
+            'level': 'INFO',
+            'handlers': ['ring_buffer'],
+            'propagate': False,
+        }
+    }
+    logging.config.dictConfig(cfg)
+
+    logging.getLogger('uvicorn.error').error(
+        'sent 1011 (internal error) keepalive ping timeout; no close frame received'
+    )
+
+    snap = _lc.get_ring_buffer_handler().snapshot()
+    assert not any('keepalive ping timeout' in e['message'] for e in snap), (
+        'WS keepalive-timeout records must be dropped from the ring buffer'
+    )
+
+
+def test_uvicorn_ws_noise_real_error_reaches_ring_buffer(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """uvicorn.error ERROR with real application error must still appear in ring buffer."""
+    cfg = _ring_buffer_only_cfg()
+    cfg['loggers'] = {
+        'uvicorn.error': {
+            'level': 'INFO',
+            'handlers': ['ring_buffer'],
+            'propagate': False,
+        }
+    }
+    logging.config.dictConfig(cfg)
+
+    logging.getLogger('uvicorn.error').error('Application error - 500')
+
+    snap = _lc.get_ring_buffer_handler().snapshot()
+    assert any('Application error - 500' in e['message'] for e in snap), (
+        'real uvicorn.error ERROR records must still reach the ring buffer'
+    )
+
+
+# ---------------------------------------------------------------------------
+# push_parsed_entry: WS noise filter via tailed log entries
+# ---------------------------------------------------------------------------
+
+
+def test_push_parsed_entry_drops_ws_noise_by_name_message(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """push_parsed_entry must drop uvicorn.error entries matching WS noise sigs."""
+    handler = _lc.get_ring_buffer_handler()
+    handler.push_parsed_entry(
+        _make_entry(
+            name='uvicorn.error',
+            level='ERROR',
+            message='sent 1011 (internal error) keepalive ping timeout; no close frame received',
+        )
+    )
+    snap = handler.snapshot()
+    assert not any('1011' in e['message'] for e in snap), (
+        'push_parsed_entry must drop uvicorn.error WS noise entries'
     )
