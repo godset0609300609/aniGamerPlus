@@ -11,6 +11,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Opt into Node 24 for all JavaScript actions — silences the Node-20
+# deprecation warning for actions/upload-artifact@v5 and pnpm/action-setup@v4
+# until those publishers ship Node-24-native majors.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   backend:
     name: Backend (ruff + mypy + pytest)
