@@ -19,6 +19,7 @@ import time
 import typing as T
 
 from . import exceptions
+from ._file_utils import move_file
 
 if T.TYPE_CHECKING:
     from ..logging_ import Logger
@@ -136,9 +137,7 @@ class FFmpegDownloader:
             f'從 temp 移動到 {output_file.name}',
             display=False,
         )
-        if output_file.exists():
-            output_file.unlink()
-        downloading_file.replace(output_file)
+        move_file(downloading_file, output_file)
         self._logger.info(
             sn,
             '移動檔案',
