@@ -9,7 +9,6 @@ import pytest
 
 from app.scheduler.watchdog import SchedulerWatchdog
 
-
 # ---------------------------------------------------------------------------
 # beat() updates last_beat
 # ---------------------------------------------------------------------------

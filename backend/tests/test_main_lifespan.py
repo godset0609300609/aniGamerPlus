@@ -55,7 +55,7 @@ class _RecordingUpdateLoop:
         self._release.set()
 
 
-def _lifespan_container(fake_container: 'FakeContainer', loop: _RecordingUpdateLoop) -> Any:
+def _lifespan_container(fake_container: FakeContainer, loop: _RecordingUpdateLoop) -> Any:
     """Return a container proxy that satisfies :class:`DashboardApp`.
 
     Adds a ``build_update_loop`` method returning ``loop`` on top of the
@@ -77,7 +77,7 @@ def _lifespan_container(fake_container: 'FakeContainer', loop: _RecordingUpdateL
 
 
 def test_lifespan_spawns_scheduler_thread(
-    fake_container: 'FakeContainer',
+    fake_container: FakeContainer,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With the env-var unset, the lifespan starts one daemon thread."""
@@ -107,7 +107,7 @@ def test_lifespan_spawns_scheduler_thread(
 
 
 def test_lifespan_respects_env_var_disable(
-    fake_container: 'FakeContainer',
+    fake_container: FakeContainer,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``ANIGAMERPLUS_DISABLE_SCHEDULER=1`` skips the scheduler spawn."""

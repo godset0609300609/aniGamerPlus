@@ -26,7 +26,6 @@ from app.persistence.user_repo import UserRow
 
 from .conftest import FakeContainer
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -116,6 +115,9 @@ def _make_client_for_user(
     """Build a TestClient with current_user_opt overridden to return *user*."""
     monkeypatch.setenv('ANIGAMERPLUS_DISABLE_SCHEDULER', '1')
 
+    import types
+
+    from app.api.health import HealthService, get_health_service
     from app.main import DashboardApp
     from app.services import (
         AnimeListService,
@@ -131,8 +133,6 @@ def _make_client_for_user(
         get_snlist_service,
         get_task_service,
     )
-    from app.api.health import HealthService, get_health_service
-    import types
 
     proxy = types.SimpleNamespace(
         paths=fake_container.paths,
@@ -247,7 +247,7 @@ def test_downloader_receives_no_messages_when_all_have_sn(
     _emit_to_handler(handler, 'dl-only', sn=42)
 
     tc = _make_client_for_user(fake_container, monkeypatch, user=_downloader_user())
-    with tc.websocket_connect('/api/ws/logs') as ws:
+    with tc.websocket_connect('/api/ws/logs'):
         # Nothing to receive from history; the socket just stays open.
         # We verify by checking the snapshot is empty for this user.
         pass  # No recv_text — if one was pending the test would deadlock.

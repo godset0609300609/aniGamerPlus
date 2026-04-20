@@ -22,7 +22,6 @@ from app.models import AppSettings
 from app.persistence.paths import WorkspacePaths
 from app.scheduler.cd_counter import DownloadCooldown
 
-
 # ---------------------------------------------------------------------------
 # Collaborator fakes
 # ---------------------------------------------------------------------------
@@ -486,8 +485,8 @@ def test_cancel_between_m3u8_and_download_stops_pipeline(tmp_path: pathlib.Path)
             return result
 
     from app.downloader.filename import FilenameBuilder
-    from app.persistence.paths import WorkspacePaths
     from app.logging_ import Logger
+    from app.persistence.paths import WorkspacePaths
 
     paths = WorkspacePaths.detect(working_dir=tmp_path)
     logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
@@ -728,8 +727,8 @@ def test_cancel_after_download_stops_post_processing(tmp_path: pathlib.Path) -> 
             return size
 
     from app.downloader.filename import FilenameBuilder
-    from app.persistence.paths import WorkspacePaths
     from app.logging_ import Logger
+    from app.persistence.paths import WorkspacePaths
 
     paths = WorkspacePaths.detect(working_dir=tmp_path)
     logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
@@ -778,8 +777,8 @@ def test_download_failure_updates_status_to_failed_no_stream(
             raise exceptions.NoAvailableStreamError('page has no title — episode may be deleted')
 
     from app.downloader.filename import FilenameBuilder
-    from app.persistence.paths import WorkspacePaths
     from app.logging_ import Logger
+    from app.persistence.paths import WorkspacePaths
 
     paths = WorkspacePaths.detect(working_dir=tmp_path)
     logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
@@ -826,8 +825,8 @@ def test_download_failure_updates_status_to_failed_too_many_tries(
             raise exceptions.TryTooManyTimeError('retries exhausted')
 
     from app.downloader.filename import FilenameBuilder
-    from app.persistence.paths import WorkspacePaths
     from app.logging_ import Logger
+    from app.persistence.paths import WorkspacePaths
 
     paths = WorkspacePaths.detect(working_dir=tmp_path)
     logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)

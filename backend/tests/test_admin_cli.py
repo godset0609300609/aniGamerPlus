@@ -9,14 +9,11 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import io
-import sys
 
 import pytest
 
 from app.admin_cli import cmd_demote, cmd_list, cmd_promote
 from app.persistence.user_repo import UserRow
-
 
 # ---------------------------------------------------------------------------
 # Helpers

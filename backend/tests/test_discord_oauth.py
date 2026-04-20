@@ -68,8 +68,9 @@ def test_build_authorize_url_contains_redirect_uri() -> None:
 async def test_exchange_code_posts_to_discord_token_url() -> None:
     """exchange_code should POST to the Discord token endpoint and return
     the parsed JSON body."""
-    import httpx
     from unittest.mock import AsyncMock, MagicMock
+
+    import httpx
 
     fake_response = MagicMock()
     fake_response.raise_for_status = MagicMock()
@@ -97,8 +98,9 @@ async def test_exchange_code_posts_to_discord_token_url() -> None:
 
 @pytest.mark.anyio
 async def test_exchange_code_raises_on_http_error() -> None:
-    import httpx
     from unittest.mock import AsyncMock, MagicMock
+
+    import httpx
 
     fake_response = MagicMock()
     fake_response.raise_for_status.side_effect = httpx.HTTPStatusError(
@@ -124,8 +126,9 @@ async def test_exchange_code_raises_on_http_error() -> None:
 
 @pytest.mark.anyio
 async def test_fetch_user_info_returns_avatar_url() -> None:
-    import httpx
     from unittest.mock import AsyncMock, MagicMock
+
+    import httpx
 
     fake_response = MagicMock()
     fake_response.raise_for_status = MagicMock()
@@ -149,8 +152,9 @@ async def test_fetch_user_info_returns_avatar_url() -> None:
 
 @pytest.mark.anyio
 async def test_fetch_user_info_none_avatar_when_no_hash() -> None:
-    import httpx
     from unittest.mock import AsyncMock, MagicMock
+
+    import httpx
 
     fake_response = MagicMock()
     fake_response.raise_for_status = MagicMock()
@@ -173,8 +177,9 @@ async def test_fetch_user_info_none_avatar_when_no_hash() -> None:
 
 @pytest.mark.anyio
 async def test_fetch_user_info_calls_bearer_auth() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
     import httpx
-    from unittest.mock import AsyncMock, MagicMock, call
 
     fake_response = MagicMock()
     fake_response.raise_for_status = MagicMock()

@@ -20,7 +20,6 @@ from app.models import AppSettings
 from app.persistence.cookie_repo import CookieRepository
 from app.persistence.paths import WorkspacePaths
 
-
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------

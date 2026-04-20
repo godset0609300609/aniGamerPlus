@@ -16,9 +16,8 @@ import pathlib
 from typing import Any
 from unittest import mock
 
-import pytest
-
 import bs4
+import pytest
 
 from app.downloader import exceptions
 from app.downloader.http_client import AniGamerHttpClient
@@ -72,7 +71,7 @@ def _html(title: str, *, with_list: bool = False, with_playing: bool = True) -> 
           </body>
         </html>
         """
-    ).encode('utf-8')
+    ).encode()
 
 
 @pytest.fixture
@@ -178,18 +177,16 @@ def test_web_branch_404_raises_no_available_stream(http_client: AniGamerHttpClie
     fake = _FakeResponse(status_code=404, content=b'<html/>')
     extractor = _extractor(http_client, logger)
 
-    with mock.patch.object(http_client, 'get', return_value=fake):
-        with pytest.raises(exceptions.NoAvailableStreamError):
-            extractor.fetch(999999)
+    with mock.patch.object(http_client, 'get', return_value=fake), pytest.raises(exceptions.NoAvailableStreamError):
+        extractor.fetch(999999)
 
 
 def test_web_branch_missing_title_raises(http_client: AniGamerHttpClient, logger: Logger) -> None:
     fake = _FakeResponse(content=b'<html><body><p>empty</p></body></html>')
     extractor = _extractor(http_client, logger)
 
-    with mock.patch.object(http_client, 'get', return_value=fake):
-        with pytest.raises(exceptions.NoAvailableStreamError):
-            extractor.fetch(1)
+    with mock.patch.object(http_client, 'get', return_value=fake), pytest.raises(exceptions.NoAvailableStreamError):
+        extractor.fetch(1)
 
 
 # ---------------------------------------------------------------------------
@@ -246,9 +243,11 @@ def test_fetch_web_missing_title_gives_diagnostic_error(http_client: AniGamerHtt
     )
     extractor = _extractor(http_client, logger)
 
-    with mock.patch.object(http_client, 'get', return_value=fake):
-        with pytest.raises(exceptions.NoAvailableStreamError) as exc_info:
-            extractor.fetch(48430)
+    with (
+        mock.patch.object(http_client, 'get', return_value=fake),
+        pytest.raises(exceptions.NoAvailableStreamError) as exc_info,
+    ):
+        extractor.fetch(48430)
 
     msg = str(exc_info.value)
     assert 'status=200' in msg

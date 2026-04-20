@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import logging
 import time
@@ -14,7 +15,6 @@ import pytest
 
 from app.api._scheduler_proxy import SchedulerProxy, SchedulerUnreachable, _parse_snapshot
 from app.downloader.progress import TaskProgress
-
 
 # ---------------------------------------------------------------------------
 # _parse_snapshot — unit tests (sync)
@@ -187,9 +187,11 @@ async def test_enqueue_manual_raises_scheduler_unreachable_on_connect_error(
     async def _mock_post(url: str, **kwargs: Any) -> httpx.Response:
         raise httpx.ConnectError('connection refused')
 
-    with patch.object(proxy._client, 'post', side_effect=_mock_post):
-        with pytest.raises(SchedulerUnreachable, match='unreachable'):
-            await proxy.enqueue_manual(req, 'u1')
+    with (
+        patch.object(proxy._client, 'post', side_effect=_mock_post),
+        pytest.raises(SchedulerUnreachable, match='unreachable'),
+    ):
+        await proxy.enqueue_manual(req, 'u1')
 
 
 @pytest.mark.anyio
@@ -204,9 +206,11 @@ async def test_enqueue_manual_raises_scheduler_unreachable_on_timeout(
     async def _mock_post(url: str, **kwargs: Any) -> httpx.Response:
         raise httpx.TimeoutException('timed out')
 
-    with patch.object(proxy._client, 'post', side_effect=_mock_post):
-        with pytest.raises(SchedulerUnreachable, match='unreachable'):
-            await proxy.enqueue_manual(req, 'u1')
+    with (
+        patch.object(proxy._client, 'post', side_effect=_mock_post),
+        pytest.raises(SchedulerUnreachable, match='unreachable'),
+    ):
+        await proxy.enqueue_manual(req, 'u1')
 
 
 @pytest.mark.anyio
@@ -222,9 +226,11 @@ async def test_enqueue_manual_raises_scheduler_unreachable_on_5xx(
         raw_request = httpx.Request('POST', 'http://127.0.0.1:5001/internal/tasks/manual')
         return httpx.Response(503, request=raw_request)
 
-    with patch.object(proxy._client, 'post', side_effect=_mock_post):
-        with pytest.raises(SchedulerUnreachable, match='503'):
-            await proxy.enqueue_manual(req, 'u1')
+    with (
+        patch.object(proxy._client, 'post', side_effect=_mock_post),
+        pytest.raises(SchedulerUnreachable, match='503'),
+    ):
+        await proxy.enqueue_manual(req, 'u1')
 
 
 @pytest.mark.anyio
@@ -302,10 +308,8 @@ async def test_run_progress_subscription_cancels_cleanly(
         # Let it attempt once and start the back-off sleep.
         await asyncio.sleep(0.05)
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     # Scheduler should still be reported as down.
     assert not proxy.is_scheduler_up()
@@ -554,10 +558,8 @@ def _run_proxy_subscription_once(
             task = asyncio.create_task(proxy.run_progress_subscription())
             await asyncio.sleep(0.05)
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
 
     asyncio.run(_run())
 
@@ -606,7 +608,7 @@ def test_websocket_connection_closed_logs_error_no_traceback(proxy: SchedulerPro
             super().__init__(None, None)  # type: ignore[arg-type]
 
     error_records, _warn = _run_proxy_subscription_once(proxy, _FakeConnClosed)
-    assert error_records, f'Expected ERROR reconnect log for ConnectionClosed; got nothing'
+    assert error_records, 'Expected ERROR reconnect log for ConnectionClosed; got nothing'
     for rec in error_records:
         assert rec.exc_info is None
 
@@ -631,6 +633,6 @@ def test_unexpected_exception_logs_warning_with_traceback(proxy: SchedulerProxy)
         proxy,
         lambda: RuntimeError('totally unexpected'),
     )
-    assert warning_records, f'Expected WARNING log for unexpected exc; got nothing'
+    assert warning_records, 'Expected WARNING log for unexpected exc; got nothing'
     for rec in warning_records:
         assert rec.exc_info is not None, f'Expected exc_info on WARNING record: {rec}'

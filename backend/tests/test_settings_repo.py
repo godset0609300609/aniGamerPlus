@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 
+import pydantic
 import pytest
 
 from app.logging_ import Logger
@@ -75,7 +76,7 @@ def test_multi_thread_clamp_to_five(paths: WorkspacePaths, repo: SettingsReposit
     # We emulate the legacy path: pydantic receives the RAW dict after
     # migration, which doesn't touch ``multi-thread``. If pydantic's own
     # validator caps at 5 the clamp is still correct — assert the end state.
-    with pytest.raises(Exception):
+    with pytest.raises(pydantic.ValidationError):
         repo.load()
 
     # Saner scenario: value = 5, within range, no clamp required.

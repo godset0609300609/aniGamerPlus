@@ -7,7 +7,6 @@ from typing import Any
 import fastapi.testclient
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers / fakes
 # ---------------------------------------------------------------------------
@@ -114,7 +113,6 @@ def test_health_ok_when_scheduler_healthy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Overall status is 'ok' when api and scheduler are both healthy."""
-    from app.api.health import get_health_service
 
     # Wire a healthy proxy into app state.
     proxy = _SchedulerProxyUp()
@@ -200,7 +198,6 @@ def test_health_fetch_timeout_is_3_seconds(
     health module and recording what timeout value the handler passes.
     """
     import asyncio
-    from typing import Any
 
     import app.api.health as health_module
 

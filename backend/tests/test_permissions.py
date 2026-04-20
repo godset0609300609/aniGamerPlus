@@ -21,9 +21,8 @@ import fastapi
 import fastapi.testclient
 import pytest
 
-from app.api.deps import current_user_opt, _SENTINEL_ADMIN
+from app.api.deps import current_user_opt
 from app.persistence.user_repo import UserRow
-
 
 # ---------------------------------------------------------------------------
 # User factories
@@ -58,6 +57,7 @@ def _perm_app(fake_container: Any, monkeypatch: pytest.MonkeyPatch) -> fastapi.F
     """Build a fresh FastAPI app bound to ``fake_container``, no auth bypass."""
     monkeypatch.setenv('ANIGAMERPLUS_DISABLE_SCHEDULER', '1')
 
+    from app.api.health import HealthService, get_health_service
     from app.main import DashboardApp
     from app.services import (
         AnimeListService,
@@ -73,7 +73,7 @@ def _perm_app(fake_container: Any, monkeypatch: pytest.MonkeyPatch) -> fastapi.F
         get_snlist_service,
         get_task_service,
     )
-    from app.api.health import HealthService, get_health_service
+
     from .conftest import _container_proxy
 
     container_proxy = _container_proxy(fake_container)
@@ -332,8 +332,8 @@ async def test_downloader_sees_only_own_progress(_perm_app: fastapi.FastAPI, fak
     bus.start(1001, 'task_A.mp4', owner_id=_DOWNLOADER_USER.id)
     bus.start(1002, 'task_B.mp4', owner_id='other-user-id')
 
-    from app.services.progress_service import ProgressService
     from app.services import get_progress_service
+    from app.services.progress_service import ProgressService
 
     progress_service = ProgressService(bus, fake_container.user_repo)
     _perm_app.dependency_overrides[get_progress_service] = lambda: progress_service

@@ -20,7 +20,6 @@ import typing as T
 
 from app.log_config import LogFileTailer, RingBufferHandler
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -285,7 +284,7 @@ def test_tailer_fan_out_to_ws_subscriber(tmp_path: pathlib.Path) -> None:
         try:
             item = await asyncio.wait_for(q.get(), timeout=3.0)
             received.append(item)  # type: ignore[arg-type]
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         finally:
             handler.unsubscribe(q)

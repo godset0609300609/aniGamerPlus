@@ -47,15 +47,14 @@ def test_move_file_cross_device_falls_back_to_shutil(tmp_path: pathlib.Path) -> 
 
     exdev = OSError(errno.EXDEV, 'Invalid cross-device link')
 
-    with mock.patch('pathlib.Path.replace', side_effect=exdev):
-        with mock.patch('shutil.move') as mock_move:
-            # shutil.move is patched: simulate it by writing dst ourselves so
-            # the test can verify the call arguments without touching the real FS.
-            def _fake_move(s: str, d: str) -> None:
-                pathlib.Path(d).write_bytes(pathlib.Path(s).read_bytes())
+    with mock.patch('pathlib.Path.replace', side_effect=exdev), mock.patch('shutil.move') as mock_move:
+        # shutil.move is patched: simulate it by writing dst ourselves so
+        # the test can verify the call arguments without touching the real FS.
+        def _fake_move(s: str, d: str) -> None:
+            pathlib.Path(d).write_bytes(pathlib.Path(s).read_bytes())
 
-            mock_move.side_effect = _fake_move
-            move_file(src, dst)
+        mock_move.side_effect = _fake_move
+        move_file(src, dst)
 
     mock_move.assert_called_once_with(str(src), str(dst))
     assert dst.exists()
@@ -70,9 +69,8 @@ def test_move_file_propagates_non_exdev_errors(tmp_path: pathlib.Path) -> None:
 
     eacces = OSError(errno.EACCES, 'Permission denied')
 
-    with mock.patch('pathlib.Path.replace', side_effect=eacces):
-        with pytest.raises(OSError) as exc_info:
-            move_file(src, dst)
+    with mock.patch('pathlib.Path.replace', side_effect=eacces), pytest.raises(OSError) as exc_info:
+        move_file(src, dst)
 
     assert exc_info.value.errno == errno.EACCES
 
@@ -125,9 +123,7 @@ def test_move_file_cross_device_fsyncs_destination_and_dir(
         move_file(src, dst)
 
     assert dst.exists()
-    assert len(fsync_calls) >= 2, (
-        f'expected at least 2 fsync calls (file + dir), got {len(fsync_calls)}'
-    )
+    assert len(fsync_calls) >= 2, f'expected at least 2 fsync calls (file + dir), got {len(fsync_calls)}'
 
 
 def test_move_file_same_device_skips_fsync(tmp_path: pathlib.Path) -> None:

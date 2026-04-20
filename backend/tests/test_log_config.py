@@ -22,7 +22,6 @@ import pytest
 
 import app.log_config as _lc
 from app.log_config import (
-    DailyLogFileHandler,
     RingBufferHandler,
     _CliAuditNoiseFilter,
     _DisplayFilter,
@@ -30,7 +29,6 @@ from app.log_config import (
     _UvicornWsNoiseFilter,
     build_log_config,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -95,9 +93,7 @@ def test_format_returns_raw_message_with_formatter_attached() -> None:
     assert not entry['message'].startswith('20'), (
         'message must not start with a timestamp (would duplicate prefix in UI)'
     )
-    assert 'INFO' not in entry['message'], (
-        'message must not embed the log level (already in the level field)'
-    )
+    assert 'INFO' not in entry['message'], 'message must not embed the log level (already in the level field)'
 
 
 def test_format_message_with_percent_formatting() -> None:
@@ -240,9 +236,7 @@ def test_stdout_handler_uses_cli_audit_noise_filter_not_panel_allowlist(
     paths = _make_minimal_paths(tmp_path)
     cfg = build_log_config(paths, save_logs=False, quantity_of_logs=7)  # type: ignore[arg-type]
     stdout_filters = cfg['handlers']['stdout']['filters']
-    assert 'cli_audit_noise' in stdout_filters, (
-        'stdout handler must include cli_audit_noise filter'
-    )
+    assert 'cli_audit_noise' in stdout_filters, 'stdout handler must include cli_audit_noise filter'
     assert 'panel_allowlist' not in stdout_filters, (
         'stdout handler must NOT include panel_allowlist filter (too strict for CLI)'
     )
@@ -255,12 +249,8 @@ def test_ring_buffer_still_uses_panel_allowlist(
     paths = _make_minimal_paths(tmp_path)
     cfg = build_log_config(paths, save_logs=False, quantity_of_logs=7)  # type: ignore[arg-type]
     rb_filters = cfg['handlers']['ring_buffer']['filters']
-    assert 'panel_allowlist' in rb_filters, (
-        'ring_buffer handler must include panel_allowlist filter'
-    )
-    assert 'uvicorn_ws_noise' in rb_filters, (
-        'ring_buffer handler must include uvicorn_ws_noise filter'
-    )
+    assert 'panel_allowlist' in rb_filters, 'ring_buffer handler must include panel_allowlist filter'
+    assert 'uvicorn_ws_noise' in rb_filters, 'ring_buffer handler must include uvicorn_ws_noise filter'
 
 
 def test_file_handler_has_no_allowlist_filters(
@@ -340,9 +330,7 @@ def test_ring_buffer_receives_display_false_records(
 
     snap = _lc.get_ring_buffer_handler().snapshot()
     messages = [e['message'] for e in snap]
-    assert '自動掃描 lifecycle event' in messages, (
-        'display=False record must reach the ring buffer (live log panel)'
-    )
+    assert '自動掃描 lifecycle event' in messages, 'display=False record must reach the ring buffer (live log panel)'
 
 
 def test_ring_buffer_still_filters_uvicorn_access(
@@ -380,15 +368,9 @@ def test_stdout_still_filters_display_false() -> None:
 
     record_none = _make_record(msg='third-party (no display attr)')
 
-    assert f.filter(record_false) is False, (
-        'display=False must be blocked from stdout'
-    )
-    assert f.filter(record_true) is True, (
-        'display=True must pass through stdout'
-    )
-    assert f.filter(record_none) is True, (
-        'records without display attr (uvicorn, alembic) must pass stdout'
-    )
+    assert f.filter(record_false) is False, 'display=False must be blocked from stdout'
+    assert f.filter(record_true) is True, 'display=True must pass through stdout'
+    assert f.filter(record_none) is True, 'records without display attr (uvicorn, alembic) must pass stdout'
 
 
 # ---------------------------------------------------------------------------
@@ -410,9 +392,7 @@ def test_audit_filter_drops_httpx_records(
     }
     logging.config.dictConfig(cfg)
 
-    logging.getLogger('httpx').info(
-        'HTTP Request: GET http://127.0.0.1:5001/internal/health "HTTP/1.1 200 OK"'
-    )
+    logging.getLogger('httpx').info('HTTP Request: GET http://127.0.0.1:5001/internal/health "HTTP/1.1 200 OK"')
 
     snap = _lc.get_ring_buffer_handler().snapshot()
     messages = [e['message'] for e in snap]
@@ -599,9 +579,7 @@ def test_push_parsed_entry_allows_app_main(
     handler = _lc.get_ring_buffer_handler()
     handler.push_parsed_entry(_make_entry(name='app.main', message='test-tag'))
     snap = handler.snapshot()
-    assert any(e['message'] == 'test-tag' for e in snap), (
-        'app.main entries must pass push_parsed_entry allowlist'
-    )
+    assert any(e['message'] == 'test-tag' for e in snap), 'app.main entries must pass push_parsed_entry allowlist'
 
 
 def test_push_parsed_entry_dedup_still_works(
@@ -713,9 +691,9 @@ def test_realistic_mixed_stream_smoke(
     cfg = _ring_buffer_only_cfg()
     cfg['loggers'] = {
         'uvicorn.access': {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
-        'uvicorn.error':  {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
-        'httpx':          {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
-        'app.main':       {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
+        'uvicorn.error': {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
+        'httpx': {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
+        'app.main': {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
         'alembic.runtime.migration': {'level': 'INFO', 'handlers': ['ring_buffer'], 'propagate': False},
     }
     logging.config.dictConfig(cfg)
@@ -732,10 +710,7 @@ def test_realistic_mixed_stream_smoke(
     logging.getLogger('uvicorn.error').info('Started server process [99]')
 
     snap = _lc.get_ring_buffer_handler().snapshot()
-    assert len(snap) == 2, (
-        f'Expected exactly 2 entries in ring buffer, got {len(snap)}: '
-        f'{[e["message"] for e in snap]}'
-    )
+    assert len(snap) == 2, f'Expected exactly 2 entries in ring buffer, got {len(snap)}: {[e["message"] for e in snap]}'
     messages = [e['message'] for e in snap]
     assert '自動掃描 偵測新集數' in messages
     assert '下載失敗 sn=1234' in messages
@@ -766,8 +741,7 @@ def test_build_log_config_sets_disable_existing_loggers_false(
     paths = _make_minimal_paths(tmp_path)
     cfg = build_log_config(paths, save_logs=False, quantity_of_logs=7)  # type: ignore[arg-type]
     assert cfg.get('disable_existing_loggers') is False, (
-        'build_log_config must set disable_existing_loggers=False '
-        'to survive uvicorn calling dictConfig a second time'
+        'build_log_config must set disable_existing_loggers=False to survive uvicorn calling dictConfig a second time'
     )
 
 
@@ -987,6 +961,4 @@ def test_push_parsed_entry_drops_ws_noise_by_name_message(
         )
     )
     snap = handler.snapshot()
-    assert not any('1011' in e['message'] for e in snap), (
-        'push_parsed_entry must drop uvicorn.error WS noise entries'
-    )
+    assert not any('1011' in e['message'] for e in snap), 'push_parsed_entry must drop uvicorn.error WS noise entries'

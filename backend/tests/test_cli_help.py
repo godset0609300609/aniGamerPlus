@@ -15,7 +15,6 @@ from typer.testing import CliRunner
 from app import cli
 from app.cli import app as cli_app
 
-
 _runner = CliRunner()
 
 

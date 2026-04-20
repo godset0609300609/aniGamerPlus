@@ -23,7 +23,6 @@ from app.persistence.repositories import AnimeRow
 from app.scheduler.queue_ import TaskInfo, TaskQueue
 from app.scheduler.worker import DownloadWorker
 
-
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------

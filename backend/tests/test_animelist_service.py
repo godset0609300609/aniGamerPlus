@@ -214,15 +214,16 @@ async def test_cached_anime_name_shows_without_download(tmp_path: pathlib.Path) 
         anime_repo = AnimeRepository(db)
 
         service = AnimeListService(sn_list_repo, anime_repo, entry_repo)
-        from app.persistence.user_repo import UserRow
         import datetime as dt
+
+        from app.persistence.user_repo import UserRow
 
         user = UserRow(
             id='u1',
             username='User1',
             avatar_url=None,
             role='downloader',
-            created_at=dt.datetime.now(dt.timezone.utc),
+            created_at=dt.datetime.now(dt.UTC),
             last_login_at=None,
         )
         entries = await service.list_entries(user)
@@ -347,7 +348,7 @@ def _make_user_row(uid: str, role: str) -> UserRow:
         username=f'User-{uid}',
         avatar_url=None,
         role=role,
-        created_at=dt.datetime.now(dt.timezone.utc),
+        created_at=dt.datetime.now(dt.UTC),
         last_login_at=None,
     )
 

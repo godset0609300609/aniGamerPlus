@@ -6,16 +6,13 @@ from __future__ import annotations
 
 import datetime
 import time
-import typing as T
-from typing import Any
 
 import fastapi.testclient
-import pytest
 
-from app.persistence.task_history_repo import TaskHistoryEntry
 from app.api.tasks_api import get_task_history_repo
-from .conftest import FakeContainer, FakeManualRunner, FakeSchedulerProxy
+from app.persistence.task_history_repo import TaskHistoryEntry
 
+from .conftest import FakeContainer, FakeManualRunner, FakeSchedulerProxy
 
 # ---------------------------------------------------------------------------
 # Fake TaskHistoryRepository for API tests
@@ -150,8 +147,8 @@ def test_cancel_task_admin_can_cancel_any(client: fastapi.testclient.TestClient,
     # Re-build the app with the proxy wired — done via dependency_overrides.
     # ProgressService reads from the local bus (no proxy) so the seeded task
     # is visible; TaskService still delegates cancel to the proxy.
-    from app.services.task_service import TaskService, get_task_service
     from app.services.progress_service import ProgressService
+    from app.services.task_service import TaskService, get_task_service
 
     progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
     task_service = TaskService(
@@ -174,8 +171,8 @@ def test_cancel_task_404_when_not_in_snapshot(
     """DELETE /api/tasks/{sn} returns 404 when the task is not in the user's snapshot."""
     proxy = FakeSchedulerProxy(up=True)
 
-    from app.services.task_service import TaskService, get_task_service
     from app.services.progress_service import ProgressService
+    from app.services.task_service import TaskService, get_task_service
 
     progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo, proxy)
     task_service = TaskService(
@@ -201,8 +198,8 @@ def test_cancel_task_503_when_scheduler_down(
 
     # ProgressService reads from the local bus (no proxy) so the seeded task
     # is visible; TaskService still delegates cancel to the proxy (which is down).
-    from app.services.task_service import TaskService, get_task_service
     from app.services.progress_service import ProgressService
+    from app.services.task_service import TaskService, get_task_service
 
     progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
     task_service = TaskService(

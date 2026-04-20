@@ -517,7 +517,6 @@ def test_worker_skips_cancelled_task_without_announcing(
     - We verify B's start_calls count has NOT increased beyond the initial
       _announce_waiting call made by _download_many.
     """
-    import time as _time
 
     start_calls: list[int] = []
 

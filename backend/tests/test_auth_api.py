@@ -13,18 +13,18 @@ import datetime
 
 import fastapi
 import fastapi.testclient
-import pytest
 import starlette.middleware.sessions
 
 from app.api.auth_api import (
     get_oauth_client,
     get_settings,
     get_user_repo,
+)
+from app.api.auth_api import (
     router as auth_router,
 )
 from app.models import AppSettings, DiscordAuthSettings
 from app.persistence.user_repo import UserRow
-
 
 # ---------------------------------------------------------------------------
 # Helpers
