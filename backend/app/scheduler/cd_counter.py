@@ -39,10 +39,26 @@ class DownloadCooldown:
 
     Thread-safe: multiple workers sharing one instance each sleep the full
     configured ``seconds``; concurrent callers serialise through the lock.
+
+    The constructor accepts either a plain ``int`` (backward-compatible) or a
+    zero-argument callable that returns an ``int``.  When a callable is passed,
+    :meth:`wait` and :meth:`schedule_release` read the current value on every
+    call so live config changes (e.g. from the Settings UI) take effect without
+    a process restart.
     """
 
-    def __init__(self, seconds: int, logger: Logger, *, label: str = '下載冷卻') -> None:
-        self._seconds = max(0, int(seconds))
+    def __init__(
+        self,
+        seconds: int | collections.abc.Callable[[], int],
+        logger: Logger,
+        *,
+        label: str = '下載冷卻',
+    ) -> None:
+        if callable(seconds):
+            self._seconds_fn: collections.abc.Callable[[], int] = seconds
+        else:
+            _const = max(0, int(seconds))
+            self._seconds_fn = lambda: _const
         self._logger = logger
         self._label = label
         self._lock = threading.Lock()
@@ -52,7 +68,7 @@ class DownloadCooldown:
 
     @property
     def seconds(self) -> int:
-        return self._seconds
+        return max(0, int(self._seconds_fn()))
 
     def wait(
         self,
@@ -63,7 +79,9 @@ class DownloadCooldown:
     ) -> None:
         """Block the current thread for the full configured cooldown duration.
 
-        Always sleeps ``self._seconds`` — no elapsed-time subtraction.
+        Always sleeps ``self.seconds`` — no elapsed-time subtraction.  The
+        value is read fresh from the provider on every call so changes made
+        via the Settings UI take effect immediately.
 
         Thread-safe: concurrent callers serialise through an internal lock;
         each call sleeps the full duration in sequence.
@@ -80,14 +98,15 @@ class DownloadCooldown:
         (e.g. "正在解析") until they actually acquire it — eliminating the
         "下載冷卻 with no countdown" race.
         """
-        if self._seconds <= 0:
+        current_seconds = self.seconds
+        if current_seconds <= 0:
             return
-        remaining = float(self._seconds)
+        remaining = float(current_seconds)
         with self._lock:
             self._logger.info(
                 None,
                 self._label,
-                f'{self._label}剩餘 {remaining:.1f} 秒 (設定: {self._seconds} 秒)',
+                f'{self._label}剩餘 {remaining:.1f} 秒 (設定: {current_seconds} 秒)',
                 display=False,
             )
             if progress_bus is not None and sn is not None:
@@ -107,8 +126,9 @@ class DownloadCooldown:
 
         def _run() -> None:
             try:
-                if self._seconds > 0:
-                    self._sleep(self._seconds)
+                _s = self.seconds
+                if _s > 0:
+                    self._sleep(_s)
             finally:
                 try:
                     release_callback()
