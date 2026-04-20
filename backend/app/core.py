@@ -222,8 +222,15 @@ def build_container() -> Container:
         max_download=settings.multi_thread,
         max_upload=settings.multi_upload,
     )
-    cooldown = DownloadCooldown(settings.download_cd, logger)
-    parse_cooldown = DownloadCooldown(settings.parse_cd, logger, label='解析冷卻')
+
+    def _download_cd_seconds() -> int:
+        return settings_repo.load().download_cd
+
+    def _parse_cd_seconds() -> int:
+        return settings_repo.load().parse_cd
+
+    cooldown = DownloadCooldown(_download_cd_seconds, logger)
+    parse_cooldown = DownloadCooldown(_parse_cd_seconds, logger, label='解析冷卻')
 
     manual_runner_container: list[ManualRunner] = []
 

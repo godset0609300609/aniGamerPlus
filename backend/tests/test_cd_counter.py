@@ -595,6 +595,32 @@ def test_schedule_release_sleeps_exactly_configured_seconds(tmp_path: pathlib.Pa
     )
 
 
+def test_wait_reads_seconds_from_provider_each_call(tmp_path: pathlib.Path) -> None:
+    """When a callable is passed as ``seconds``, wait() must call it fresh on
+    every invocation so live config changes take effect without restarting.
+
+    The provider returns 3 on the first call and 7 on the second; both sleep
+    durations must match the value the provider returned at that moment.
+    """
+    call_count = 0
+
+    def _provider() -> int:
+        nonlocal call_count
+        call_count += 1
+        return 3 if call_count == 1 else 7
+
+    slept_for: list[float] = []
+    cooldown = DownloadCooldown(_provider, _logger(tmp_path))
+    cooldown._set_sleep(lambda s: slept_for.append(s))
+
+    cooldown.wait()
+    cooldown.wait()
+
+    assert slept_for == [3.0, 7.0], (
+        f'Expected [3.0, 7.0] to reflect provider values, got {slept_for!r}'
+    )
+
+
 def test_schedule_release_error_log_uses_label_and_message_and_display_false(
     tmp_path: pathlib.Path,
 ) -> None:
