@@ -69,7 +69,7 @@ async def health(
     if scheduler_proxy is not None:
         try:
             if scheduler_proxy.is_scheduler_up():
-                raw = await asyncio.wait_for(scheduler_proxy.fetch_health(), timeout=1.0)
+                raw = await asyncio.wait_for(scheduler_proxy.fetch_health(), timeout=3.0)
                 scheduler_status = str(raw.get('status', 'unknown'))
                 scheduler_info = {k: v for k, v in raw.items() if k != 'status'}
         except Exception:  # noqa: BLE001
