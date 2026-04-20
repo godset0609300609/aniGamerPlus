@@ -6,7 +6,6 @@ We test the three dependency functions in isolation using fake/stub objects
 
 from __future__ import annotations
 
-import dataclasses
 import datetime
 
 import fastapi
@@ -14,7 +13,6 @@ import pytest
 
 from app.auth.deps import current_user, require_admin, require_user
 from app.persistence.user_repo import UserRow
-
 
 # ---------------------------------------------------------------------------
 # Helpers

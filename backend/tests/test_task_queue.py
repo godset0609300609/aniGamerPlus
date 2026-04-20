@@ -76,9 +76,8 @@ def test_download_slot_releases_on_normal_exit() -> None:
 
 def test_download_slot_releases_on_exception() -> None:
     q = TaskQueue(max_download=1, max_upload=1)
-    with pytest.raises(RuntimeError):
-        with q.download_slot():
-            raise RuntimeError('boom')
+    with pytest.raises(RuntimeError), q.download_slot():
+        raise RuntimeError('boom')
     # Permit must be back regardless of exception.
     acquired = q.download_limiter.acquire(timeout=0.5)
     assert acquired

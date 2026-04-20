@@ -7,16 +7,13 @@ column until the 60-second DB history poll fired.
 
 from __future__ import annotations
 
-import dataclasses
 import datetime
-import typing as T
 
 import pytest
 
 from app.downloader.progress import ProgressBus
 from app.persistence.user_repo import UserRow
 from app.services.progress_service import ProgressService
-
 
 # ---------------------------------------------------------------------------
 # Helpers

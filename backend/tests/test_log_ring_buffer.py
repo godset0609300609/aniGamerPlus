@@ -12,9 +12,6 @@ import datetime
 import logging
 import pathlib
 import threading
-import time
-
-import pytest
 
 from app.log_config import RingBufferHandler, _safe_put_nowait
 

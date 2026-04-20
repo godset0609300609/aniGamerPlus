@@ -163,7 +163,7 @@ def test_replace_all_for_user_is_atomic(tmp_path: pathlib.Path) -> None:
         repo.replace_all_for_user('u1', [AnimeListEntryDTO(sn=100)])
 
         # Try to insert two entries with the same sn — the UniqueConstraint will fire.
-        with pytest.raises(Exception):
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
             repo.replace_all_for_user(
                 'u1',
                 [AnimeListEntryDTO(sn=50), AnimeListEntryDTO(sn=50)],
@@ -252,7 +252,7 @@ def test_unique_constraint_prevents_duplicate_sn_per_user(
         repo.replace_all_for_user('u2', [AnimeListEntryDTO(sn=100)])
 
         # But u1 cannot have two rows with sn=100.
-        with pytest.raises(Exception):
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
             repo.replace_all_for_user(
                 'u1',
                 [AnimeListEntryDTO(sn=100), AnimeListEntryDTO(sn=100)],

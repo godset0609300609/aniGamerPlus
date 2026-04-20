@@ -10,8 +10,8 @@ import fastapi.testclient
 
 from app.api.deps import current_user_opt
 from app.persistence.user_repo import UserRow
-from .conftest import FakeContainer
 
+from .conftest import FakeContainer
 
 # ---------------------------------------------------------------------------
 # Helper: build a downloader-role user and a client that uses it.

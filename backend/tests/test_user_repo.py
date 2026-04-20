@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import pathlib
 
-import pytest
-
 from app.logging_ import Logger
 from app.persistence.db import Database
 from app.persistence.user_repo import UserRepository

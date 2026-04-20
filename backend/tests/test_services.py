@@ -19,7 +19,6 @@ from app.services.task_service import TaskService
 
 from .conftest import FakeContainer, FakeManualRunner, FakeSchedulerProxy
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -6,16 +6,15 @@ gets a clean schema without hitting the real ``aniGamer.db``.
 
 from __future__ import annotations
 
+import collections.abc
 import datetime
 import logging
 import pathlib
 
-import collections.abc
-
 import pytest
 
 from app.persistence.db import Database
-from app.persistence.task_history_repo import TaskHistoryRepository, _IN_PROGRESS_SENTINEL
+from app.persistence.task_history_repo import _IN_PROGRESS_SENTINEL, TaskHistoryRepository
 
 
 @pytest.fixture
@@ -59,7 +58,6 @@ def test_record_start_creates_in_progress_row(repo: TaskHistoryRepository) -> No
 
 def test_record_start_stores_metadata(repo: TaskHistoryRepository, db: Database) -> None:
     """record_start persists all optional metadata fields."""
-    import sqlalchemy
     from app.persistence.models import TaskHistoryRow
 
     started = datetime.datetime(2026, 4, 18, 10, 0, 0, tzinfo=datetime.UTC)
@@ -438,6 +436,6 @@ def test_normalize_legacy_statuses_is_idempotent(
     assert second == 0
 
 
-def db_from_repo(repo: TaskHistoryRepository) -> 'Database':
+def db_from_repo(repo: TaskHistoryRepository) -> Database:
     """Extract the Database from a repository (white-box helper for tests only)."""
     return repo._db  # type: ignore[attr-defined]

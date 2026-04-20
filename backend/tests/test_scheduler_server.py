@@ -13,10 +13,10 @@ from typing import Any
 
 import fastapi.testclient
 import pytest
+import starlette.websockets
 
 import app.scheduler_server as scheduler_server_module
-from app.scheduler_server import build_scheduler_app, _get_internal_secret
-
+from app.scheduler_server import build_scheduler_app
 
 # ---------------------------------------------------------------------------
 # Helpers / fakes
@@ -399,7 +399,7 @@ def test_progress_ws_serialises_cooldown_until_as_iso_string(
     container, _runner, bus = _fake_container(_TEST_SECRET)
     # Seed an entry and then set cooldown_until directly so we control the value.
     bus.seed(555, status='冷卻中', filename='ep_cd.mp4')
-    cooldown_dt = datetime.datetime(2026, 4, 18, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    cooldown_dt = datetime.datetime(2026, 4, 18, 12, 0, 0, tzinfo=datetime.UTC)
     bus._entries[555].cooldown_until = cooldown_dt
 
     app = build_scheduler_app(container)  # type: ignore[arg-type]
@@ -429,9 +429,8 @@ def test_ws_progress_rejects_missing_secret(
     app = build_scheduler_app(container)  # type: ignore[arg-type]
     client = fastapi.testclient.TestClient(app)
 
-    with pytest.raises(Exception):
-        with client.websocket_connect('/internal/progress') as ws:
-            ws.receive_text()
+    with pytest.raises(starlette.websockets.WebSocketDisconnect), client.websocket_connect('/internal/progress') as ws:
+        ws.receive_text()
 
 
 def test_ws_progress_rejects_wrong_secret(
@@ -444,12 +443,14 @@ def test_ws_progress_rejects_wrong_secret(
     app = build_scheduler_app(container)  # type: ignore[arg-type]
     client = fastapi.testclient.TestClient(app)
 
-    with pytest.raises(Exception):
-        with client.websocket_connect(
+    with (
+        pytest.raises(starlette.websockets.WebSocketDisconnect),
+        client.websocket_connect(
             '/internal/progress',
             headers={'X-Internal-Secret': 'wrong'},
-        ) as ws:
-            ws.receive_text()
+        ) as ws,
+    ):
+        ws.receive_text()
 
 
 # ---------------------------------------------------------------------------

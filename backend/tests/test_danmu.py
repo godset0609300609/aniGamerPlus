@@ -18,7 +18,6 @@ from app.downloader.danmu import DanmuRenderer
 from app.logging_ import Logger
 from app.persistence.paths import WorkspacePaths
 
-
 _TEMPLATE_BODY = (
     '[Script Info]\n'
     'Title: bahaDanmu\n'

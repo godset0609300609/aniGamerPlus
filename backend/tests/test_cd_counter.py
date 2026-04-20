@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import pathlib
 import threading
 from collections.abc import Callable
@@ -247,10 +248,8 @@ def test_wait_clears_cooldown_even_if_sleep_raises(
 
     cooldown._set_sleep(_raising_sleep)
 
-    try:
+    with contextlib.suppress(RuntimeError):
         cooldown.wait(progress_bus=bus, sn=3)
-    except RuntimeError:
-        pass
 
     # clear_cooldown must still have been called despite the exception.
     assert clear_calls == [3]
@@ -468,9 +467,7 @@ def test_wait_display_false_on_log(tmp_path: pathlib.Path) -> None:
     assert log_calls, 'wait() must emit at least one log'
     # All log emissions from wait() must use display=False (background log, not UI toast)
     for call in log_calls:
-        assert call['display'] is False, (
-            f"wait() logged with display={call['display']!r}, expected False"
-        )
+        assert call['display'] is False, f'wait() logged with display={call["display"]!r}, expected False'
 
 
 def test_wait_progress_bus_requires_both_bus_and_sn(tmp_path: pathlib.Path) -> None:
@@ -571,9 +568,7 @@ def test_schedule_release_skips_sleep_when_zero_seconds(tmp_path: pathlib.Path) 
     cooldown.schedule_release(done.set)
 
     assert done.wait(timeout=2)
-    assert slept_for == [], (
-        f'schedule_release must not sleep when seconds == 0, but slept_for = {slept_for!r}'
-    )
+    assert slept_for == [], f'schedule_release must not sleep when seconds == 0, but slept_for = {slept_for!r}'
 
 
 def test_schedule_release_sleeps_exactly_configured_seconds(tmp_path: pathlib.Path) -> None:
@@ -590,9 +585,7 @@ def test_schedule_release_sleeps_exactly_configured_seconds(tmp_path: pathlib.Pa
     cooldown.schedule_release(done.set)
 
     assert done.wait(timeout=2)
-    assert slept_for == [1.0], (
-        f'schedule_release must sleep 1.0 s when seconds == 1, got {slept_for!r}'
-    )
+    assert slept_for == [1.0], f'schedule_release must sleep 1.0 s when seconds == 1, got {slept_for!r}'
 
 
 def test_wait_reads_seconds_from_provider_each_call(tmp_path: pathlib.Path) -> None:
@@ -616,9 +609,7 @@ def test_wait_reads_seconds_from_provider_each_call(tmp_path: pathlib.Path) -> N
     cooldown.wait()
     cooldown.wait()
 
-    assert slept_for == [3.0, 7.0], (
-        f'Expected [3.0, 7.0] to reflect provider values, got {slept_for!r}'
-    )
+    assert slept_for == [3.0, 7.0], f'Expected [3.0, 7.0] to reflect provider values, got {slept_for!r}'
 
 
 def test_schedule_release_error_log_uses_label_and_message_and_display_false(
@@ -661,15 +652,14 @@ def test_schedule_release_error_log_uses_label_and_message_and_display_false(
     assert done.wait(timeout=2)
     # Give the thread time to reach the except block
     import time
+
     time.sleep(0.05)
 
     assert len(error_calls) == 1, f'Expected 1 error log, got {error_calls!r}'
     call = error_calls[0]
-    assert call['sn'] is None, f"sn must be None, got {call['sn']!r}"
+    assert call['sn'] is None, f'sn must be None, got {call["sn"]!r}'
     assert call['tag'] == 'error_label', f"tag must be 'error_label', got {call['tag']!r}"
     assert 'release callback failed' in call['detail'], (
         f"detail must mention 'release callback failed', got {call['detail']!r}"
     )
-    assert call['display'] is False, (
-        f"display must be False (background log), got {call['display']!r}"
-    )
+    assert call['display'] is False, f'display must be False (background log), got {call["display"]!r}'

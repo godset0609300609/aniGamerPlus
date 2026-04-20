@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import threading
 import typing as T
 
 import pytest
 
 from app.downloader.progress import ProgressBus
-
 
 # ---------------------------------------------------------------------------
 # Fake TaskHistoryRepository

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import collections.abc
+import contextlib
 import dataclasses
 import json
 import logging
@@ -23,7 +24,6 @@ from typing import Any
 
 import fastapi.testclient
 import pytest
-
 
 BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -46,10 +46,8 @@ def _reset_app_log_handlers() -> collections.abc.Iterator[None]:
             logger = logging.getLogger(name)
             for handler in list(logger.handlers):
                 logger.removeHandler(handler)
-                try:
+                with contextlib.suppress(Exception):
                     handler.close()
-                except Exception:
-                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +138,7 @@ class FakeContainer:
 @pytest.fixture
 def fake_container(
     tmp_path: pathlib.Path,
-) -> 'collections.abc.Iterator[FakeContainer]':
+) -> collections.abc.Iterator[FakeContainer]:
     """Build a :class:`FakeContainer` with every field pointing at ``tmp_path``.
 
     Uses an on-disk SQLite DB under ``tmp_path`` with baseline migrations
@@ -152,10 +150,10 @@ def fake_container(
     from app.downloader.progress import ProgressBus
     from app.logging_ import Logger
     from app.models import AppSettings
+    from app.persistence.anime_list_repo import AnimeListEntryRepository
     from app.persistence.cookie_repo import CookieRepository
     from app.persistence.db import Database
     from app.persistence.paths import WorkspacePaths
-    from app.persistence.anime_list_repo import AnimeListEntryRepository
     from app.persistence.repositories import AnimeRepository
     from app.persistence.settings_repo import SettingsRepository
     from app.persistence.sn_list_repo import SnListRepository
@@ -238,6 +236,8 @@ def client(
     """
     monkeypatch.setenv('ANIGAMERPLUS_DISABLE_SCHEDULER', '1')
 
+    from app.api.deps import _SENTINEL_ADMIN, current_user_opt
+    from app.api.health import HealthService, get_health_service
     from app.main import DashboardApp
     from app.services import (
         AnimeListService,
@@ -253,8 +253,6 @@ def client(
         get_snlist_service,
         get_task_service,
     )
-    from app.api.health import HealthService, get_health_service
-    from app.api.deps import current_user_opt, _SENTINEL_ADMIN
 
     # Build a dashboard app via a minimal Container-shaped proxy. We never
     # need the downloader collaborators here, so we leave them unset and

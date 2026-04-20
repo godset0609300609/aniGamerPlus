@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .conftest import FakeContainer, FakeManualRunner
 
 
-def _cli_with(fake_container: 'FakeContainer') -> Cli:
+def _cli_with(fake_container: FakeContainer) -> Cli:
     """Build a :class:`Cli` around a container-shaped namespace.
 
     :class:`Cli._run_manual` only reads ``settings_repo``, ``manual_runner``,
@@ -52,7 +52,7 @@ def _cli_with(fake_container: 'FakeContainer') -> Cli:
 
 
 def test_cli_current_path_flag_passes_cwd_as_save_dir(
-    fake_container: 'FakeContainer', monkeypatch: pytest.MonkeyPatch
+    fake_container: FakeContainer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``-c`` / ``--current_path`` must forward ``pathlib.Path.cwd()`` to
     :meth:`ManualRunner.run` as ``save_dir``.
@@ -69,7 +69,7 @@ def test_cli_current_path_flag_passes_cwd_as_save_dir(
     rc = cli.run(['--sn', '12345', '--current_path'])
     assert rc == 0
 
-    runner: 'FakeManualRunner' = fake_container.manual_runner
+    runner: FakeManualRunner = fake_container.manual_runner
     assert len(runner.run_calls) == 1
     call = runner.run_calls[0]
     assert call['sn'] == 12345
@@ -79,7 +79,7 @@ def test_cli_current_path_flag_passes_cwd_as_save_dir(
 
 
 def test_cli_without_current_path_flag_leaves_save_dir_none(
-    fake_container: 'FakeContainer',
+    fake_container: FakeContainer,
 ) -> None:
     """Omitting ``-c`` must pass ``save_dir=None`` so the orchestrator
     falls back to ``settings.bangumi_dir``."""
@@ -87,14 +87,12 @@ def test_cli_without_current_path_flag_leaves_save_dir_none(
     rc = cli.run(['--sn', '99'])
     assert rc == 0
 
-    runner: 'FakeManualRunner' = fake_container.manual_runner
+    runner: FakeManualRunner = fake_container.manual_runner
     assert len(runner.run_calls) == 1
     assert runner.run_calls[0]['save_dir'] is None
 
 
-def test_cli_current_path_short_form_also_wired(
-    fake_container: 'FakeContainer', monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cli_current_path_short_form_also_wired(fake_container: FakeContainer, monkeypatch: pytest.MonkeyPatch) -> None:
     """``-c`` short form is equivalent to ``--current_path``."""
     target_cwd = fake_container.paths.working_dir / 'short-form-cwd'
     target_cwd.mkdir(parents=True, exist_ok=True)
@@ -104,7 +102,7 @@ def test_cli_current_path_short_form_also_wired(
     rc = cli.run(['-s', '1', '-c'])
     assert rc == 0
 
-    runner: 'FakeManualRunner' = fake_container.manual_runner
+    runner: FakeManualRunner = fake_container.manual_runner
     save_dir = runner.run_calls[0]['save_dir']
     assert isinstance(save_dir, pathlib.Path)
     assert save_dir.resolve() == target_cwd.resolve()

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import re
-import threading
 import datetime
 import pathlib
+import re
+import threading
 
 import pytest
 
 from app.logging_ import Logger, LogLevel, LogRecord
-
 
 _LINE_RE = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} .*$')
 

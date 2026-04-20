@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
-from unittest import mock
 
 import pytest
 

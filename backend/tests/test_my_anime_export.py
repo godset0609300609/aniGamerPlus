@@ -7,8 +7,6 @@ import pathlib
 from collections.abc import Mapping
 from typing import Any
 
-import pytest
-
 from app.integrations.my_anime_export import MyAnimeExporter
 from app.logging_ import Logger
 

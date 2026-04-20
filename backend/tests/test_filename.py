@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import pathlib
 
-import pytest
-
 from app.downloader.filename import FilenameBuilder
 from app.downloader.metadata import AnimeMetadata
 from app.models import AppSettings

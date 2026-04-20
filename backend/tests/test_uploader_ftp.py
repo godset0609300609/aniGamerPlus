@@ -25,7 +25,7 @@ class _FakeSock:
 class _FakeFTP:
     """Stubbed ``ftplib.FTP`` / ``ftplib.FTP_TLS`` — records method calls."""
 
-    instances: list['_FakeFTP'] = []
+    instances: list[_FakeFTP] = []
 
     def __init__(
         self,
@@ -88,7 +88,7 @@ class _FakeFTP:
             return self.remote_sizes[filename]
         raise ftplib.error_perm('550 file not found')
 
-    def transfercmd(self, cmd: str, rest: int | None = None) -> '_FakeTransferConn':
+    def transfercmd(self, cmd: str, rest: int | None = None) -> _FakeTransferConn:
         return _FakeTransferConn(self, cmd, rest or 0)
 
     def voidresp(self) -> str:

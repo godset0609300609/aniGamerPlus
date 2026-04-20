@@ -393,6 +393,7 @@ def test_cancel_terminates_ffmpeg_and_cleans_partial(
     the downloading_file partial is removed; TaskCancelledError is raised."""
     import threading as _threading
     import time as _time
+
     from app.downloader.progress import ProgressBus
 
     # Use a real ProgressBus so get_cancel_event works.
@@ -552,9 +553,7 @@ def test_moving_file_status_set_before_replace(
     assert '下載完成' in status_sequence
     idx_moving = status_sequence.index('正在移動檔案')
     idx_done = status_sequence.index('下載完成')
-    assert idx_moving < idx_done, (
-        f"'正在移動檔案' ({idx_moving}) must come before '下載完成' ({idx_done})"
-    )
+    assert idx_moving < idx_done, f"'正在移動檔案' ({idx_moving}) must come before '下載完成' ({idx_done})"
 
 
 def test_moving_file_info_logs_emitted(

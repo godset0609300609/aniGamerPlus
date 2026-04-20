@@ -16,7 +16,6 @@ from app.downloader.segment_downloader import SegmentDownloader
 from app.logging_ import Logger
 from app.models import AppSettings
 
-
 _M3U8_BODY = (
     '#EXTM3U\n'
     '#EXT-X-VERSION:3\n'
@@ -131,7 +130,7 @@ class _FakeFFmpeg:
             '-y',
         ]
 
-    def run(self, args, *, timeout: float | None = None) -> 'subprocess.CompletedProcess[str]':
+    def run(self, args, *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
         self.run_calls.append(list(args))
         # Write a plausible merging file so .stat() succeeds.
         if self._pending_merging_file is not None and self.returncode == 0:
@@ -417,6 +416,7 @@ def test_speed_calculation_with_fake_time(
     the executor.
     """
     import threading
+
     import app.downloader.segment_downloader as sd_mod
 
     # 512 KiB per chunk; 3 chunks → 1.5 MiB total.
@@ -502,7 +502,7 @@ def test_cancel_mid_chunk_retry_raises_and_cleans_temp(
     call_lock = threading.Lock()
 
     class _CancelOnSecondAttemptClient(_FakeClient):
-        def get(self, url: str, *, no_cookies: bool = False, **kwargs: object) -> '_FakeResponse':  # type: ignore[override]
+        def get(self, url: str, *, no_cookies: bool = False, **kwargs: object) -> _FakeResponse:  # type: ignore[override]
             if url == fail_url:
                 with call_lock:
                     call_count[0] += 1
@@ -579,9 +579,7 @@ def test_segment_moving_file_status_before_replace(
     assert '下載完成' in status_sequence
     idx_moving = status_sequence.index('正在移動檔案')
     idx_done = status_sequence.index('下載完成')
-    assert idx_moving < idx_done, (
-        f"'正在移動檔案' ({idx_moving}) must precede '下載完成' ({idx_done})"
-    )
+    assert idx_moving < idx_done, f"'正在移動檔案' ({idx_moving}) must precede '下載完成' ({idx_done})"
 
 
 def test_segment_moving_file_info_logs_emitted(

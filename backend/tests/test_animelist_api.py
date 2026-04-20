@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import fastapi.testclient
 
-from .conftest import FakeContainer
-
 
 def test_get_empty_anime_list(client: fastapi.testclient.TestClient) -> None:
     r = client.get('/api/anime-list')

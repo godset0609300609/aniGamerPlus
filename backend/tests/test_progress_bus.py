@@ -472,9 +472,9 @@ def test_set_cooldown_stores_future_timestamp() -> None:
     """set_cooldown stores a UTC-aware datetime in the future."""
     bus = ProgressBus()
     bus.start(5001, 'ep01.mp4')
-    before = datetime.datetime.now(datetime.timezone.utc)
+    before = datetime.datetime.now(datetime.UTC)
     bus.set_cooldown(5001, 30.0)
-    after = datetime.datetime.now(datetime.timezone.utc)
+    after = datetime.datetime.now(datetime.UTC)
 
     snap = bus.snapshot()
     ts = snap[5001].cooldown_until

@@ -50,19 +50,18 @@ def test_session_rolls_back_on_exception(tmp_path: pathlib.Path) -> None:
     db = _make_db(tmp_path)
     db.run_baseline_migrations()
 
-    with pytest.raises(RuntimeError):
-        with db.session() as session:
-            session.add(
-                Anime(
-                    sn=2,
-                    title='t',
-                    anime_name='a',
-                    episode='01',
-                    resolution=1080,
-                    file_size=0,
-                )
+    with pytest.raises(RuntimeError), db.session() as session:
+        session.add(
+            Anime(
+                sn=2,
+                title='t',
+                anime_name='a',
+                episode='01',
+                resolution=1080,
+                file_size=0,
             )
-            raise RuntimeError('boom')
+        )
+        raise RuntimeError('boom')
 
     with db.session() as session:
         assert session.get(Anime, 2) is None

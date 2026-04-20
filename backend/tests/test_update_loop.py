@@ -7,9 +7,6 @@ import datetime
 import pathlib
 import threading
 from typing import Any
-from unittest.mock import MagicMock
-
-import pytest
 
 from app.downloader import exceptions
 from app.downloader.metadata import AnimeMetadata
@@ -577,7 +574,13 @@ def test_check_tasks_parse_cooldown_called_n_minus_1_times(tmp_path: pathlib.Pat
         metadata_by_sn=meta_by_sn,
         parse_cooldown=cd,
     )
-    loop.check_tasks({10: {'mode': 'single', 'tag': ''}, 20: {'mode': 'single', 'tag': ''}, 30: {'mode': 'single', 'tag': ''}})
+    loop.check_tasks(
+        {
+            10: {'mode': 'single', 'tag': ''},
+            20: {'mode': 'single', 'tag': ''},
+            30: {'mode': 'single', 'tag': ''},
+        }
+    )
 
     assert cd.wait_calls == 2, f'Expected 2 cooldown waits for 3 sns, got {cd.wait_calls}'
 
@@ -634,9 +637,7 @@ def test_check_tasks_logs_name_before_fetch(tmp_path: pathlib.Path) -> None:
     assert checking_events[0][2] == 'before_fetch', (
         f'正在檢查 log was emitted {checking_events[0][2]}, expected before_fetch'
     )
-    assert 'テストアニメ' in checking_events[0][1], (
-        f'Expected cached name in log, got: {checking_events[0][1]!r}'
-    )
+    assert 'テストアニメ' in checking_events[0][1], f'Expected cached name in log, got: {checking_events[0][1]!r}'
 
 
 # ------------------------------------------------------------------ summary log tests
@@ -669,11 +670,13 @@ def test_check_tasks_emits_summary_log(tmp_path: pathlib.Path) -> None:
 
     loop._logger.info = capturing_info  # type: ignore[method-assign]
 
-    loop.check_tasks({
-        10: {'mode': 'single', 'tag': ''},
-        20: {'mode': 'single', 'tag': ''},
-        30: {'mode': 'single', 'tag': ''},
-    })
+    loop.check_tasks(
+        {
+            10: {'mode': 'single', 'tag': ''},
+            20: {'mode': 'single', 'tag': ''},
+            30: {'mode': 'single', 'tag': ''},
+        }
+    )
 
     summary_lines = [m for m in info_messages if '本次更新添加了' in m]
     assert summary_lines, f'Expected summary log line, got messages: {info_messages}'
@@ -739,16 +742,16 @@ def test_check_tasks_beats_watchdog_per_item(tmp_path: pathlib.Path) -> None:
     )
     loop._watchdog = watchdog  # type: ignore[assignment]
 
-    loop.check_tasks({
-        10: {'mode': 'single', 'tag': ''},
-        20: {'mode': 'single', 'tag': ''},
-        30: {'mode': 'single', 'tag': ''},
-    })
+    loop.check_tasks(
+        {
+            10: {'mode': 'single', 'tag': ''},
+            20: {'mode': 'single', 'tag': ''},
+            30: {'mode': 'single', 'tag': ''},
+        }
+    )
 
     # 1 beat at scan-start + 3 beats after each item = 4 total; require >= 3.
-    assert watchdog.beat_calls >= 3, (
-        f'Expected at least 3 watchdog beats for 3 sns, got {watchdog.beat_calls}'
-    )
+    assert watchdog.beat_calls >= 3, f'Expected at least 3 watchdog beats for 3 sns, got {watchdog.beat_calls}'
 
 
 def test_check_tasks_beats_watchdog_single_item(tmp_path: pathlib.Path) -> None:
@@ -762,6 +765,4 @@ def test_check_tasks_beats_watchdog_single_item(tmp_path: pathlib.Path) -> None:
 
     loop.check_tasks({42: {'mode': 'single', 'tag': ''}})
 
-    assert watchdog.beat_calls >= 1, (
-        f'Expected at least 1 watchdog beat, got {watchdog.beat_calls}'
-    )
+    assert watchdog.beat_calls >= 1, f'Expected at least 1 watchdog beat, got {watchdog.beat_calls}'

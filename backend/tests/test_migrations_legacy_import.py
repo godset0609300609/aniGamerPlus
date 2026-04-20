@@ -9,16 +9,13 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
-import sys
 import types
 import unittest.mock
 
-import pytest
 import sqlalchemy
 
 from app.logging_ import Logger
 from app.persistence.db import Database
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -112,12 +109,12 @@ def test_import_uses_sentinel_user_when_no_admin(tmp_path: pathlib.Path) -> None
     fake_file.parent.mkdir(parents=True, exist_ok=True)
     fake_file.touch()
 
-    with db.engine.begin() as conn:
-        with (
-            unittest.mock.patch.object(mod, '__file__', str(fake_file)),
-            unittest.mock.patch('alembic.op.get_bind', return_value=conn),
-        ):
-            mod.upgrade()
+    with (
+        db.engine.begin() as conn,
+        unittest.mock.patch.object(mod, '__file__', str(fake_file)),
+        unittest.mock.patch('alembic.op.get_bind', return_value=conn),
+    ):
+        mod.upgrade()
 
     with db.engine.connect() as conn:
         sentinel = conn.execute(
@@ -155,12 +152,12 @@ def test_import_uses_existing_admin_as_owner(tmp_path: pathlib.Path) -> None:
     fake_file.parent.mkdir(parents=True, exist_ok=True)
     fake_file.touch()
 
-    with db.engine.begin() as conn:
-        with (
-            unittest.mock.patch.object(mod, '__file__', str(fake_file)),
-            unittest.mock.patch('alembic.op.get_bind', return_value=conn),
-        ):
-            mod.upgrade()
+    with (
+        db.engine.begin() as conn,
+        unittest.mock.patch.object(mod, '__file__', str(fake_file)),
+        unittest.mock.patch('alembic.op.get_bind', return_value=conn),
+    ):
+        mod.upgrade()
 
     with db.engine.connect() as conn:
         row = conn.execute(sqlalchemy.text('SELECT user_id FROM anime_list_entries WHERE sn = 700')).fetchone()
@@ -188,12 +185,12 @@ def test_no_sn_list_txt_is_noop(tmp_path: pathlib.Path) -> None:
     fake_file.parent.mkdir(parents=True, exist_ok=True)
     fake_file.touch()
 
-    with db.engine.begin() as conn:
-        with (
-            unittest.mock.patch.object(mod, '__file__', str(fake_file)),
-            unittest.mock.patch('alembic.op.get_bind', return_value=conn),
-        ):
-            mod.upgrade()  # should not raise
+    with (
+        db.engine.begin() as conn,
+        unittest.mock.patch.object(mod, '__file__', str(fake_file)),
+        unittest.mock.patch('alembic.op.get_bind', return_value=conn),
+    ):
+        mod.upgrade()  # should not raise
 
     with db.engine.connect() as conn:
         count = conn.execute(sqlalchemy.text('SELECT COUNT(*) FROM anime_list_entries')).scalar()
@@ -224,24 +221,24 @@ def test_import_is_idempotent(tmp_path: pathlib.Path) -> None:
     fake_file.touch()
 
     # First run — imports and renames.
-    with db.engine.begin() as conn:
-        with (
-            unittest.mock.patch.object(mod, '__file__', str(fake_file)),
-            unittest.mock.patch('alembic.op.get_bind', return_value=conn),
-        ):
-            mod.upgrade()
+    with (
+        db.engine.begin() as conn,
+        unittest.mock.patch.object(mod, '__file__', str(fake_file)),
+        unittest.mock.patch('alembic.op.get_bind', return_value=conn),
+    ):
+        mod.upgrade()
 
     assert not sn_list.exists()
 
     # Restore the file to simulate a re-run scenario.
-    imported = tmp_path / 'sn_list.txt.imported'
+    tmp_path / 'sn_list.txt.imported'
     # Second run: sn_list.txt doesn't exist → no-op.
-    with db.engine.begin() as conn:
-        with (
-            unittest.mock.patch.object(mod, '__file__', str(fake_file)),
-            unittest.mock.patch('alembic.op.get_bind', return_value=conn),
-        ):
-            mod.upgrade()
+    with (
+        db.engine.begin() as conn,
+        unittest.mock.patch.object(mod, '__file__', str(fake_file)),
+        unittest.mock.patch('alembic.op.get_bind', return_value=conn),
+    ):
+        mod.upgrade()
 
     with db.engine.connect() as conn:
         count = conn.execute(sqlalchemy.text('SELECT COUNT(*) FROM anime_list_entries')).scalar()
