@@ -104,6 +104,10 @@ class UpdateLoop:
             f'掃描追番清單 ({len(sn_dict)} 個項目)',
             display=False,
         )
+        # Beat once at scan-start so a single-item list still refreshes the
+        # heartbeat even before the parse_cooldown path fires.
+        if self._watchdog is not None:
+            self._watchdog.beat()
 
         newly_added = 0
         sn_items = list(sn_dict.items())
@@ -206,7 +210,12 @@ class UpdateLoop:
                 )
                 self._spawn_worker(target_sn)
 
-            # (D) Apply parse_cd cooldown after this sn's work, except after
+            # (D) Beat the watchdog after each sn so the heartbeat stays fresh
+            # even when check_tasks runs longer than 60 s on large scan lists.
+            if self._watchdog is not None:
+                self._watchdog.beat()
+
+            # Apply parse_cd cooldown after this sn's work, except after
             # the last item — no benefit in sleeping when there's nothing next.
             is_last = idx == len(sn_items) - 1
             if not is_last and self._parse_cooldown is not None:
