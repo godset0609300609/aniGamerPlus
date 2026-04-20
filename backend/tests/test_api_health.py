@@ -187,3 +187,37 @@ def test_health_response_structure(
     assert 'scheduler' in data
     assert 'checked_at' in data
     assert 'version' in data['api']
+
+
+def test_health_fetch_timeout_is_3_seconds(
+    client: fastapi.testclient.TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scheduler health fetch uses a 3 s timeout to avoid false-positive
+    degraded reports when the scheduler is momentarily busy.
+
+    The timeout value is verified by patching asyncio.wait_for inside the
+    health module and recording what timeout value the handler passes.
+    """
+    import asyncio
+    from typing import Any
+
+    import app.api.health as health_module
+
+    captured: list[float] = []
+    _original_wait_for = asyncio.wait_for
+
+    async def spy_wait_for(coro: Any, timeout: float) -> Any:
+        captured.append(timeout)
+        return await _original_wait_for(coro, timeout=timeout)
+
+    monkeypatch.setattr(health_module.asyncio, 'wait_for', spy_wait_for)
+
+    proxy = _SchedulerProxyUp()
+    client.app.state.scheduler_proxy = proxy  # type: ignore[attr-defined]
+
+    r = client.get('/api/health')
+    assert r.status_code == 200
+
+    assert captured, 'asyncio.wait_for was never called — proxy may be unreachable'
+    assert captured[0] == 3.0, f'Expected scheduler health timeout=3.0 s, got {captured[0]}'
