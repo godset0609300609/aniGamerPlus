@@ -60,7 +60,7 @@ describe('useBackendHealth — successful poll', () => {
     expect(state.value).toBe('online')
   })
 
-  it('transitions to degraded immediately on degraded response', async () => {
+  it('stays online on first degraded response (grace period)', async () => {
     const timer = makeTimerFactory()
     const fetchFn = makeFetch({ status: 200, body: { status: 'degraded' } })
     const { state, start } = useBackendHealth({ fetchFn, timerFactory: timer })
@@ -69,7 +69,8 @@ describe('useBackendHealth — successful poll', () => {
     await nextTick()
     await nextTick()
 
-    expect(state.value).toBe('degraded')
+    // One degraded response does not immediately flip state — grace period applies.
+    expect(state.value).toBe('online')
   })
 })
 
@@ -237,6 +238,95 @@ describe('useBackendHealth — ping', () => {
     await nextTick()
 
     expect(state.value).toBe('offline')
+  })
+})
+
+describe('useBackendHealth — degraded hysteresis (2 degraded → state)', () => {
+  it('single degraded response does not flip state to degraded', async () => {
+    const timer = makeTimerFactory()
+    const fetchFn = makeFetch({ status: 200, body: { status: 'degraded' } })
+    const { state, start } = useBackendHealth({ fetchFn, timerFactory: timer })
+
+    start()
+    await nextTick()
+    await nextTick()
+
+    // Only 1 degraded response — threshold (2) not reached yet.
+    expect(state.value).toBe('online')
+  })
+
+  it('two consecutive degraded responses flip state to degraded', async () => {
+    const timer = makeTimerFactory()
+    const fetchFn = makeFetch({ status: 200, body: { status: 'degraded' } })
+    const { state, start } = useBackendHealth({ fetchFn, timerFactory: timer })
+
+    start()
+    await nextTick()
+    await nextTick()
+
+    // Second degraded via interval tick.
+    timer.tick()
+    await nextTick()
+    await nextTick()
+
+    expect(state.value).toBe('degraded')
+  })
+
+  it('degraded state recovers to online on a single ok response', async () => {
+    const timer = makeTimerFactory()
+    let callCount = 0
+    const fetchFn = vi.fn(async () => {
+      callCount++
+      const isDegraded = callCount <= 2
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ status: isDegraded ? 'degraded' : 'ok' }),
+      }
+    }) as unknown as typeof fetch
+
+    const { state, start } = useBackendHealth({ fetchFn, timerFactory: timer })
+
+    start()
+    await nextTick()
+    await nextTick()
+    // Second degraded → state becomes 'degraded'
+    timer.tick()
+    await nextTick()
+    await nextTick()
+    expect(state.value).toBe('degraded')
+
+    // One 'ok' response → immediately back to 'online'
+    timer.tick()
+    await nextTick()
+    await nextTick()
+    expect(state.value).toBe('online')
+  })
+
+  it('degraded counter resets on a failure (offline path)', async () => {
+    const timer = makeTimerFactory()
+    let callCount = 0
+    const fetchFn = vi.fn(async () => {
+      callCount++
+      if (callCount === 1) {
+        return { ok: true, status: 200, json: async () => ({ status: 'degraded' }) }
+      }
+      throw new Error('network error')
+    }) as unknown as typeof fetch
+
+    const { state, start } = useBackendHealth({ fetchFn, timerFactory: timer })
+
+    start()
+    await nextTick()
+    await nextTick()
+    // After 1 degraded, state still 'online'
+    expect(state.value).toBe('online')
+
+    // Failure resets degradedCount; state goes toward 'offline', not 'degraded'
+    timer.tick()
+    await nextTick()
+    await nextTick()
+    expect(state.value).toBe('online') // only 1 failure, below offline threshold
   })
 })
 
