@@ -709,3 +709,59 @@ def test_check_tasks_summary_when_no_new_tasks(tmp_path: pathlib.Path) -> None:
     summary_lines = [m for m in info_messages if '本次更新添加了' in m]
     assert summary_lines, f'Expected summary log line, got messages: {info_messages}'
     assert '添加了 0 個新任務' in summary_lines[0], f'Expected 0 newly added, got: {summary_lines[0]!r}'
+
+
+# ------------------------------------------------------------------ watchdog beat tests
+
+
+class _FakeWatchdog:
+    """Records every beat() call without any side effects."""
+
+    def __init__(self) -> None:
+        self.beat_calls: int = 0
+
+    def beat(self) -> None:
+        self.beat_calls += 1
+
+
+def test_check_tasks_beats_watchdog_per_item(tmp_path: pathlib.Path) -> None:
+    """With 3 sns, check_tasks must call watchdog.beat() at least 3 times
+    (once at scan-start + once after each per-sn iteration)."""
+    watchdog = _FakeWatchdog()
+    meta_by_sn = {
+        10: _meta(10),
+        20: _meta(20),
+        30: _meta(30),
+    }
+    loop, _w, _q, _r, _c, _sn, _md, _al = _build(
+        tmp_path,
+        metadata_by_sn=meta_by_sn,
+    )
+    loop._watchdog = watchdog  # type: ignore[assignment]
+
+    loop.check_tasks({
+        10: {'mode': 'single', 'tag': ''},
+        20: {'mode': 'single', 'tag': ''},
+        30: {'mode': 'single', 'tag': ''},
+    })
+
+    # 1 beat at scan-start + 3 beats after each item = 4 total; require >= 3.
+    assert watchdog.beat_calls >= 3, (
+        f'Expected at least 3 watchdog beats for 3 sns, got {watchdog.beat_calls}'
+    )
+
+
+def test_check_tasks_beats_watchdog_single_item(tmp_path: pathlib.Path) -> None:
+    """Even with a single sn, watchdog.beat() fires (scan-start beat)."""
+    watchdog = _FakeWatchdog()
+    loop, _w, _q, _r, _c, _sn, _md, _al = _build(
+        tmp_path,
+        metadata_by_sn={42: _meta(42)},
+    )
+    loop._watchdog = watchdog  # type: ignore[assignment]
+
+    loop.check_tasks({42: {'mode': 'single', 'tag': ''}})
+
+    assert watchdog.beat_calls >= 1, (
+        f'Expected at least 1 watchdog beat, got {watchdog.beat_calls}'
+    )
