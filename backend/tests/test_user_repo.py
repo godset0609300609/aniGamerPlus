@@ -222,3 +222,140 @@ def test_list_all_returns_all_users(tmp_path: pathlib.Path) -> None:
         assert ids == {'u1', 'u2'}
     finally:
         db.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Telegram binding helpers
+# ---------------------------------------------------------------------------
+
+
+def test_telegram_defaults_on_new_user(tmp_path: pathlib.Path) -> None:
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        row = repo.upsert(id='tg1', username='Alice', avatar_url=None)
+        assert row.telegram_chat_id is None
+        assert row.telegram_link_token is None
+        assert row.telegram_notify_enabled is True
+    finally:
+        db.dispose()
+
+
+def test_set_telegram_link_token(tmp_path: pathlib.Path) -> None:
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id='tg2', username='Bob', avatar_url=None)
+        repo.set_telegram_link_token('tg2', 'abc123token')
+        row = repo.get('tg2')
+        assert row is not None
+        assert row.telegram_link_token == 'abc123token'
+    finally:
+        db.dispose()
+
+
+def test_set_telegram_link_token_clears_when_none(tmp_path: pathlib.Path) -> None:
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id='tg3', username='Carol', avatar_url=None)
+        repo.set_telegram_link_token('tg3', 'sometoken')
+        repo.set_telegram_link_token('tg3', None)
+        row = repo.get('tg3')
+        assert row is not None
+        assert row.telegram_link_token is None
+    finally:
+        db.dispose()
+
+
+def test_finalize_telegram_binding(tmp_path: pathlib.Path) -> None:
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id='tg4', username='Dave', avatar_url=None)
+        repo.set_telegram_link_token('tg4', 'linktoken')
+        repo.finalize_telegram_binding('tg4', 99887766)
+        row = repo.get('tg4')
+        assert row is not None
+        assert row.telegram_chat_id == 99887766
+        assert row.telegram_link_token is None
+    finally:
+        db.dispose()
+
+
+def test_clear_telegram_binding(tmp_path: pathlib.Path) -> None:
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id='tg5', username='Eve', avatar_url=None)
+        repo.finalize_telegram_binding('tg5', 11223344)
+        repo.clear_telegram_binding('tg5')
+        row = repo.get('tg5')
+        assert row is not None
+        assert row.telegram_chat_id is None
+        assert row.telegram_link_token is None
+    finally:
+        db.dispose()
+
+
+def test_find_by_telegram_chat_id(tmp_path: pathlib.Path) -> None:
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id='tg6', username='Frank', avatar_url=None)
+        repo.finalize_telegram_binding('tg6', 55443322)
+        found = repo.find_by_telegram_chat_id(55443322)
+        assert found is not None
+        assert found.id == 'tg6'
+    finally:
+        db.dispose()
+
+
+def test_find_by_telegram_chat_id_returns_none_when_not_found(tmp_path: pathlib.Path) -> None:
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        assert repo.find_by_telegram_chat_id(99999999) is None
+    finally:
+        db.dispose()
+
+
+def test_find_by_telegram_link_token(tmp_path: pathlib.Path) -> None:
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id='tg7', username='Grace', avatar_url=None)
+        repo.set_telegram_link_token('tg7', 'uniquetoken42')
+        found = repo.find_by_telegram_link_token('uniquetoken42')
+        assert found is not None
+        assert found.id == 'tg7'
+    finally:
+        db.dispose()
+
+
+def test_find_by_telegram_link_token_returns_none_for_unknown(tmp_path: pathlib.Path) -> None:
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        assert repo.find_by_telegram_link_token('nosuchtoken') is None
+    finally:
+        db.dispose()
+
+
+def test_set_telegram_notify_enabled(tmp_path: pathlib.Path) -> None:
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id='tg8', username='Heidi', avatar_url=None)
+        # Disable notifications.
+        repo.set_telegram_notify_enabled('tg8', False)
+        row = repo.get('tg8')
+        assert row is not None
+        assert row.telegram_notify_enabled is False
+        # Re-enable.
+        repo.set_telegram_notify_enabled('tg8', True)
+        row2 = repo.get('tg8')
+        assert row2 is not None
+        assert row2.telegram_notify_enabled is True
+    finally:
+        db.dispose()

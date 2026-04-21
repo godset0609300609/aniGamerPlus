@@ -244,6 +244,19 @@ class DiscordAuthSettings(pydantic.BaseModel):
     session_secret: str = ''  # auto-generated on first boot
 
 
+class TelegramSettings(pydantic.BaseModel):
+    """Telegram Bot integration configuration."""
+
+    model_config = pydantic.ConfigDict(extra='ignore')
+
+    enabled: bool = False
+    bot_token: str = ''
+    webhook_secret: str = ''  # path segment + X-Telegram-Bot-Api-Secret-Token
+    public_url: str = ''  # e.g. "https://example.com" — used to build webhook URL
+    notify_on: list[str] = pydantic.Field(default_factory=lambda: ['completed', 'failed', 'cancelled'])
+    rate_limit_per_minute: int = 30  # per-user command rate limit
+
+
 class AppSettings(pydantic.BaseModel):
     """Full config.json schema at v17.2. Extra keys are ignored.
 
@@ -311,6 +324,9 @@ class AppSettings(pydantic.BaseModel):
 
     # Auth (v17.3+)
     auth: DiscordAuthSettings = pydantic.Field(default_factory=DiscordAuthSettings)
+
+    # Telegram (v17.4+)
+    telegram: TelegramSettings = pydantic.Field(default_factory=TelegramSettings)
 
     # Versions (no range — legacy values may be older after migration reads them)
     config_version: float = 17.2
