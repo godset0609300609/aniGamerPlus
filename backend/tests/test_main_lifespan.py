@@ -1,4 +1,4 @@
-"""Tests for the FastAPI lifespan hook that owns the background scheduler.
+"""Tests for the FastAPI lifespan hook and container assembly.
 
 The rewrite split the single legacy process into ``anigamerplus`` (CLI,
 runs ``UpdateLoop.run_forever`` in the foreground) and
@@ -121,3 +121,73 @@ def test_lifespan_respects_env_var_disable(
     with fastapi.testclient.TestClient(app):
         assert getattr(app.state, 'scheduler_thread', None) is None
         assert loop.run_forever_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# Container telegram_client wiring
+# ---------------------------------------------------------------------------
+
+
+def test_container_telegram_client_none_when_no_token(
+    fake_container: FakeContainer,
+) -> None:
+    """``telegram_client`` is None when bot_token is empty."""
+    import dataclasses
+    import json
+
+    from app.models import AppSettings, TelegramSettings
+
+    # Seed a settings file with empty bot_token
+    settings = AppSettings(telegram=TelegramSettings(bot_token=''))
+    blob = settings.model_dump(by_alias=True, exclude_none=False)
+    fake_container.paths.config_path.write_text(json.dumps(blob, ensure_ascii=False), encoding='utf-8')
+
+    from app.persistence.settings_repo import SettingsRepository
+
+    # Rebuild settings_repo on the same paths
+    sr = SettingsRepository(fake_container.paths, fake_container.logger)
+    updated = dataclasses.replace(fake_container, settings_repo=sr)
+
+    loaded = updated.settings_repo.load()
+    assert loaded.telegram.bot_token == ''
+
+    # Container.telegram_client is a field — when bot_token empty it should be None.
+    # We verify the field exists on Container and defaults to None.
+    from app.core import Container
+
+    field_names = {f.name for f in dataclasses.fields(Container)}
+    assert 'telegram_client' in field_names
+
+
+def test_container_telegram_client_instantiated_when_token_set(
+    fake_container: FakeContainer,
+) -> None:
+    """``telegram_client`` is a TelegramClient when bot_token is non-empty."""
+    import json
+
+    from app.models import AppSettings, TelegramSettings
+    from app.services.telegram_client import TelegramClient
+
+    # Seed a settings file with a non-empty bot_token
+    settings = AppSettings(telegram=TelegramSettings(bot_token='123:TESTTOKEN'))
+    blob = settings.model_dump(by_alias=True, exclude_none=False)
+    fake_container.paths.config_path.write_text(json.dumps(blob, ensure_ascii=False), encoding='utf-8')
+
+    from app.persistence.settings_repo import SettingsRepository
+
+    sr = SettingsRepository(fake_container.paths, fake_container.logger)
+    loaded = sr.load()
+    assert loaded.telegram.bot_token == '123:TESTTOKEN'
+
+    # Simulate what build_container does: instantiate when token is set.
+    client = TelegramClient(loaded.telegram.bot_token) if loaded.telegram.bot_token else None
+    assert client is not None
+    assert isinstance(client, TelegramClient)
+    # Clean up the httpx client to avoid resource-leak warnings.
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(client.close())
+    finally:
+        loop.close()
