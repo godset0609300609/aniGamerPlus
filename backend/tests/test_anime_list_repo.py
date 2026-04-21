@@ -385,3 +385,140 @@ def test_custom_name_round_trips_via_list_all(tmp_path: pathlib.Path) -> None:
         assert all_entries[0].custom_name == 'Override'
     finally:
         db.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Feature B: duplicate detection repo methods
+# ---------------------------------------------------------------------------
+
+
+def test_find_duplicate_source_returns_earliest_match(tmp_path: pathlib.Path) -> None:
+    """find_duplicate_source returns the row with the lowest id for a given name."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        repo = AnimeListEntryRepository(db)
+        _seed_user(user_repo, 'u1')
+        _seed_user(user_repo, 'u2')
+
+        repo.replace_all_for_user('u1', [AnimeListEntryDTO(sn=10, anime_name='進擊的巨人')])
+        repo.replace_all_for_user('u2', [AnimeListEntryDTO(sn=20, anime_name='進擊的巨人')])
+
+        # Query without exclusion — should return the u1 entry (lower id).
+        u1_entries = repo.list_for_user('u1')
+        assert len(u1_entries) == 1
+        source = repo.find_duplicate_source('進擊的巨人')
+        assert source is not None
+        assert source.sn == 10
+        assert source.user_id == 'u1'
+
+        # Exclude u1's entry → should return u2's entry.
+        source2 = repo.find_duplicate_source('進擊的巨人', exclude_id=u1_entries[0].id)
+        assert source2 is not None
+        assert source2.sn == 20
+    finally:
+        db.dispose()
+
+
+def test_find_duplicate_source_case_insensitive(tmp_path: pathlib.Path) -> None:
+    """find_duplicate_source matches case-insensitively."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        repo = AnimeListEntryRepository(db)
+        _seed_user(user_repo, 'u1')
+
+        repo.replace_all_for_user('u1', [AnimeListEntryDTO(sn=10, anime_name='Naruto')])
+
+        result = repo.find_duplicate_source('NARUTO')
+        assert result is not None
+        assert result.sn == 10
+
+        result2 = repo.find_duplicate_source('naruto')
+        assert result2 is not None
+        assert result2.sn == 10
+    finally:
+        db.dispose()
+
+
+def test_find_duplicate_source_returns_none_for_no_match(tmp_path: pathlib.Path) -> None:
+    """find_duplicate_source returns None when no matching entry exists."""
+    db = _make_db(tmp_path)
+    try:
+        repo = AnimeListEntryRepository(db)
+        assert repo.find_duplicate_source('NonExistent') is None
+    finally:
+        db.dispose()
+
+
+def test_find_duplicate_source_empty_name_returns_none(tmp_path: pathlib.Path) -> None:
+    """find_duplicate_source returns None for empty/whitespace names."""
+    db = _make_db(tmp_path)
+    try:
+        repo = AnimeListEntryRepository(db)
+        assert repo.find_duplicate_source('') is None
+        assert repo.find_duplicate_source('   ') is None
+    finally:
+        db.dispose()
+
+
+def test_reevaluate_duplicates_after_delete_clears_pointer(tmp_path: pathlib.Path) -> None:
+    """reevaluate_duplicates_after_delete clears duplicate_of_entry_id on the next-earliest."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        repo = AnimeListEntryRepository(db)
+        _seed_user(user_repo, 'u1')
+        _seed_user(user_repo, 'u2')
+
+        repo.replace_all_for_user('u1', [AnimeListEntryDTO(sn=10, anime_name='進擊的巨人')])
+        u1_entries = repo.list_for_user('u1')
+        source_id = u1_entries[0].id
+        assert source_id is not None
+
+        repo.replace_all_for_user(
+            'u2',
+            [AnimeListEntryDTO(sn=20, enabled=False, anime_name='進擊的巨人', duplicate_of_entry_id=source_id)],
+        )
+
+        # Simulate deleting u1's entry.
+        u1_dto = repo.list_for_user('u1')[0]
+        repo.replace_all_for_user('u1', [])
+
+        updated_ids = repo.reevaluate_duplicates_after_delete(u1_dto)
+
+        # u2's entry should be in the updated set and have its pointer cleared.
+        assert len(updated_ids) >= 1
+        u2_entries = repo.list_for_user('u2')
+        assert len(u2_entries) == 1
+        assert u2_entries[0].duplicate_of_entry_id is None
+        # Still disabled.
+        assert u2_entries[0].enabled is False
+    finally:
+        db.dispose()
+
+
+def test_duplicate_of_entry_id_round_trips(tmp_path: pathlib.Path) -> None:
+    """duplicate_of_entry_id is persisted and returned via list_for_user."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        repo = AnimeListEntryRepository(db)
+        _seed_user(user_repo, 'u1')
+        _seed_user(user_repo, 'u2')
+
+        repo.replace_all_for_user('u1', [AnimeListEntryDTO(sn=10)])
+        u1_entries = repo.list_for_user('u1')
+        source_id = u1_entries[0].id
+        assert source_id is not None
+
+        repo.replace_all_for_user(
+            'u2',
+            [AnimeListEntryDTO(sn=20, enabled=False, duplicate_of_entry_id=source_id)],
+        )
+
+        u2_entries = repo.list_for_user('u2')
+        assert u2_entries[0].duplicate_of_entry_id == source_id
+        assert u2_entries[0].enabled is False
+    finally:
+        db.dispose()

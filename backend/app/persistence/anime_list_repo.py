@@ -38,6 +38,10 @@ class AnimeListEntryDTO:
     comment: str = ''
     sort_order: int = 0
     user_id: str | None = None  # populated on read; ignored on write
+    # Populated on read; None means this entry is not a duplicate.
+    duplicate_of_entry_id: int | None = None
+    # Row primary-key — populated on read; 0 / None means not yet persisted.
+    id: int | None = None
 
 
 def _to_dto(orm: AnimeListEntryRow) -> AnimeListEntryDTO:
@@ -52,6 +56,8 @@ def _to_dto(orm: AnimeListEntryRow) -> AnimeListEntryDTO:
         comment=orm.comment,
         sort_order=orm.sort_order,
         user_id=orm.user_id,
+        duplicate_of_entry_id=orm.duplicate_of_entry_id,
+        id=orm.id,
     )
 
 
@@ -105,6 +111,7 @@ class AnimeListEntryRepository:
                     custom_name=entry.custom_name,
                     comment=entry.comment,
                     sort_order=entry.sort_order,
+                    duplicate_of_entry_id=entry.duplicate_of_entry_id,
                 )
                 session.add(orm)
 
@@ -143,3 +150,83 @@ class AnimeListEntryRepository:
                 .values(anime_name=anime_name)
             )
             session.execute(stmt)
+
+    # ------------------------------------------------------------------
+    # Duplicate detection helpers (Feature B)
+    # ------------------------------------------------------------------
+
+    def find_duplicate_source(
+        self,
+        anime_name: str,
+        exclude_id: int | None = None,
+    ) -> AnimeListEntryDTO | None:
+        """Return the earliest entry (lowest id) whose ``anime_name`` matches.
+
+        Matching is case-insensitive, trimmed.  Returns ``None`` if no match
+        exists (or the only match is the entry being excluded).
+
+        ``exclude_id`` should be the row's own ``id`` when checking an update
+        so an entry doesn't detect itself as its own duplicate.
+        """
+        normalised = anime_name.strip().lower()
+        if not normalised:
+            return None
+
+        with self._db.session() as session:
+            stmt = (
+                sqlalchemy.select(AnimeListEntryRow)
+                .where(
+                    sqlalchemy.func.lower(sqlalchemy.func.trim(AnimeListEntryRow.anime_name)) == normalised,
+                )
+                .order_by(AnimeListEntryRow.id.asc())
+            )
+            for orm in session.scalars(stmt).all():
+                if orm.id != exclude_id:
+                    return _to_dto(orm)
+        return None
+
+    def reevaluate_duplicates_after_delete(
+        self,
+        deleted_row: AnimeListEntryDTO,
+    ) -> list[int]:
+        """After deleting ``deleted_row``, re-link duplicates that pointed at it.
+
+        Finds all entries where ``duplicate_of_entry_id == deleted_row.id``.
+        The earliest such entry (by id) becomes the new "first" occurrence —
+        its ``duplicate_of_entry_id`` is cleared (but it stays disabled, so
+        the user must manually re-enable it after reviewing).
+        The remaining duplicates have their pointer updated to the new first.
+
+        Returns the list of row ids that were modified.
+        """
+        if deleted_row.id is None:
+            return []
+
+        with self._db.session() as session:
+            stmt = (
+                sqlalchemy.select(AnimeListEntryRow)
+                .where(AnimeListEntryRow.duplicate_of_entry_id == deleted_row.id)
+                .order_by(AnimeListEntryRow.id.asc())
+            )
+            affected = list(session.scalars(stmt).all())
+            if not affected:
+                return []
+
+            # The first entry becomes the new "source" — clear its duplicate pointer.
+            new_first = affected[0]
+            new_first.duplicate_of_entry_id = None
+            # Leave enabled=False; user must re-enable manually.
+
+            # All others now point at the new first.
+            new_first_id = new_first.id
+            for orm in affected[1:]:
+                orm.duplicate_of_entry_id = new_first_id
+
+            session.flush()
+            return [orm.id for orm in affected if orm.id is not None]
+
+    def get_by_id(self, entry_id: int) -> AnimeListEntryDTO | None:
+        """Fetch a single entry by its primary key."""
+        with self._db.session() as session:
+            orm = session.get(AnimeListEntryRow, entry_id)
+            return _to_dto(orm) if orm is not None else None

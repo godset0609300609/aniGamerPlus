@@ -135,11 +135,11 @@ export function createElementPlusStubs(overrides: StubMap = {}): StubMap {
       },
     }),
     ElSwitch: {
-      props: ['modelValue'],
-      emits: ['update:modelValue'],
+      props: ['modelValue', 'disabled'],
+      emits: ['update:modelValue', 'change'],
       template:
-        '<input type="checkbox" class="el-switch" :checked="modelValue" ' +
-        "@change=\"$emit('update:modelValue', ($event.target).checked)\" />",
+        '<input type="checkbox" class="el-switch" :checked="modelValue" :disabled="disabled" ' +
+        "@change=\"$emit('update:modelValue', ($event.target).checked); $emit('change', ($event.target).checked)\" />",
     },
     ElInput: {
       props: ['modelValue', 'placeholder', 'size', 'type', 'disabled', 'showPassword'],
@@ -223,6 +223,11 @@ export function createElementPlusStubs(overrides: StubMap = {}): StubMap {
     ElIcon: {
       props: ['size', 'color'],
       template: '<span class="el-icon"><slot /></span>',
+    },
+    ElTooltip: {
+      props: ['content', 'placement', 'effect', 'disabled'],
+      template:
+        '<div class="el-tooltip" :title="content"><slot /></div>',
     },
   }
   return { ...stubs, ...overrides }

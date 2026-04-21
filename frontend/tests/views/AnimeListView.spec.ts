@@ -206,25 +206,65 @@ describe('AnimeListView — admin mode: user section headers', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Non-admin view — no user sections
+// Non-admin view — Feature A: now renders owner-grouped sections too
 // ---------------------------------------------------------------------------
 
-describe('AnimeListView — non-admin mode: no user sections', () => {
-  it('does not render user section headers for a non-admin user', async () => {
+describe('AnimeListView — non-admin mode: owner sections rendered', () => {
+  it('renders owner section headers for a non-admin user (Feature A)', async () => {
     isAdminRef.value = false
     userRef.value = { id: 'dl-2', username: 'bob', avatar_url: null, role: 'downloader' }
 
     mockList.mockResolvedValue({
       entries: [
-        makeEntry({ sn: 2001 }),
-        makeEntry({ sn: 2002 }),
+        makeEntry({ sn: 2001, owner_id: 'dl-2', owner_username: 'bob' }),
+        makeEntry({ sn: 1001, owner_id: 'admin-1', owner_username: 'alice' }),
       ],
     })
 
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.findAll('.ag-user-header')).toHaveLength(0)
+    // Now non-admin also sees owner section headers.
+    const headers = wrapper.findAll('.ag-user-header')
+    expect(headers.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('marks own section with （我）badge for non-admin', async () => {
+    isAdminRef.value = false
+    userRef.value = { id: 'dl-2', username: 'bob', avatar_url: null, role: 'downloader' }
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 2001, owner_id: 'dl-2', owner_username: 'bob' }),
+        makeEntry({ sn: 1001, owner_id: 'admin-1', owner_username: 'alice' }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const selfBadge = wrapper.find('.ag-user-self-badge')
+    expect(selfBadge.exists()).toBe(true)
+    expect(selfBadge.text()).toContain('我')
+  })
+
+  it("renders delete button only on own rows for non-admin", async () => {
+    isAdminRef.value = false
+    userRef.value = { id: 'dl-2', username: 'bob', avatar_url: null, role: 'downloader' }
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 2001, owner_id: 'dl-2', owner_username: 'bob' }),
+        makeEntry({ sn: 1001, owner_id: 'admin-1', owner_username: 'alice' }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    // Only one row is own; the delete button should appear once (for own row only).
+    const deleteBtns = wrapper.findAll('button').filter((b) => b.text().trim() === '刪除')
+    expect(deleteBtns).toHaveLength(1)
   })
 
   it('renders tag-grouped collapse items for non-admin', async () => {
@@ -233,8 +273,8 @@ describe('AnimeListView — non-admin mode: no user sections', () => {
 
     mockList.mockResolvedValue({
       entries: [
-        makeEntry({ sn: 2001, tag: '冬季番' }),
-        makeEntry({ sn: 2002, tag: '春季番' }),
+        makeEntry({ sn: 2001, tag: '冬季番', owner_id: 'dl-2', owner_username: 'bob' }),
+        makeEntry({ sn: 2002, tag: '春季番', owner_id: 'dl-2', owner_username: 'bob' }),
       ],
     })
 
@@ -244,6 +284,54 @@ describe('AnimeListView — non-admin mode: no user sections', () => {
     // Collapse items (tag groups) should be rendered.
     const items = wrapper.findAll('.el-collapse-item')
     expect(items.length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Feature B: duplicate row rendering
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — Feature B: duplicate rows', () => {
+  it('renders warning icon on duplicate rows', async () => {
+    isAdminRef.value = true
+    userRef.value = { id: 'admin-1', username: 'alice', avatar_url: null, role: 'admin' }
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 1001, owner_id: 'admin-1', owner_username: 'alice', anime_name: '進擊的巨人' }),
+        makeEntry({
+          sn: 2001,
+          owner_id: 'dl-2',
+          owner_username: 'bob',
+          anime_name: '進擊的巨人',
+          duplicate_of_entry_id: 1,
+          duplicate_of_bangumi_name: '進擊的巨人',
+          duplicate_of_owner_username: 'alice',
+        }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const dupIcon = wrapper.find('.ag-dup-icon')
+    expect(dupIcon.exists()).toBe(true)
+  })
+
+  it('does not render warning icon on non-duplicate rows', async () => {
+    isAdminRef.value = true
+    userRef.value = { id: 'admin-1', username: 'alice', avatar_url: null, role: 'admin' }
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 1001, owner_id: 'admin-1', owner_username: 'alice', anime_name: '不重複番劇' }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('.ag-dup-icon').exists()).toBe(false)
   })
 })
 

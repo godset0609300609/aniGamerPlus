@@ -147,6 +147,20 @@ class AnimeListEntryRow(Base):
     sort_order: sqlalchemy.orm.Mapped[int] = sqlalchemy.orm.mapped_column(
         sqlalchemy.Integer, nullable=False, default=0, server_default=sqlalchemy.text('0')
     )
+    # Added by revision 0010 — duplicate detection.
+    # Points to the earliest entry sharing the same anime_name (case-insensitive).
+    # NULL means this entry is not a duplicate.  ON DELETE SET NULL so the FK
+    # clears automatically when the original is deleted.
+    duplicate_of_entry_id: sqlalchemy.orm.Mapped[int | None] = sqlalchemy.orm.mapped_column(
+        sqlalchemy.Integer,
+        sqlalchemy.ForeignKey(
+            'anime_list_entries.id',
+            ondelete='SET NULL',
+            name='fk_anime_list_entries_duplicate_of',
+        ),
+        nullable=True,
+        default=None,
+    )
 
     __table_args__ = (sqlalchemy.UniqueConstraint('user_id', 'sn', name='uq_anime_list_user_sn'),)
 
