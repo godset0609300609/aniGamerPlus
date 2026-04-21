@@ -11,16 +11,29 @@ Verification order (each failure → 403 ``{"detail": "forbidden"}``):
 
 from __future__ import annotations
 
+import datetime
 import hmac
 import ipaddress
 import logging
+import re
 import typing as T
 
+import anyio.to_thread
 import fastapi
 import pydantic
 
 from ..models import AppSettings
+from ..persistence.user_repo import UserRepository
+from ..services._factory import container_bound
+from ..services.telegram_client import TelegramBotBlockedError, TelegramChatNotFoundError, TelegramClient
 from .deps import get_settings
+
+_get_telegram_client: T.Callable[[], TelegramClient | None] = container_bound(
+    lambda c: getattr(c, 'telegram_client', None)
+)
+_get_user_repo: T.Callable[[], UserRepository] = container_bound(lambda c: c.user_repo)
+
+_START_RE = re.compile(r'^/start (?P<token>[A-Za-z0-9_-]+)$')
 
 _log = logging.getLogger(__name__)
 
@@ -118,18 +131,75 @@ def _update_type(update: TelegramUpdate) -> str:
 router = fastapi.APIRouter(prefix='/api/webhooks/telegram', tags=['telegram-webhook'])
 
 
+def _token_is_expired(expires_at: datetime.datetime | None) -> bool:
+    """Return True when *expires_at* is in the past or is None."""
+    if expires_at is None:
+        return True
+    now = datetime.datetime.now(datetime.UTC)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=datetime.UTC)
+    return now >= expires_at
+
+
+async def _handle_message(
+    message: _TelegramMessage,
+    user_repo: UserRepository,
+    telegram_client: TelegramClient | None,
+) -> None:
+    """Dispatch incoming message updates.
+
+    Handles:
+    - ``/start <token>`` — binding flow
+    - ``/start`` (no args) — hint
+    - anything else — minimal hint
+    """
+    text = (message.text or '').strip()
+    chat_id = message.chat.id
+
+    async def _send(msg: str) -> None:
+        if telegram_client is None:
+            return
+        try:
+            await telegram_client.send_message(chat_id, msg, parse_mode=None)
+        except TelegramBotBlockedError, TelegramChatNotFoundError:
+            _log.warning('Telegram webhook: could not send reply to chat_id=%d (blocked/not found)', chat_id)
+        except Exception:
+            _log.exception('Telegram webhook: failed to send reply to chat_id=%d', chat_id)
+
+    m = _START_RE.match(text)
+    if m:
+        token = m.group('token')
+        user = await anyio.to_thread.run_sync(lambda: user_repo.find_by_telegram_link_token(token))
+        if user is None or _token_is_expired(user.telegram_link_token_expires_at):
+            await _send('⚠️ 綁定連結無效或已過期。請回到網站重新產生。')
+            return
+        uid = user.id
+        await anyio.to_thread.run_sync(lambda: user_repo.finalize_telegram_binding(uid, chat_id))
+        await _send('✅ 綁定成功！你會在這裡收到 SN 下載完成的通知。\n用 /help 看可用指令。')
+        _log.info('Telegram webhook: user %s bound to chat_id=%d', uid, chat_id)
+        return
+
+    if text == '/start':
+        await _send('👋 請回到網站點擊「綁定 Telegram」按鈕，再掃描或開啟連結。')
+        return
+
+    # All other messages — minimal hint
+    await _send('/help 可查看可用指令（綁定完成後才可用）。')
+
+
 @router.post('/{secret}')
 async def receive(
     secret: str,
     update: TelegramUpdate,
     request: fastapi.Request,
     settings: T.Annotated[AppSettings, fastapi.Depends(get_settings)],
+    telegram_client: T.Annotated[TelegramClient | None, fastapi.Depends(_get_telegram_client)],
+    user_repo: T.Annotated[UserRepository, fastapi.Depends(_get_user_repo)],
 ) -> dict[str, bool]:
     """Receive a Telegram Update.
 
     Verifies IP allowlist, path secret, and header secret before processing.
-    Returns ``{"ok": true}`` immediately — actual update handling is deferred
-    to later PRs.
+    Handles ``/start <token>`` binding flow.
     """
     tg = settings.telegram
 
@@ -151,6 +221,10 @@ async def receive(
         _log.warning('Telegram webhook: header secret mismatch from IP %s', client_ip)
         raise fastapi.HTTPException(status_code=403, detail='forbidden')
 
-    # All checks passed — log update type and return OK.
+    # All checks passed — dispatch update.
     _log.info('Telegram webhook: received update_id=%d type=%s', update.update_id, _update_type(update))
+
+    if update.message is not None:
+        await _handle_message(update.message, user_repo, telegram_client)
+
     return {'ok': True}

@@ -17,6 +17,7 @@ import uvicorn
 
 from .api import router as api_router
 from .api.auth_api import router as auth_router
+from .api.profile_telegram_api import router as profile_telegram_router
 from .api.telegram_admin import router as telegram_admin_router
 from .api.telegram_webhook import router as telegram_webhook_router
 from .core import Container, build_container
@@ -137,6 +138,7 @@ class DashboardApp:
         app.include_router(auth_router)
         app.include_router(telegram_webhook_router)
         app.include_router(telegram_admin_router)
+        app.include_router(profile_telegram_router)
         app.include_router(api_router)
         return app
 

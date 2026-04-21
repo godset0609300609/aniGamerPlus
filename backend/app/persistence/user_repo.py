@@ -31,6 +31,7 @@ class UserRow:
     telegram_chat_id: int | None = None
     telegram_link_token: str | None = None
     telegram_notify_enabled: bool = True
+    telegram_link_token_expires_at: datetime.datetime | None = None
 
 
 def _to_row(orm: User) -> UserRow:
@@ -44,6 +45,7 @@ def _to_row(orm: User) -> UserRow:
         telegram_chat_id=orm.telegram_chat_id,
         telegram_link_token=orm.telegram_link_token,
         telegram_notify_enabled=orm.telegram_notify_enabled,
+        telegram_link_token_expires_at=orm.telegram_link_token_expires_at,
     )
 
 
@@ -130,10 +132,24 @@ class UserRepository:
     # Telegram binding helpers
     # ------------------------------------------------------------------
 
-    def set_telegram_link_token(self, user_id: str, token: str | None) -> None:
-        """Set (or clear) the ephemeral link token for *user_id*."""
+    def set_telegram_link_token(
+        self,
+        user_id: str,
+        token: str | None,
+        expires_at: datetime.datetime | None = None,
+    ) -> None:
+        """Set (or clear) the ephemeral link token for *user_id*.
+
+        When *token* is non-None, *expires_at* should also be supplied so the
+        TTL check in :meth:`find_by_telegram_link_token` and the status endpoint
+        work correctly.
+        """
         with self._db.session() as session:
-            stmt = sqlalchemy.update(User).where(User.id == user_id).values(telegram_link_token=token)
+            stmt = (
+                sqlalchemy.update(User)
+                .where(User.id == user_id)
+                .values(telegram_link_token=token, telegram_link_token_expires_at=expires_at)
+            )
             session.execute(stmt)
 
     def finalize_telegram_binding(self, user_id: str, chat_id: int) -> None:
@@ -142,7 +158,11 @@ class UserRepository:
             stmt = (
                 sqlalchemy.update(User)
                 .where(User.id == user_id)
-                .values(telegram_chat_id=chat_id, telegram_link_token=None)
+                .values(
+                    telegram_chat_id=chat_id,
+                    telegram_link_token=None,
+                    telegram_link_token_expires_at=None,
+                )
             )
             session.execute(stmt)
 
@@ -152,7 +172,11 @@ class UserRepository:
             stmt = (
                 sqlalchemy.update(User)
                 .where(User.id == user_id)
-                .values(telegram_chat_id=None, telegram_link_token=None)
+                .values(
+                    telegram_chat_id=None,
+                    telegram_link_token=None,
+                    telegram_link_token_expires_at=None,
+                )
             )
             session.execute(stmt)
 
