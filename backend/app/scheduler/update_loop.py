@@ -335,6 +335,7 @@ class UpdateLoop:
             mode=mode,
             season=int(info.get('season') or '1'),
             custom_name=raw_custom or None,
+            owner_id=info.get('owner_id') or None,
         )
 
     def _announce_waiting(

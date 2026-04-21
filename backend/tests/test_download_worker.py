@@ -601,3 +601,182 @@ def test_worker_passes_none_custom_name_when_not_set(tmp_path: pathlib.Path) -> 
     download_calls = [kw for name, kw in fake_anime.calls if name == 'download']
     assert len(download_calls) == 1
     assert download_calls[0].get('custom_name') is None
+
+
+# ---------------------------------------------------------------------------
+# Event sink integration tests
+# ---------------------------------------------------------------------------
+
+
+class FakeEventSink:
+    """Captures fire_* calls without touching Telegram."""
+
+    def __init__(self) -> None:
+        self.completed: list[dict[str, Any]] = []
+        self.failed: list[dict[str, Any]] = []
+        self.cancelled: list[dict[str, Any]] = []
+
+    def fire_completed(self, **kwargs: Any) -> None:
+        self.completed.append(kwargs)
+
+    def fire_failed(self, **kwargs: Any) -> None:
+        self.failed.append(kwargs)
+
+    def fire_cancelled(self, **kwargs: Any) -> None:
+        self.cancelled.append(kwargs)
+
+    def close(self) -> None:
+        pass
+
+
+def _build_with_sink(
+    tmp_path: pathlib.Path,
+    *,
+    fake_anime: FakeAnime,
+    sink: FakeEventSink,
+    settings_overrides: dict[str, Any] | None = None,
+) -> Harness:
+    logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
+    settings_kwargs: dict[str, Any] = {
+        'download_resolution': '1080',
+        'classify_bangumi': True,
+    }
+    settings_kwargs.update(settings_overrides or {})
+    settings = AppSettings(**settings_kwargs)
+
+    queue = TaskQueue(max_download=2, max_upload=1)
+    progress = ProgressBus()
+    repo = FakeAnimeRepository()
+
+    worker = DownloadWorker(
+        queue=queue,
+        anime_factory=lambda sn: fake_anime,  # type: ignore[arg-type]
+        anime_repo=repo,  # type: ignore[arg-type]
+        progress=progress,
+        settings_provider=lambda: settings,
+        logger=logger,
+        event_sink=sink,  # type: ignore[arg-type]
+    )
+    return Harness(
+        worker=worker,
+        queue=queue,
+        progress=progress,
+        repo=repo,
+        settings=settings,
+        anime=fake_anime,
+    )
+
+
+def test_event_sink_fire_completed_on_success(tmp_path: pathlib.Path) -> None:
+    fake_anime = FakeAnime(
+        sn=200,
+        download_result=DownloadResult(
+            success=True,
+            file_path=tmp_path / 'a.mp4',
+            size_mb=500,
+        ),
+        bangumi_name='某番',
+        episode='05',
+    )
+    sink = FakeEventSink()
+    h = _build_with_sink(tmp_path, fake_anime=fake_anime, sink=sink)
+    h.queue.add(200, TaskInfo(sn=200, tag='', mode='single', owner_id='user1'))
+    h.queue.mark_processing(200)
+
+    h.worker.run(200)
+
+    assert len(sink.completed) == 1
+    call = sink.completed[0]
+    assert call['owner_id'] == 'user1'
+    assert call['bangumi_name'] == '某番'
+    assert call['episode'] == '05'
+    assert call['file_size_mb'] == 500
+    assert sink.failed == []
+    assert sink.cancelled == []
+
+
+def test_event_sink_fire_failed_on_no_available_stream_during_download(
+    tmp_path: pathlib.Path,
+) -> None:
+    fake_anime = FakeAnime(
+        sn=201,
+        download_raises=exceptions.NoAvailableStreamError('vip'),
+        bangumi_name='某番2',
+        episode='01',
+    )
+    sink = FakeEventSink()
+    h = _build_with_sink(tmp_path, fake_anime=fake_anime, sink=sink)
+    h.queue.add(201, TaskInfo(sn=201, tag='', mode='single', owner_id='user2'))
+    h.queue.mark_processing(201)
+
+    h.worker.run(201)
+
+    assert len(sink.failed) == 1
+    assert sink.failed[0]['owner_id'] == 'user2'
+    assert sink.completed == []
+    assert sink.cancelled == []
+
+
+def test_event_sink_fire_failed_on_no_available_stream_during_load(
+    tmp_path: pathlib.Path,
+) -> None:
+    class _BrokenLoad(FakeAnime):
+        def load(self) -> None:
+            raise exceptions.NoAvailableStreamError('load fail')
+
+    fake_anime = _BrokenLoad(sn=202)
+    sink = FakeEventSink()
+    h = _build_with_sink(tmp_path, fake_anime=fake_anime, sink=sink)
+    h.queue.add(202, TaskInfo(sn=202, tag='', mode='single', owner_id='user3'))
+    h.queue.mark_processing(202)
+
+    h.worker.run(202)
+
+    assert len(sink.failed) == 1
+    # Load failure uses sn as bangumi_name placeholder.
+    assert sink.failed[0]['sn'] == 202
+    assert sink.failed[0]['owner_id'] == 'user3'
+    assert sink.completed == []
+
+
+def test_event_sink_fire_cancelled_on_task_cancelled(tmp_path: pathlib.Path) -> None:
+    fake_anime = FakeAnime(
+        sn=203,
+        download_raises=exceptions.TaskCancelledError('user cancel'),
+        bangumi_name='某番3',
+        episode='02',
+    )
+    sink = FakeEventSink()
+    h = _build_with_sink(tmp_path, fake_anime=fake_anime, sink=sink)
+    h.queue.add(203, TaskInfo(sn=203, tag='', mode='single', owner_id='user4'))
+    h.queue.mark_processing(203)
+    h.progress.start(203, 'pending', status='正在下載')
+
+    h.worker.run(203)
+
+    assert len(sink.cancelled) == 1
+    assert sink.cancelled[0]['owner_id'] == 'user4'
+    assert sink.cancelled[0]['bangumi_name'] == '某番3'
+    assert sink.completed == []
+    assert sink.failed == []
+
+
+def test_event_sink_owner_id_none_passed_through(tmp_path: pathlib.Path) -> None:
+    """TaskInfo with no owner_id → fire_* receives owner_id=None."""
+    fake_anime = FakeAnime(
+        sn=204,
+        download_result=DownloadResult(
+            success=True,
+            file_path=tmp_path / 'a.mp4',
+            size_mb=200,
+        ),
+    )
+    sink = FakeEventSink()
+    h = _build_with_sink(tmp_path, fake_anime=fake_anime, sink=sink)
+    h.queue.add(204, TaskInfo(sn=204, tag='', mode='single', owner_id=None))
+    h.queue.mark_processing(204)
+
+    h.worker.run(204)
+
+    assert len(sink.completed) == 1
+    assert sink.completed[0]['owner_id'] is None

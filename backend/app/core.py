@@ -51,6 +51,7 @@ from .scheduler.worker import DownloadWorker
 if T.TYPE_CHECKING:
     from .api._scheduler_proxy import SchedulerProxy
     from .models import AppSettings
+    from .scheduler.event_sink import DownloadEventSink
     from .scheduler.watchdog import SchedulerWatchdog
     from .services.telegram_client import TelegramClient
 
@@ -92,6 +93,8 @@ class Container:
     scheduler_proxy: SchedulerProxy | None = None
     # None when bot_token is empty; instantiated by the API process only.
     telegram_client: TelegramClient | None = None
+    # None when bot_token is empty; used by the scheduler process to fire DMs.
+    event_sink: DownloadEventSink | None = None
 
     def anime_factory(self, sn: int) -> Anime:
         """Build an :class:`Anime` orchestrator wired with this container's collaborators."""
@@ -122,6 +125,7 @@ class Container:
             progress=self.progress_bus,
             settings_provider=self.settings_repo.load,
             logger=self.logger,
+            event_sink=self.event_sink,
         )
 
     def build_update_loop(self, watchdog: SchedulerWatchdog | None = None) -> UpdateLoop:
@@ -265,13 +269,25 @@ def build_container() -> Container:
         logger=None,  # uses module-level stdlib logger
     )
 
-    # Build TelegramClient for the API process only (when bot_token is set).
-    # The scheduler process does not need this in the current PR.
+    # Build TelegramClient and TelegramNotifier / DownloadEventSink for all
+    # processes that have a bot_token configured.  The API process uses the
+    # client for webhook/send-message; the scheduler process uses the sink to
+    # fire download-event DMs from the sync worker thread.
     telegram_client = None
+    event_sink = None
     if settings.telegram.bot_token:
+        from .scheduler.event_sink import DownloadEventSink as _DownloadEventSink
         from .services.telegram_client import TelegramClient as _TelegramClient
+        from .services.telegram_notifier import TelegramNotifier as _TelegramNotifier
 
         telegram_client = _TelegramClient(settings.telegram.bot_token)
+        _notifier = _TelegramNotifier(
+            client=telegram_client,
+            user_repo=user_repo,
+            settings=settings.telegram,
+            logger=logger,
+        )
+        event_sink = _DownloadEventSink(_notifier)
 
     container = Container(
         paths=paths,
@@ -303,6 +319,7 @@ def build_container() -> Container:
         signals=signals,
         scheduler_proxy=scheduler_proxy,
         telegram_client=telegram_client,
+        event_sink=event_sink,
     )
     return container
 

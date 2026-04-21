@@ -177,6 +177,18 @@ def build_scheduler_app(container: Container) -> fastapi.FastAPI:
         finally:
             container.logger.info(None, 'Scheduler', 'Stopping UpdateLoop…')
             loop.stop()
+            # Drain in-flight Telegram notifications and close the async loop.
+            event_sink = getattr(container, 'event_sink', None)
+            if event_sink is not None:
+                event_sink.close()
+            # Close the TelegramClient's HTTP connection pool.
+            tg_client = getattr(container, 'telegram_client', None)
+            if tg_client is not None:
+                import asyncio as _asyncio
+                import contextlib as _contextlib
+
+                with _contextlib.suppress(Exception):
+                    _asyncio.get_event_loop().run_until_complete(tg_client.close())
 
     app = fastapi.FastAPI(
         title='aniGamerPlus Scheduler (internal)',
