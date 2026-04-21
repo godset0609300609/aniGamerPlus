@@ -18,6 +18,7 @@ if T.TYPE_CHECKING:
     from ..logging_ import Logger
     from ..models import AppSettings
     from ..persistence.repositories import AnimeRepository
+    from .event_sink import DownloadEventSink
     from .queue_ import TaskQueue
 
 
@@ -33,6 +34,7 @@ class DownloadWorker:
         progress: ProgressBus,
         settings_provider: collections.abc.Callable[[], AppSettings],
         logger: Logger,
+        event_sink: DownloadEventSink | None = None,
     ) -> None:
         self._queue = queue
         self._anime_factory = anime_factory
@@ -40,6 +42,7 @@ class DownloadWorker:
         self._progress = progress
         self._settings_provider = settings_provider
         self._logger = logger
+        self._event_sink = event_sink
 
     # ------------------------------------------------------------------ entry
 
@@ -140,6 +143,15 @@ class DownloadWorker:
             self._progress.update_status(sn, '失敗')
             self._queue.pop(sn)
             self._queue.unmark_processing(sn)
+            if self._event_sink is not None:
+                self._event_sink.fire_failed(
+                    owner_id=info.owner_id,
+                    bangumi_name=str(sn),
+                    episode=None,
+                    resolution=None,
+                    sn=sn,
+                    error_message=f'無可用影片源: {exc}'[:200],
+                )
             return True
         except exceptions.TryTooManyTimeError as exc:
             self._logger.error(
@@ -175,6 +187,14 @@ class DownloadWorker:
             )
             self._queue.pop(sn)
             self._queue.unmark_processing(sn)
+            if self._event_sink is not None:
+                self._event_sink.fire_cancelled(
+                    owner_id=info.owner_id,
+                    bangumi_name=anime.get_bangumi_name(),
+                    episode=anime.get_episode(),
+                    resolution=str(anime.get_resolution()),
+                    sn=sn,
+                )
             return False  # do NOT call finish() — cancel() already scheduled it
         except exceptions.NoAvailableStreamError as exc:
             self._logger.error(
@@ -188,6 +208,15 @@ class DownloadWorker:
             self._progress.update_status(sn, '失敗')
             self._queue.pop(sn)
             self._queue.unmark_processing(sn)
+            if self._event_sink is not None:
+                self._event_sink.fire_failed(
+                    owner_id=info.owner_id,
+                    bangumi_name=anime.get_bangumi_name(),
+                    episode=anime.get_episode(),
+                    resolution=str(anime.get_resolution()),
+                    sn=sn,
+                    error_message=f'無可用影片源: {exc}'[:200],
+                )
             return True
         except exceptions.TryTooManyTimeError as exc:
             self._logger.error(
@@ -217,6 +246,17 @@ class DownloadWorker:
         # Optional upload.
         if settings.upload_to_server:
             self._run_upload(sn, anime=anime, info=info)
+
+        # Notify on success.
+        if self._event_sink is not None:
+            self._event_sink.fire_completed(
+                owner_id=info.owner_id,
+                bangumi_name=anime.get_bangumi_name(),
+                episode=anime.get_episode(),
+                resolution=str(anime.get_resolution()),
+                sn=sn,
+                file_size_mb=int(result.size_mb),
+            )
 
         # Terminal success: caller's ``finally`` finishes the progress entry.
         self._queue.pop(sn)

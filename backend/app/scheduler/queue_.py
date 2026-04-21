@@ -23,6 +23,7 @@ class TaskInfo:
     mode: str
     season: int = 1
     custom_name: str | None = None
+    owner_id: str | None = None
 
 
 class TaskQueue:

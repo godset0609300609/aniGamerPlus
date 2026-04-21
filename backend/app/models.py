@@ -262,6 +262,7 @@ class TelegramSettings(pydantic.BaseModel):
     webhook_secret: str = ''  # path segment + X-Telegram-Bot-Api-Secret-Token
     public_url: str = ''  # e.g. "https://example.com" — used to build webhook URL
     notify_on: list[str] = pydantic.Field(default_factory=lambda: ['completed', 'failed', 'cancelled'])
+    admin_broadcast: bool = True  # also DM every admin user who is bound + opted-in
     rate_limit_per_minute: int = 30  # per-user command rate limit
     allow_localhost: bool = False  # dev/test bypass: accept 127.0.0.1 in IP allowlist
 
