@@ -113,6 +113,8 @@ export interface AnimeListEntry {
   anime_name: string | null
   downloaded_episodes: number
   known_episodes: number
+  owner_id?: string | null
+  owner_username?: string | null
 }
 
 export interface AnimeListPayload {
