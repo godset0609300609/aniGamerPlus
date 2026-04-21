@@ -11,15 +11,19 @@ Covers:
 
 from __future__ import annotations
 
+import datetime
 import logging
 import typing as T
+from unittest.mock import AsyncMock, MagicMock
 
 import fastapi
 import fastapi.testclient
 
 from app.api.deps import get_settings
+from app.api.telegram_webhook import _get_dispatcher, _get_rate_limiter, _get_user_repo
 from app.api.telegram_webhook import router as webhook_router
 from app.models import AppSettings, TelegramSettings
+from app.services.telegram_rate_limiter import TelegramRateLimiter
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -56,6 +60,8 @@ def _make_app(
     allow_localhost: bool = True,
 ) -> fastapi.FastAPI:
     """Build a minimal FastAPI app with the webhook router + overridden settings."""
+    from app.api.telegram_webhook import _get_dispatcher, _get_rate_limiter
+
     app = fastapi.FastAPI()
     app.include_router(webhook_router)
 
@@ -67,6 +73,9 @@ def _make_app(
     settings = AppSettings(telegram=tg)
 
     app.dependency_overrides[get_settings] = lambda: settings
+    # Stub out container-bound deps so tests don't try to call build_container().
+    app.dependency_overrides[_get_dispatcher] = lambda: None
+    app.dependency_overrides[_get_rate_limiter] = lambda: None
     return app
 
 
@@ -266,3 +275,164 @@ def test_callback_update_logs_correct_type() -> None:
     assert resp.status_code == 200
     messages = [r.getMessage() for r in records]
     assert any('callback_query' in m for m in messages), messages
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher integration tests (bound / unbound / rate-limited)
+# ---------------------------------------------------------------------------
+
+
+def _make_user_repo_mock(*, bound: bool = True, chat_id: int = 111) -> MagicMock:
+    """Return a mock UserRepository.
+
+    When ``bound=True``, ``find_by_telegram_chat_id`` returns a fake UserRow.
+    When ``bound=False``, it returns None.
+    """
+    from app.persistence.user_repo import UserRow
+
+    repo = MagicMock()
+    if bound:
+        user_row = UserRow(
+            id='user-1',
+            username='Alice',
+            avatar_url=None,
+            role='downloader',
+            created_at=datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC),
+            last_login_at=None,
+            telegram_chat_id=chat_id,
+            telegram_notify_enabled=True,
+        )
+        repo.find_by_telegram_chat_id = MagicMock(return_value=user_row)
+    else:
+        repo.find_by_telegram_chat_id = MagicMock(return_value=None)
+
+    # find_by_telegram_link_token always returns None (not a /start test)
+    repo.find_by_telegram_link_token = MagicMock(return_value=None)
+    return repo
+
+
+def _make_dispatcher_mock() -> MagicMock:
+    dispatcher = MagicMock()
+    dispatcher.dispatch = AsyncMock(return_value=None)
+    return dispatcher
+
+
+def _make_app_with_overrides(
+    *,
+    user_repo: object,
+    dispatcher: object | None,
+    rate_limiter: object | None,
+    telegram_client: object | None = None,
+) -> fastapi.FastAPI:
+    app = fastapi.FastAPI()
+    app.include_router(webhook_router)
+
+    tg = TelegramSettings(
+        bot_token='TOKEN',
+        webhook_secret=_SECRET,
+        allow_localhost=True,
+    )
+    settings = AppSettings(telegram=tg)
+
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[_get_user_repo] = lambda: user_repo
+    app.dependency_overrides[_get_dispatcher] = lambda: dispatcher
+    app.dependency_overrides[_get_rate_limiter] = lambda: rate_limiter
+
+    if telegram_client is not None:
+        from app.api.telegram_webhook import _get_telegram_client
+
+        app.dependency_overrides[_get_telegram_client] = lambda: telegram_client
+
+    return app
+
+
+def _cmd_msg(text: str, chat_id: int = 111) -> dict:
+    return {
+        'update_id': 99,
+        'message': {
+            'message_id': 20,
+            'from': {'id': chat_id, 'is_bot': False, 'first_name': 'Alice'},
+            'chat': {'id': chat_id, 'type': 'private'},
+            'date': 1700000100,
+            'text': text,
+        },
+    }
+
+
+def test_unbound_user_gets_bind_hint_not_dispatcher() -> None:
+    """Unbound user → 'please bind' reply; dispatcher NOT called."""
+    repo = _make_user_repo_mock(bound=False)
+    dispatcher = _make_dispatcher_mock()
+
+    tg_client = MagicMock()
+    tg_client.send_message = AsyncMock(return_value={})
+
+    app = _make_app_with_overrides(
+        user_repo=repo,
+        dispatcher=dispatcher,
+        rate_limiter=TelegramRateLimiter(30),
+        telegram_client=tg_client,
+    )
+    tc = fastapi.testclient.TestClient(app)
+    resp = tc.post(
+        _WEBHOOK_PATH,
+        json=_cmd_msg('/download 48430'),
+        headers={'X-Telegram-Bot-Api-Secret-Token': _SECRET, 'X-Real-IP': '127.0.0.1'},
+    )
+    assert resp.status_code == 200
+    dispatcher.dispatch.assert_not_called()
+    tg_client.send_message.assert_awaited_once()
+    sent_text = tg_client.send_message.call_args[0][1]
+    assert '綁定' in sent_text or 'bind' in sent_text.lower()
+
+
+def test_bound_user_over_rate_limit_gets_retry_hint() -> None:
+    """Bound user over rate limit → rate-limit reply; dispatcher NOT called."""
+    repo = _make_user_repo_mock(bound=True)
+    dispatcher = _make_dispatcher_mock()
+
+    # Rate limiter already exhausted
+    rl = TelegramRateLimiter(max_per_minute=0)  # 0 = always deny
+
+    tg_client = MagicMock()
+    tg_client.send_message = AsyncMock(return_value={})
+
+    app = _make_app_with_overrides(
+        user_repo=repo,
+        dispatcher=dispatcher,
+        rate_limiter=rl,
+        telegram_client=tg_client,
+    )
+    tc = fastapi.testclient.TestClient(app)
+    resp = tc.post(
+        _WEBHOOK_PATH,
+        json=_cmd_msg('/download 48430'),
+        headers={'X-Telegram-Bot-Api-Secret-Token': _SECRET, 'X-Real-IP': '127.0.0.1'},
+    )
+    assert resp.status_code == 200
+    dispatcher.dispatch.assert_not_called()
+    tg_client.send_message.assert_awaited_once()
+    sent_text = tg_client.send_message.call_args[0][1]
+    assert '頻繁' in sent_text or '限' in sent_text or '請' in sent_text
+
+
+def test_bound_user_under_rate_limit_dispatches_unknown_command() -> None:
+    """Bound user under rate limit, unknown command → dispatcher is called."""
+    repo = _make_user_repo_mock(bound=True)
+    dispatcher = _make_dispatcher_mock()
+    rl = TelegramRateLimiter(max_per_minute=30)
+
+    app = _make_app_with_overrides(
+        user_repo=repo,
+        dispatcher=dispatcher,
+        rate_limiter=rl,
+    )
+    tc = fastapi.testclient.TestClient(app)
+    resp = tc.post(
+        _WEBHOOK_PATH,
+        json=_cmd_msg('/unknown_command_for_test'),
+        headers={'X-Telegram-Bot-Api-Secret-Token': _SECRET, 'X-Real-IP': '127.0.0.1'},
+    )
+    assert resp.status_code == 200
+    dispatcher.dispatch.assert_awaited_once()

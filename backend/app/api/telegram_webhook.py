@@ -25,13 +25,26 @@ import pydantic
 from ..models import AppSettings
 from ..persistence.user_repo import UserRepository
 from ..services._factory import container_bound
-from ..services.telegram_client import TelegramBotBlockedError, TelegramChatNotFoundError, TelegramClient
+from ..services.telegram_client import (
+    TelegramBotBlockedError,
+    TelegramChatNotFoundError,
+    TelegramClient,
+    escape_markdown_v2,
+)
+from ..services.telegram_commands import TelegramCommandDispatcher
+from ..services.telegram_rate_limiter import TelegramRateLimiter
 from .deps import get_settings
 
 _get_telegram_client: T.Callable[[], TelegramClient | None] = container_bound(
     lambda c: getattr(c, 'telegram_client', None)
 )
 _get_user_repo: T.Callable[[], UserRepository] = container_bound(lambda c: c.user_repo)
+_get_dispatcher: T.Callable[[], TelegramCommandDispatcher | None] = container_bound(
+    lambda c: getattr(c, 'telegram_command_dispatcher', None)
+)
+_get_rate_limiter: T.Callable[[], TelegramRateLimiter | None] = container_bound(
+    lambda c: getattr(c, 'telegram_rate_limiter', None)
+)
 
 _START_RE = re.compile(r'^/start (?P<token>[A-Za-z0-9_-]+)$')
 
@@ -145,24 +158,30 @@ async def _handle_message(
     message: _TelegramMessage,
     user_repo: UserRepository,
     telegram_client: TelegramClient | None,
+    dispatcher: TelegramCommandDispatcher | None = None,
+    rate_limiter: TelegramRateLimiter | None = None,
 ) -> None:
     """Dispatch incoming message updates.
 
     Handles:
     - ``/start <token>`` — binding flow
     - ``/start`` (no args) — hint
-    - anything else — minimal hint
+    - bound user commands — dispatcher path
+    - unbound user other messages — minimal hint
     """
     text = (message.text or '').strip()
     chat_id = message.chat.id
 
-    async def _send(msg: str) -> None:
+    async def _send(msg: str, *, parse_mode: str | None = None) -> None:
         if telegram_client is None:
             return
         try:
-            await telegram_client.send_message(chat_id, msg, parse_mode=None)
+            await telegram_client.send_message(chat_id, msg, parse_mode=parse_mode)
         except TelegramBotBlockedError, TelegramChatNotFoundError:
-            _log.warning('Telegram webhook: could not send reply to chat_id=%d (blocked/not found)', chat_id)
+            _log.warning(
+                'Telegram webhook: could not send reply to chat_id=%d (blocked/not found)',
+                chat_id,
+            )
         except Exception:
             _log.exception('Telegram webhook: failed to send reply to chat_id=%d', chat_id)
 
@@ -183,6 +202,31 @@ async def _handle_message(
         await _send('👋 請回到網站點擊「綁定 Telegram」按鈕，再掃描或開啟連結。')
         return
 
+    # --- Bound-user command dispatcher path ---
+    if message.from_ is not None and dispatcher is not None:
+        tg_user_id = message.from_.id
+        bound_user = await anyio.to_thread.run_sync(lambda: user_repo.find_by_telegram_chat_id(tg_user_id))
+
+        if bound_user is None:
+            # Not bound — tell them to bind via web UI
+            await _send(
+                escape_markdown_v2('請先到網站的「設定」頁面綁定 Telegram，才能使用指令。'),
+                parse_mode='MarkdownV2',
+            )
+            return
+
+        # Rate limit check
+        if rate_limiter is not None and not rate_limiter.allow(bound_user.id):
+            retry_s = rate_limiter.retry_after_seconds(bound_user.id)
+            await _send(
+                escape_markdown_v2(f'🚦 請求太頻繁，請 {retry_s} 秒後再試。'),
+                parse_mode='MarkdownV2',
+            )
+            return
+
+        await dispatcher.dispatch(chat_id=chat_id, user=bound_user, text=text)
+        return
+
     # All other messages — minimal hint
     await _send('/help 可查看可用指令（綁定完成後才可用）。')
 
@@ -195,11 +239,13 @@ async def receive(
     settings: T.Annotated[AppSettings, fastapi.Depends(get_settings)],
     telegram_client: T.Annotated[TelegramClient | None, fastapi.Depends(_get_telegram_client)],
     user_repo: T.Annotated[UserRepository, fastapi.Depends(_get_user_repo)],
+    dispatcher: T.Annotated[TelegramCommandDispatcher | None, fastapi.Depends(_get_dispatcher)],
+    rate_limiter: T.Annotated[TelegramRateLimiter | None, fastapi.Depends(_get_rate_limiter)],
 ) -> dict[str, bool]:
     """Receive a Telegram Update.
 
     Verifies IP allowlist, path secret, and header secret before processing.
-    Handles ``/start <token>`` binding flow.
+    Handles ``/start <token>`` binding flow and bound-user commands.
     """
     tg = settings.telegram
 
@@ -225,6 +271,12 @@ async def receive(
     _log.info('Telegram webhook: received update_id=%d type=%s', update.update_id, _update_type(update))
 
     if update.message is not None:
-        await _handle_message(update.message, user_repo, telegram_client)
+        await _handle_message(
+            update.message,
+            user_repo,
+            telegram_client,
+            dispatcher=dispatcher,
+            rate_limiter=rate_limiter,
+        )
 
     return {'ok': True}
