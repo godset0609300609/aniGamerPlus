@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ConfigApi, parseProxy, serializeProxy } from '@/api/config'
 import type { ProxyParts, WebSettings } from '@/types'
 import { useAuthStore } from '@/stores/auth'
+import { useTelegramBinding } from '@/composables/useTelegramBinding'
 import DirtyFab from '@/components/DirtyFab.vue'
 
 const api = new ConfigApi()
@@ -104,13 +105,50 @@ function fillCurrentUA(): void {
   ElMessage.success('已取得當前瀏覽器 UA')
 }
 
+// ---------------------------------------------------------------------------
+// Telegram binding
+// ---------------------------------------------------------------------------
+
+const tg = useTelegramBinding()
+
+async function handleTelegramBind(): Promise<void> {
+  await tg.startLink()
+}
+
+async function handleTelegramUnlink(): Promise<void> {
+  try {
+    await ElMessageBox.confirm('確定要解除 Telegram 綁定嗎？', '解除綁定', {
+      confirmButtonText: '確定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+  await tg.unlink()
+  if (!tg.error.value) {
+    ElMessage.success('已解除 Telegram 綁定')
+  } else {
+    ElMessage.error(`解除失敗: ${tg.error.value}`)
+  }
+}
+
+async function handleNotifyEnabledChange(val: boolean): Promise<void> {
+  await tg.setNotifyEnabled(val)
+}
+
 onMounted(async () => {
   await load()
+  await tg.loadStatus()
   try {
     cookieStatus.value = await api.getCookieStatus()
   } catch {
     // Non-fatal — status badge stays at default (false)
   }
+})
+
+onUnmounted(() => {
+  tg.dispose()
 })
 </script>
 
@@ -359,6 +397,71 @@ onMounted(async () => {
 
       <section class="ag-section">
         <h2 class="ag-section-title">
+          Telegram 通知綁定
+        </h2>
+
+        <!-- Bot not configured by admin -->
+        <template v-if="tg.notConfigured.value">
+          <span class="ag-muted">系統管理員尚未設定 Telegram bot，無法綁定。</span>
+        </template>
+
+        <!-- Already bound -->
+        <template v-else-if="tg.bound.value">
+          <div class="ag-tg-row">
+            <span class="ag-tg-status ag-tg-bound">已綁定</span>
+            <span class="ag-muted">下載完成/失敗時會透過 Telegram 私訊通知你</span>
+          </div>
+          <el-form-item label="通知啟用">
+            <el-switch
+              :model-value="tg.notifyEnabled.value"
+              @update:model-value="handleNotifyEnabledChange"
+            />
+          </el-form-item>
+          <el-button
+            type="danger"
+            :loading="tg.loading.value"
+            @click="handleTelegramUnlink"
+          >
+            解除綁定
+          </el-button>
+        </template>
+
+        <!-- Link pending / waiting for Telegram confirmation -->
+        <template v-else-if="tg.linkPending.value">
+          <div class="ag-tg-row">
+            <span class="ag-tg-status ag-tg-pending">等待 Telegram 確認...</span>
+            <span class="ag-muted">剩餘 {{ tg.countdownLabel.value }}</span>
+          </div>
+          <div class="ag-muted ag-tg-hint">
+            請到剛才開啟的 Telegram 分頁按下「啟動 / Start」
+          </div>
+          <el-button
+            type="default"
+            :loading="tg.loading.value"
+            @click="handleTelegramUnlink"
+          >
+            取消綁定
+          </el-button>
+        </template>
+
+        <!-- Not bound, no pending link -->
+        <template v-else>
+          <el-button
+            type="primary"
+            :loading="tg.loading.value"
+            @click="handleTelegramBind"
+          >
+            綁定 Telegram
+          </el-button>
+          <span
+            v-if="tg.error.value"
+            class="ag-muted"
+          >{{ tg.error.value }}</span>
+        </template>
+      </section>
+
+      <section class="ag-section">
+        <h2 class="ag-section-title">
           Cookie
         </h2>
         <el-form-item label="Cookie">
@@ -456,5 +559,27 @@ onMounted(async () => {
   margin-top: 4px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+.ag-muted {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.ag-tg-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.ag-tg-status {
+  font-weight: bold;
+}
+.ag-tg-bound {
+  color: var(--el-color-success);
+}
+.ag-tg-pending {
+  color: var(--el-color-warning);
+}
+.ag-tg-hint {
+  margin-bottom: 8px;
 }
 </style>

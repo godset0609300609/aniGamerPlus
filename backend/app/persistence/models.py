@@ -107,6 +107,10 @@ class User(Base):
         default=True,
         server_default=sqlalchemy.true(),
     )
+    # Added by revision 0009 — token TTL
+    telegram_link_token_expires_at: sqlalchemy.orm.Mapped[datetime.datetime | None] = sqlalchemy.orm.mapped_column(
+        sqlalchemy.DateTime, nullable=True
+    )
 
 
 class AnimeListEntryRow(Base):

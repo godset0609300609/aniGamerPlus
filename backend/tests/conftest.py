@@ -321,5 +321,8 @@ def _container_proxy(fake: FakeContainer) -> Any:
         progress_bus=fake.progress_bus,
         manual_runner=fake.manual_runner,
         scheduler_proxy=fake.scheduler_proxy,
+        # telegram_client None by default; tests that need it override via
+        # dependency_overrides.
+        telegram_client=None,
     )
     return proxy

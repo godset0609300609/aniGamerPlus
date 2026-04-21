@@ -184,6 +184,8 @@ async def me(
             'username': '本機使用者',
             'avatar_url': None,
             'role': 'admin',
+            'telegram_bound': False,
+            'telegram_notify_enabled': True,
         }
 
     user_id: str | None = request.session.get('user_id')
@@ -204,4 +206,6 @@ async def me(
         'username': user.username,
         'avatar_url': user.avatar_url,
         'role': user.role,
+        'telegram_bound': user.telegram_chat_id is not None,
+        'telegram_notify_enabled': user.telegram_notify_enabled,
     }

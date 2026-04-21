@@ -22,6 +22,27 @@ vi.mock('@/stores/auth', () => ({
 }))
 
 // ---------------------------------------------------------------------------
+// useTelegramBinding stub — prevents real fetch calls in these tests.
+// ---------------------------------------------------------------------------
+vi.mock('@/composables/useTelegramBinding', () => ({
+  useTelegramBinding: () => ({
+    bound: ref(false),
+    notifyEnabled: ref(true),
+    linkPending: ref(false),
+    notConfigured: ref(false),
+    loading: ref(false),
+    error: ref(null),
+    countdownLabel: ref('0:00'),
+    secondsRemaining: ref(0),
+    loadStatus: vi.fn().mockResolvedValue(undefined),
+    startLink: vi.fn().mockResolvedValue(undefined),
+    unlink: vi.fn().mockResolvedValue(undefined),
+    setNotifyEnabled: vi.fn().mockResolvedValue(undefined),
+    dispose: vi.fn(),
+  }),
+}))
+
+// ---------------------------------------------------------------------------
 // ConfigApi stub — all methods resolved by default.
 // ---------------------------------------------------------------------------
 const mockLoad = vi.fn()
