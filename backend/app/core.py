@@ -52,6 +52,7 @@ if T.TYPE_CHECKING:
     from .api._scheduler_proxy import SchedulerProxy
     from .models import AppSettings
     from .scheduler.watchdog import SchedulerWatchdog
+    from .services.telegram_client import TelegramClient
 
 
 @dataclasses.dataclass
@@ -89,6 +90,8 @@ class Container:
     signals: SignalHandler
     # None = scheduler process (no proxy needed); API process populates this.
     scheduler_proxy: SchedulerProxy | None = None
+    # None when bot_token is empty; instantiated by the API process only.
+    telegram_client: TelegramClient | None = None
 
     def anime_factory(self, sn: int) -> Anime:
         """Build an :class:`Anime` orchestrator wired with this container's collaborators."""
@@ -262,6 +265,14 @@ def build_container() -> Container:
         logger=None,  # uses module-level stdlib logger
     )
 
+    # Build TelegramClient for the API process only (when bot_token is set).
+    # The scheduler process does not need this in the current PR.
+    telegram_client = None
+    if settings.telegram.bot_token:
+        from .services.telegram_client import TelegramClient as _TelegramClient
+
+        telegram_client = _TelegramClient(settings.telegram.bot_token)
+
     container = Container(
         paths=paths,
         logger=logger,
@@ -291,6 +302,7 @@ def build_container() -> Container:
         my_anime_exporter=my_anime_exporter,
         signals=signals,
         scheduler_proxy=scheduler_proxy,
+        telegram_client=telegram_client,
     )
     return container
 

@@ -17,6 +17,8 @@ import uvicorn
 
 from .api import router as api_router
 from .api.auth_api import router as auth_router
+from .api.telegram_admin import router as telegram_admin_router
+from .api.telegram_webhook import router as telegram_webhook_router
 from .core import Container, build_container
 from .log_config import LogFileTailer, build_log_config, get_ring_buffer_handler
 from .persistence.paths import WorkspacePaths
@@ -133,6 +135,8 @@ class DashboardApp:
             allow_headers=['*'],
         )
         app.include_router(auth_router)
+        app.include_router(telegram_webhook_router)
+        app.include_router(telegram_admin_router)
         app.include_router(api_router)
         return app
 
@@ -247,6 +251,9 @@ class DashboardApp:
                     await proxy_task
                 if proxy is not None:
                     await proxy.close()
+            tg_client = getattr(self._container, 'telegram_client', None)
+            if tg_client is not None:
+                await tg_client.close()
             logger.info(
                 None,
                 'API Process',
