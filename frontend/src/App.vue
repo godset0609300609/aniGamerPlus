@@ -14,7 +14,7 @@ const router = useRouter()
 const activeIndex = computed(() => route.path)
 
 const { isDark, toggle } = useDarkMode()
-const { user, loading, loadMe } = useAuthStore()
+const { user, loading, isAdmin, loadMe } = useAuthStore()
 const health = useBackendHealth()
 
 onMounted(async () => {
@@ -90,7 +90,10 @@ const showShell = computed(() => !loading.value && user.value !== null)
         <el-menu-item index="/anime-list">
           追番清單
         </el-menu-item>
-        <el-menu-item index="/logs">
+        <el-menu-item
+          v-if="isAdmin"
+          index="/logs"
+        >
           系統日誌
         </el-menu-item>
       </el-menu>

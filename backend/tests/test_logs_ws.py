@@ -3,9 +3,10 @@
 Key test scenarios
 ------------------
 * Admin → receives historical snapshot and live records.
-* Downloader → only sees records without an ``sn`` tag.
+* Non-admin (downloader) via WS → closed with code 1008 (Policy Violation).
 * No session (auth enabled) → close code 4401.
-* GET /api/logs → snapshot with level filter.
+* GET /api/logs as admin → 200 with snapshot and level filter.
+* GET /api/logs as non-admin → 403 Forbidden.
 * _next_from_either → no items silently dropped when both queues ready.
 """
 
@@ -92,14 +93,6 @@ def test_entry_visible_admin_sees_all() -> None:
     assert _entry_visible({'sn': None}, admin) is True
     assert _entry_visible({'sn': 123}, admin) is True
     assert _entry_visible({}, admin) is True
-
-
-def test_entry_visible_downloader_sees_only_no_sn() -> None:
-    dl = _downloader_user()
-    assert _entry_visible({'sn': None}, dl) is True
-    assert _entry_visible({}, dl) is True
-    assert _entry_visible({'sn': 123}, dl) is False
-    assert _entry_visible({'sn': 0}, dl) is False
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +194,23 @@ def test_no_session_closes_with_4401(
         pytest.fail('Expected WebSocketDisconnect with code 4401')
 
 
+def test_non_admin_ws_closes_with_1008(
+    fake_container: FakeContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-admin authenticated connection must be closed with code 1008 (Policy Violation)."""
+    import starlette.testclient
+
+    tc = _make_client_for_user(fake_container, monkeypatch, user=_downloader_user())
+    try:
+        with tc.websocket_connect('/api/ws/logs') as ws:
+            ws.receive_text()  # triggers the close response
+    except starlette.testclient.WebSocketDisconnect as exc:
+        assert exc.code == 1008
+    else:
+        pytest.fail('Expected WebSocketDisconnect with code 1008')
+
+
 def test_admin_receives_historical_snapshot(
     fake_container: FakeContainer,
     monkeypatch: pytest.MonkeyPatch,
@@ -220,39 +230,6 @@ def test_admin_receives_historical_snapshot(
     assert 'download started' in messages
 
 
-def test_downloader_only_receives_no_sn_records(
-    fake_container: FakeContainer,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Downloader should only see historical records without sn."""
-    handler = get_ring_buffer_handler()
-    _emit_to_handler(handler, 'system event')
-    _emit_to_handler(handler, 'download sn-99', sn=99)
-
-    tc = _make_client_for_user(fake_container, monkeypatch, user=_downloader_user())
-    with tc.websocket_connect('/api/ws/logs') as ws:
-        msg = json.loads(ws.receive_text())
-
-    # Only the system-level record (no sn) should arrive.
-    assert msg['message'] == 'system event'
-    assert msg['sn'] is None
-
-
-def test_downloader_receives_no_messages_when_all_have_sn(
-    fake_container: FakeContainer,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If the entire buffer contains only sn records, downloader gets nothing in history."""
-    handler = get_ring_buffer_handler()
-    _emit_to_handler(handler, 'dl-only', sn=42)
-
-    tc = _make_client_for_user(fake_container, monkeypatch, user=_downloader_user())
-    with tc.websocket_connect('/api/ws/logs'):
-        # Nothing to receive from history; the socket just stays open.
-        # We verify by checking the snapshot is empty for this user.
-        pass  # No recv_text — if one was pending the test would deadlock.
-
-
 # ---------------------------------------------------------------------------
 # GET /api/logs snapshot endpoint
 # ---------------------------------------------------------------------------
@@ -262,7 +239,7 @@ def test_get_logs_returns_snapshot(
     client: fastapi.testclient.TestClient,
     fake_container: FakeContainer,
 ) -> None:
-    """GET /api/logs should return the current ring-buffer snapshot."""
+    """GET /api/logs as admin should return the current ring-buffer snapshot."""
     handler = get_ring_buffer_handler()
     _emit_to_handler(handler, 'info message', level=logging.INFO)
     _emit_to_handler(handler, 'warn message', level=logging.WARNING)
@@ -306,6 +283,16 @@ def test_get_logs_limit(
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
+
+
+def test_get_logs_non_admin_returns_403(
+    fake_container: FakeContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GET /api/logs as a non-admin user must return 403 Forbidden."""
+    tc = _make_client_for_user(fake_container, monkeypatch, user=_downloader_user())
+    resp = tc.get('/api/logs')
+    assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------
