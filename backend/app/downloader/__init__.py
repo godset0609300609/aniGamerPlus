@@ -15,7 +15,6 @@ from .filename import FilenameBuilder
 from .http_client import AniGamerHttpClient
 from .m3u8_client import M3u8Client
 from .metadata import AnimeMetadata, MetadataExtractor
-from .notifier import CompositeNotifier
 from .progress import ProgressBus, TaskProgress, get_progress_bus
 from .segment_downloader import SegmentDownloader
 from .uploader_ftp import FtpUploader
@@ -24,7 +23,6 @@ __all__ = [
     'AniGamerHttpClient',
     'Anime',
     'AnimeMetadata',
-    'CompositeNotifier',
     'DanmuRenderer',
     'DownloadResult',
     'FFmpegDownloader',

@@ -149,11 +149,6 @@ class _FakeFtpUploader(_CallRecorder):
         return self._result
 
 
-class _FakeNotifier(_CallRecorder):
-    def notify_completed(self, filename: str, size_mb: int, sn: int) -> None:
-        self._rec('notify_completed', filename=filename, size_mb=size_mb, sn=sn)
-
-
 # ---------------------------------------------------------------------------
 # Fixtures — build a fully-wired Anime with fakes in place.
 # ---------------------------------------------------------------------------
@@ -168,7 +163,6 @@ class _Harness:
     ffmpeg: _FakeFFmpegDownloader
     danmu: _FakeDanmuRenderer
     uploader: _FakeFtpUploader
-    notifier: _FakeNotifier
     progress: ProgressBus
     settings: AppSettings
     cooldown: DownloadCooldown | None = None
@@ -217,7 +211,6 @@ def _build_harness(
     ffmpeg = _FakeFFmpegDownloader()
     danmu = _FakeDanmuRenderer()
     uploader = _FakeFtpUploader()
-    notifier = _FakeNotifier()
 
     anime = Anime(
         sn=meta.sn,
@@ -228,7 +221,6 @@ def _build_harness(
         filename_builder=FilenameBuilder(settings),
         danmu_renderer=danmu,  # type: ignore[arg-type]
         uploader=uploader,  # type: ignore[arg-type]
-        notifier=notifier,  # type: ignore[arg-type]
         progress=progress,
         settings=settings,
         paths=paths,
@@ -244,7 +236,6 @@ def _build_harness(
         ffmpeg=ffmpeg,
         danmu=danmu,
         uploader=uploader,
-        notifier=notifier,
         progress=progress,
         settings=settings,
         cooldown=cooldown,
@@ -258,14 +249,13 @@ def _build_harness(
 
 def test_init_does_no_io(tmp_path: pathlib.Path) -> None:
     harness = _build_harness(tmp_path)
-    # No .fetch / .download / .render / .upload / .notify on any dep.
+    # No .fetch / .download / .render / .upload on any dep.
     assert harness.metadata.calls == []
     assert harness.m3u8.calls == []
     assert harness.segment.calls == []
     assert harness.ffmpeg.calls == []
     assert harness.danmu.calls == []
     assert harness.uploader.calls == []
-    assert harness.notifier.calls == []
 
 
 def test_load_is_idempotent(tmp_path: pathlib.Path) -> None:
@@ -393,7 +383,6 @@ def test_progress_status_transitions(tmp_path: pathlib.Path) -> None:
         filename_builder=FilenameBuilder(settings),
         danmu_renderer=_FakeDanmuRenderer(),  # type: ignore[arg-type]
         uploader=_FakeFtpUploader(),  # type: ignore[arg-type]
-        notifier=_FakeNotifier(),  # type: ignore[arg-type]
         progress=bus,
         settings=settings,
         paths=paths,
@@ -503,7 +492,6 @@ def test_cancel_between_m3u8_and_download_stops_pipeline(tmp_path: pathlib.Path)
         filename_builder=FilenameBuilder(harness.settings),
         danmu_renderer=harness.danmu,  # type: ignore[arg-type]
         uploader=harness.uploader,  # type: ignore[arg-type]
-        notifier=harness.notifier,  # type: ignore[arg-type]
         progress=harness.progress,
         settings=harness.settings,
         paths=paths,
@@ -744,7 +732,6 @@ def test_cancel_after_download_stops_post_processing(tmp_path: pathlib.Path) -> 
         filename_builder=FilenameBuilder(harness.settings),
         danmu_renderer=harness.danmu,  # type: ignore[arg-type]
         uploader=harness.uploader,  # type: ignore[arg-type]
-        notifier=harness.notifier,  # type: ignore[arg-type]
         progress=harness.progress,
         settings=harness.settings,
         paths=paths,
@@ -795,7 +782,6 @@ def test_download_failure_updates_status_to_failed_no_stream(
         filename_builder=FilenameBuilder(settings),
         danmu_renderer=_FakeDanmuRenderer(),  # type: ignore[arg-type]
         uploader=_FakeFtpUploader(),  # type: ignore[arg-type]
-        notifier=_FakeNotifier(),  # type: ignore[arg-type]
         progress=progress,
         settings=settings,
         paths=paths,
@@ -848,7 +834,6 @@ def test_download_failure_updates_status_to_failed_too_many_tries(
         filename_builder=FilenameBuilder(settings),
         danmu_renderer=_FakeDanmuRenderer(),  # type: ignore[arg-type]
         uploader=_FakeFtpUploader(),  # type: ignore[arg-type]
-        notifier=_FakeNotifier(),  # type: ignore[arg-type]
         progress=progress,
         settings=settings,
         paths=paths,

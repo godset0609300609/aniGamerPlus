@@ -103,7 +103,6 @@ def test_legacy_config_with_proxies_dict_migrates(paths: WorkspacePaths, repo: S
         'zerofill': 1,
         'quantity_of_logs': 7,
         'ua': '',  # empty -> repo fills default
-        'coolq_settings': {},
     }
     paths.config_path.write_text(json.dumps(legacy), encoding='utf-8')
 

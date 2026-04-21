@@ -66,32 +66,18 @@ def migrate(raw: dict[str, T.Any]) -> dict[str, T.Any]:
     out.setdefault('classify_bangumi', True)  # v5.0
     out.setdefault('classify_season', False)
     out.setdefault('plex_naming', False)
-    out.setdefault('use_copyfile_method', False)  # v6.0
     out.setdefault('zerofill', 1)  # v6.0
     out.setdefault('customized_bangumi_name_suffix', '')  # v7.0
-    out.setdefault('user_command', 'shutdown -s -t 60')  # v8.0
     out.setdefault('segment_max_retry', 8)  # v9.0
     out.setdefault('faststart_movflags', False)  # v9.0
     out.setdefault('video_filename_extension', 'mp4')  # v17
     out.setdefault('audio_language', False)  # v19
-    out.setdefault('telebot_notify', False)
-    out.setdefault('telebot_token', '')
-    out.setdefault('telebot_use_chat_id', False)
-    out.setdefault('telebot_chat_id', '')
-    out.setdefault('discord_notify', False)
-    out.setdefault('discord_token', '')
-    out.setdefault('plex_refresh', False)
-    out.setdefault('plex_url', '')
-    out.setdefault('plex_token', '')
-    out.setdefault('plex_section', '')
-    out.setdefault('use_dashboard', True)  # v20
     out.setdefault('ads_time', 25)
     out.setdefault('danmu', False)
     out.setdefault('danmu_ban_words', [])
     out.setdefault('use_mobile_api', False)  # v21.0
     out.setdefault('mobile_ads_time', 25)
     out.setdefault('only_use_vip', False)
-    out.setdefault('no_proxy_akamai', False)  # v24.3
     out.setdefault('download_cd', 60)  # v24.4
     out.setdefault('parse_sn_cd', 5)  # v24.4
     out.setdefault('parse_cd', 3)  # v24.4
@@ -134,10 +120,6 @@ def migrate(raw: dict[str, T.Any]) -> dict[str, T.Any]:
     dashboard.setdefault('password', 'admin')
     out['dashboard'] = dashboard
 
-    # --- coolq_notify + coolq_settings -------------------------------------
-    out.setdefault('coolq_notify', False)
-    out['coolq_settings'] = _migrate_coolq(out.get('coolq_settings'))
-
     # --- auth sub-dict (v17.3) --------------------------------------------
     auth = dict(out.get('auth') or {})
     auth.setdefault('enabled', False)
@@ -156,56 +138,6 @@ def migrate(raw: dict[str, T.Any]) -> dict[str, T.Any]:
     out['database_version'] = max(existing_db, LATEST_DATABASE_VERSION)
 
     return out
-
-
-def _migrate_coolq(raw: T.Any) -> dict[str, T.Any]:
-    """Promote any known legacy coolq shape to the flat v17.2 shape."""
-    if not isinstance(raw, dict):
-        return {
-            'msg_argument_name': 'message',
-            'message_suffix': '',
-            'query': [],
-        }
-
-    out = dict(raw)
-
-    # v21.1 renamed ``user_message`` -> ``message_suffix``.
-    if 'user_message' in out:
-        out.setdefault('message_suffix', out['user_message'])
-        out.pop('user_message', None)
-
-    out.setdefault('msg_argument_name', 'message')
-    out.setdefault('message_suffix', '')
-
-    # Old shape: query is a dict, alongside SSL/host/port/api. Build a URL
-    # from those pieces and make query a single-element list.
-    if 'SSL' in out or 'host' in out or 'api' in out or isinstance(out.get('query'), dict):
-        scheme = 'https://' if out.get('SSL') else 'http://'
-        host = str(out.get('host', '127.0.0.1'))
-        port = str(out.get('port', '5700'))
-        api = str(out.get('api', 'send_group_msg'))
-        query_dict = out.get('query') or {}
-        if not isinstance(query_dict, dict):
-            query_dict = {}
-        qs = '&'.join(f'{k}={v}' for k, v in query_dict.items())
-        url = f'{scheme}{host}:{port}/{api}'
-        if qs:
-            url = f'{url}?{qs}'
-        out['query'] = [url]
-        for stale in ('SSL', 'host', 'port', 'api'):
-            out.pop(stale, None)
-
-    query = out.get('query')
-    if not isinstance(query, list):
-        out['query'] = []
-
-    # Keep only the three canonical keys; drop anything else the legacy
-    # path may have scribbled in.
-    return {
-        'msg_argument_name': out.get('msg_argument_name', 'message'),
-        'message_suffix': out.get('message_suffix', ''),
-        'query': list(out.get('query') or []),
-    }
 
 
 def _as_float(value: T.Any, *, fallback: float) -> float:

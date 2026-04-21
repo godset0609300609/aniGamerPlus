@@ -7,8 +7,6 @@ Covers:
 - app/main.py  (run() SSL missing path, CORS env var, lifespan with proxy)
 - app/downloader/filename.py  (plex extra/movie branches, decimal episodes,
   _season_root_and_sub movie/specials/season1)
-- app/downloader/notifier.py  (telebot missing token, telegram chat_id error,
-  discord bad status, plex bad status, plex missing config)
 - app/services/auth.py  (verify_http missing credentials, bad credentials)
 - app/persistence/cookie_repo.py  (invalidate OSError, write, modified_at,
   exists_and_nonempty, BOM, parse_cookie_line no-equals)
@@ -34,7 +32,6 @@ from app.downloader import exceptions as _exc
 from app.downloader.anime import DownloadResult
 from app.downloader.filename import FilenameBuilder
 from app.downloader.metadata import AnimeMetadata
-from app.downloader.notifier import CompositeNotifier
 from app.downloader.progress import ProgressBus
 from app.integrations.my_anime_export import MyAnimeExporter
 from app.logging_ import Logger
@@ -505,133 +502,6 @@ def test_season_root_and_sub_season1_fallback() -> None:
         classify=True,
     )
     assert 'Season 1' in str(out)
-
-
-# ---------------------------------------------------------------------------
-# app/downloader/notifier.py — uncovered branches
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass
-class _FakeNotifierResponse:
-    status_code: int = 200
-    text: str = ''
-
-    def json(self) -> Any:
-        return {}
-
-
-class _FakeNotifierClient:
-    def __init__(self) -> None:
-        self.get_calls: list[str] = []
-        self.json_results: dict[str, Any] = {}
-
-    def get(self, url: str, *, no_cookies: bool = False, **_kw: Any) -> _FakeNotifierResponse:
-        self.get_calls.append(url)
-        return _FakeNotifierResponse()
-
-    def get_json(self, url: str, *, no_cookies: bool = False, **_kw: Any) -> Any:
-        self.get_calls.append(url)
-        return self.json_results.get(url, {})
-
-
-def test_telebot_no_token_skips_silently(tmp_path: pathlib.Path) -> None:
-    """telebot_notify=True but telebot_token='' → no HTTP calls."""
-    client = _FakeNotifierClient()
-    settings = AppSettings(telebot_notify=True, telebot_token='')
-    notifier = CompositeNotifier(settings, client, _logger(tmp_path))  # type: ignore[arg-type]
-    notifier.notify_completed(filename='ep.mp4', size_mb=1, sn=1)
-    assert client.get_calls == []
-
-
-def test_telebot_chat_id_key_error_skips(tmp_path: pathlib.Path) -> None:
-    """When getUpdates returns malformed payload, chat_id lookup logs error + returns."""
-    client = _FakeNotifierClient()
-    # Returns empty dict → KeyError when accessing result[0][message][chat][id]
-    client.json_results['https://api.telegram.org/botTOKEN/getUpdates'] = {}
-    settings = AppSettings(telebot_notify=True, telebot_token='TOKEN', telebot_use_chat_id=False)
-    notifier = CompositeNotifier(settings, client, _logger(tmp_path))  # type: ignore[arg-type]
-    notifier.notify_completed(filename='ep.mp4', size_mb=1, sn=1)
-    # No sendMessage call should have been made
-    assert not any('sendMessage' in c for c in client.get_calls)
-
-
-def test_discord_bad_status_logs_error(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Discord webhook returning 400 triggers an error log but doesn't raise."""
-    calls: list[dict[str, Any]] = []
-
-    class _BadResp:
-        status_code = 400
-        text = 'bad request'
-
-    monkeypatch.setattr(
-        'app.downloader.notifier.requests.post',
-        lambda *a, **kw: (_BadResp(), calls.append({'args': a, 'kwargs': kw}))[0],
-    )
-    client = _FakeNotifierClient()
-    settings = AppSettings(discord_notify=True, discord_token='https://discord.example/hook')
-    notifier = CompositeNotifier(settings, client, _logger(tmp_path))  # type: ignore[arg-type]
-    # Must not raise
-    notifier.notify_completed(filename='ep.mp4', size_mb=1, sn=1)
-
-
-def test_discord_no_token_skips(tmp_path: pathlib.Path) -> None:
-    """discord_notify=True but discord_token='' → no POST."""
-    post_calls: list[Any] = []
-    client = _FakeNotifierClient()
-    settings = AppSettings(discord_notify=True, discord_token='')
-    with patch('app.downloader.notifier.requests.post', side_effect=lambda *a, **kw: post_calls.append(a)):
-        notifier = CompositeNotifier(settings, client, _logger(tmp_path))  # type: ignore[arg-type]
-        notifier.notify_completed(filename='ep.mp4', size_mb=1, sn=1)
-    assert post_calls == []
-
-
-def test_plex_refresh_bad_status_logs(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Plex refresh returning non-200 triggers error log but doesn't raise."""
-
-    class _BadResp:
-        status_code = 500
-        text = 'err'
-
-    monkeypatch.setattr('app.downloader.notifier.requests.get', lambda *a, **kw: _BadResp())
-    client = _FakeNotifierClient()
-    settings = AppSettings(
-        plex_refresh=True,
-        plex_url='plex.example:32400',
-        plex_token='T',
-        plex_section='1',
-    )
-    notifier = CompositeNotifier(settings, client, _logger(tmp_path))  # type: ignore[arg-type]
-    notifier.notify_completed(filename='ep.mp4', size_mb=1, sn=1)  # must not raise
-
-
-def test_plex_refresh_missing_config_skips(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Plex refresh with empty plex_url → skip without GET."""
-    get_calls: list[Any] = []
-    monkeypatch.setattr('app.downloader.notifier.requests.get', lambda *a, **kw: get_calls.append(a))
-    client = _FakeNotifierClient()
-    settings = AppSettings(plex_refresh=True, plex_url='', plex_token='T', plex_section='1')
-    notifier = CompositeNotifier(settings, client, _logger(tmp_path))  # type: ignore[arg-type]
-    notifier.notify_completed(filename='ep.mp4', size_mb=1, sn=1)
-    assert get_calls == []
-
-
-def test_coolq_with_message_suffix(tmp_path: pathlib.Path) -> None:
-    """coolq message_suffix is appended to the base message."""
-    from app.models import CoolQSettings
-
-    client = _FakeNotifierClient()
-    settings = AppSettings(
-        coolq_notify=True,
-        coolq_settings=CoolQSettings(
-            query=['http://cq.example/s'],
-            msg_argument_name='message',
-            message_suffix='追加訊息',
-        ),
-    )
-    notifier = CompositeNotifier(settings, client, _logger(tmp_path))  # type: ignore[arg-type]
-    notifier.notify_completed(filename='ep.mp4', size_mb=1, sn=1)
-    assert client.get_calls  # at least one call was made
 
 
 # ---------------------------------------------------------------------------

@@ -74,10 +74,6 @@ def main(
         bool,
         typer.Option('--no_classify/--no-no_classify', '-n/-N', help='不建立番劇資料夾'),
     ] = False,
-    user_command: T.Annotated[
-        bool,
-        typer.Option('--user_command/--no-user_command', '-u/-U', help='所有下載完成后執行用戶命令'),
-    ] = False,
     information_only: T.Annotated[
         bool,
         typer.Option('--information_only/--no-information_only', '-i/-I', help='僅查詢資訊，可搭配 -d 更新彈幕'),
@@ -108,7 +104,6 @@ def main(
         current_path=current_path,
         episodes=episodes,
         no_classify=no_classify,
-        user_command=user_command,
         information_only=information_only,
         danmu=danmu,
     )
@@ -123,7 +118,6 @@ def main(
             current_path,
             episodes is not None,
             no_classify,
-            user_command,
             information_only,
             danmu,
         ]
@@ -211,7 +205,6 @@ class Cli:
             save_dir=save_dir,
             classify=classify,
             get_info=ns.information_only,
-            user_cmd=ns.user_command,
             cui_danmu=ns.danmu,
         )
         return 0
@@ -259,7 +252,6 @@ def _build_legacy_parser() -> argparse.ArgumentParser:
     parser.add_argument('--current_path', '-c', action='store_true')
     parser.add_argument('--episodes', '-e', type=str)
     parser.add_argument('--no_classify', '-n', action='store_true')
-    parser.add_argument('--user_command', '-u', action='store_true')
     parser.add_argument('--information_only', '-i', action='store_true')
     parser.add_argument('--danmu', '-d', action='store_true')
     parser.add_argument('--my_anime', action='store_true')

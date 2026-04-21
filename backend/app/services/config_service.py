@@ -45,8 +45,8 @@ class ConfigService:
 
         Reads the current full settings, overlays ONLY the fields defined on
         :class:`WebSettings`, and persists via the repo — preserving every
-        non-web key (FTP creds, notification tokens, nested models like
-        ``dashboard`` or ``coolq_settings``) exactly as they were on disk.
+        non-web key (FTP creds, nested models like ``dashboard``) exactly as
+        they were on disk.
 
         Uses per-field assignment rather than ``model_copy(update=...)``;
         the latter does a shallow merge, so if a future payload ever

@@ -76,7 +76,7 @@ async def test_config_service_preserves_nested_models(
     fake_container: FakeContainer,
 ) -> None:
     """Writing a WebSettings payload must not clobber the nested models
-    (``dashboard``, ``ftp``, ``coolq_settings``) on the full AppSettings.
+    (``dashboard``, ``ftp``) on the full AppSettings.
 
     Legacy ``model_copy(update=...)`` was a shallow merge — if a future
     payload ever carried one of these keys, the entire sub-model would be

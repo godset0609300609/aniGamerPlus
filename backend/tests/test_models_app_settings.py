@@ -13,7 +13,6 @@ def test_empty_dict_validates_to_defaults() -> None:
     assert settings.multi_thread == 1
     assert settings.ftp.tls is True
     assert settings.dashboard.host == '127.0.0.1'
-    assert settings.coolq_settings.msg_argument_name == 'message'
 
 
 def test_multi_thread_alias_round_trips() -> None:

@@ -233,12 +233,6 @@ class DashboardSettings(pydantic.BaseModel):
     password: str = 'admin'
 
 
-class CoolQSettings(pydantic.BaseModel):
-    msg_argument_name: str = 'message'
-    message_suffix: str = ''
-    query: list[str] = pydantic.Field(default_factory=list)
-
-
 class DiscordAuthSettings(pydantic.BaseModel):
     """Discord OAuth2 authentication configuration (v17.3+)."""
 
@@ -278,7 +272,6 @@ class AppSettings(pydantic.BaseModel):
     lock_resolution: bool = False
     only_use_vip: bool = False
     default_download_mode: DefaultDownloadMode = 'latest'
-    use_copyfile_method: bool = False
     multi_thread: int = pydantic.Field(default=1, alias='multi-thread', ge=1, le=5)
     multi_upload: int = pydantic.Field(default=3, ge=1)
     segment_download_mode: bool = True
@@ -300,36 +293,19 @@ class AppSettings(pydantic.BaseModel):
     ua: str = ''
     use_proxy: bool = False
     proxy: str = ''
-    no_proxy_akamai: bool = False
 
     # FTP
     upload_to_server: bool = False
     ftp: FtpSettings = pydantic.Field(default_factory=FtpSettings)
 
     # Dashboard
-    use_dashboard: bool = True
     dashboard: DashboardSettings = pydantic.Field(default_factory=DashboardSettings)
-
-    # Notifications (flat, per v17.2 schema)
-    coolq_notify: bool = False
-    coolq_settings: CoolQSettings = pydantic.Field(default_factory=CoolQSettings)
-    telebot_notify: bool = False
-    telebot_token: str = ''
-    telebot_use_chat_id: bool = False
-    telebot_chat_id: str = ''
-    discord_notify: bool = False
-    discord_token: str = ''
-    plex_refresh: bool = False
-    plex_url: str = ''
-    plex_token: str = ''
-    plex_section: str = ''
 
     # Danmu
     danmu: bool = False
     danmu_ban_words: list[str] = pydantic.Field(default_factory=list)
 
     # Misc
-    user_command: str = 'shutdown -s -t 60'
     save_logs: bool = True
     quantity_of_logs: int = pydantic.Field(default=7, ge=1)
 
