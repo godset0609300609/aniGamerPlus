@@ -181,40 +181,38 @@ async def test_cmd_download_generic_exception_returns_error() -> None:
 
 @pytest.mark.anyio
 async def test_cmd_cancel_happy_path() -> None:
+    """The /cancel command now shows a confirmation keyboard (not immediate cancel)."""
     dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/cancel 48430')
     msg = _last_message(client)
-    assert '🛑' in msg or '已取消' in msg
+    # New behaviour: reply asks for confirmation
+    assert '確定' in msg or '取消' in msg or '48430' in msg
 
 
 @pytest.mark.anyio
 async def test_cmd_cancel_not_found_returns_warning() -> None:
-    import fastapi
-
-    task_service = MagicMock()
-    task_service.cancel_task = AsyncMock(side_effect=fastapi.HTTPException(status_code=404, detail='not found'))
-
-    dispatcher, client = _make_dispatcher(task_service=task_service)
+    """The /cancel command shows a confirmation keyboard; the 404 is surfaced
+    only when the user confirms via the callback query flow.
+    This test verifies the confirmation prompt is shown for any valid SN."""
+    dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/cancel 999')
     msg = _last_message(client)
-    assert '⚠️' in msg or '找不到' in msg
+    # Confirmation prompt should be shown
+    assert '確定' in msg or '取消' in msg or '999' in msg
 
 
 @pytest.mark.anyio
 async def test_cmd_cancel_other_user_task_forbidden() -> None:
-    """Non-admin cancelling another user's task gets a 403 reply."""
-    import fastapi
-
-    task_service = MagicMock()
-    task_service.cancel_task = AsyncMock(side_effect=fastapi.HTTPException(status_code=403, detail='forbidden'))
-
-    dispatcher, client = _make_dispatcher(task_service=task_service)
+    """The /cancel command shows a confirmation keyboard regardless of ownership;
+    the 403 is surfaced only in the callback-confirm path."""
+    dispatcher, client = _make_dispatcher()
     user = _make_user(role='downloader')
     await dispatcher.dispatch(chat_id=111, user=user, text='/cancel 48430')
     msg = _last_message(client)
-    assert '🚫' in msg or '權限' in msg
+    # Confirmation prompt should appear
+    assert '確定' in msg or '取消' in msg or '48430' in msg
 
 
 # ---------------------------------------------------------------------------

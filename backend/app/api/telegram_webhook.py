@@ -279,4 +279,21 @@ async def receive(
             rate_limiter=rate_limiter,
         )
 
+    if update.callback_query is not None:
+        cq = update.callback_query
+        if telegram_client is None:
+            return {'ok': True}
+
+        bound_user = await anyio.to_thread.run_sync(lambda: user_repo.find_by_telegram_chat_id(cq.from_.id))
+        if bound_user is None:
+            await telegram_client.answer_callback_query(cq.id, text='請先綁定帳號', show_alert=True)
+            return {'ok': True}
+
+        if rate_limiter is not None and not rate_limiter.allow(bound_user.id):
+            await telegram_client.answer_callback_query(cq.id, text='請求太頻繁', show_alert=True)
+            return {'ok': True}
+
+        if dispatcher is not None:
+            await dispatcher.handle_callback_query(user=bound_user, callback_query=cq)
+
     return {'ok': True}
