@@ -2,20 +2,14 @@
 
 Authentication
 --------------
-Connections without a valid session are rejected with close code 4401.
-In single-user mode (auth disabled) the sentinel admin is used, which
-means all log records are visible.
+Both endpoints require admin role.
 
-Visibility policy
------------------
-``admin`` — all records.
-``downloader`` — only records *without* an ``sn`` field (system-level).
+* HTTP  GET /api/logs  — returns 403 Forbidden for non-admin users.
+* WS    /api/ws/logs   — closed with code 1008 (Policy Violation) for
+  non-admin users (including unauthenticated connections).
 
-Rationale: sn-scoped filtering would require a reverse lookup from sn →
-owner_id (via the anime_list entry or the progress bus).  That coupling is
-deferred; for now downloaders see system-level logs (no sn tag), which
-covers connection notices, scheduler events, etc., without leaking other
-users' download details.
+In single-user mode (auth disabled) the sentinel admin is used, so all
+log records are always visible.
 """
 
 from __future__ import annotations
@@ -29,11 +23,12 @@ import fastapi
 
 from ..log_config import get_ring_buffer_handler
 from ..persistence.user_repo import UserRow
-from .deps import current_user_opt
+from .deps import current_user_opt, require_admin_user
 
 router = fastapi.APIRouter(tags=['logs'])
 
 _WS_CLOSE_UNAUTHENTICATED = 4401
+_WS_CLOSE_FORBIDDEN = 1008
 
 
 async def _next_from_either(
@@ -96,13 +91,18 @@ async def stream_logs(
     """Stream log records over WebSocket.
 
     1. Sends historical snapshot (up to ``RingBufferHandler.BUFFER_SIZE``
-       records) immediately after accepting, filtered by visibility policy.
+       records) immediately after accepting.
     2. Pushes each new record as it is emitted by the logging system.
 
-    Rejects unauthenticated connections with close code 4401.
+    Requires admin role.  Rejects unauthenticated connections with close
+    code 4401; rejects non-admin (authenticated) connections with close
+    code 1008 (Policy Violation).
     """
     if user is None:
         await ws.close(code=_WS_CLOSE_UNAUTHENTICATED)
+        return
+    if user.role != 'admin':
+        await ws.close(code=_WS_CLOSE_FORBIDDEN)
         return
 
     handler = get_ring_buffer_handler()
@@ -156,7 +156,7 @@ async def stream_logs(
 
 @router.get('/logs')
 async def get_log_snapshot(
-    user: T.Annotated[UserRow | None, fastapi.Depends(current_user_opt)],
+    user: T.Annotated[UserRow, fastapi.Depends(require_admin_user)],
     level: str = 'INFO',
     limit: int = 500,
 ) -> list[dict[str, T.Any]]:
@@ -166,14 +166,9 @@ async def get_log_snapshot(
     ``?limit=N`` to cap the response.  Useful for non-WS clients or for
     pre-populating a UI that connects later.
 
-    Returns HTTP 401 when auth is enabled and there is no session.
+    Requires admin role.  Returns HTTP 403 for non-admin authenticated users
+    and HTTP 401 when auth is enabled and there is no session.
     """
-    if user is None:
-        raise fastapi.HTTPException(
-            status_code=fastapi.status.HTTP_401_UNAUTHORIZED,
-            detail='Authentication required',
-        )
-
     handler = get_ring_buffer_handler()
     level_upper = level.upper()
     level_no = logging.getLevelName(level_upper)
@@ -182,8 +177,6 @@ async def get_log_snapshot(
 
     results: list[dict[str, T.Any]] = []
     for entry in handler.snapshot():
-        if not _entry_visible(entry, user):
-            continue
         entry_level_no = logging.getLevelName(entry.get('level', 'INFO'))
         if isinstance(entry_level_no, int) and entry_level_no >= level_no:
             results.append(entry)

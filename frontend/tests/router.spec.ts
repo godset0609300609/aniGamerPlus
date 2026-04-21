@@ -14,7 +14,11 @@ describe('router.ts — navigation guard', () => {
   it('allows navigation to public routes without auth (meta.public = true)', async () => {
     // Stub auth store — unauthenticated.
     vi.doMock('@/stores/auth', () => ({
-      useAuthStore: () => ({ user: { value: null }, loading: { value: false } }),
+      useAuthStore: () => ({
+        user: { value: null },
+        loading: { value: false },
+        isAdmin: { value: false },
+      }),
     }))
 
     const { router } = await import('@/router')
@@ -28,7 +32,11 @@ describe('router.ts — navigation guard', () => {
 
   it('redirects to /login when user is null and route is not public', async () => {
     vi.doMock('@/stores/auth', () => ({
-      useAuthStore: () => ({ user: { value: null }, loading: { value: false } }),
+      useAuthStore: () => ({
+        user: { value: null },
+        loading: { value: false },
+        isAdmin: { value: false },
+      }),
     }))
 
     const { router } = await import('@/router')
@@ -44,6 +52,7 @@ describe('router.ts — navigation guard', () => {
       useAuthStore: () => ({
         user: { value: { id: '1', username: 'alice', role: 'admin' } },
         loading: { value: false },
+        isAdmin: { value: true },
       }),
     }))
 
@@ -55,7 +64,11 @@ describe('router.ts — navigation guard', () => {
 
   it('allows navigation when loading is still in progress', async () => {
     vi.doMock('@/stores/auth', () => ({
-      useAuthStore: () => ({ user: { value: null }, loading: { value: true } }),
+      useAuthStore: () => ({
+        user: { value: null },
+        loading: { value: true },
+        isAdmin: { value: false },
+      }),
     }))
 
     const { router } = await import('@/router')
@@ -63,5 +76,35 @@ describe('router.ts — navigation guard', () => {
 
     // Guard returns true when loading, so monitor route is accessible.
     expect(router.currentRoute.value.path).toBe('/monitor')
+  })
+
+  it('redirects non-admin to /monitor when navigating to admin-only /logs', async () => {
+    vi.doMock('@/stores/auth', () => ({
+      useAuthStore: () => ({
+        user: { value: { id: '2', username: 'bob', role: 'downloader' } },
+        loading: { value: false },
+        isAdmin: { value: false },
+      }),
+    }))
+
+    const { router } = await import('@/router')
+    await router.push('/logs')
+
+    expect(router.currentRoute.value.name).toBe('monitor')
+  })
+
+  it('allows admin to navigate to /logs', async () => {
+    vi.doMock('@/stores/auth', () => ({
+      useAuthStore: () => ({
+        user: { value: { id: '1', username: 'alice', role: 'admin' } },
+        loading: { value: false },
+        isAdmin: { value: true },
+      }),
+    }))
+
+    const { router } = await import('@/router')
+    await router.push('/logs')
+
+    expect(router.currentRoute.value.path).toBe('/logs')
   })
 })

@@ -1,6 +1,14 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 
+declare module 'vue-router' {
+  interface RouteMeta {
+    title?: string
+    public?: boolean
+    requiresAdmin?: boolean
+  }
+}
+
 const routes: RouteRecordRaw[] = [
   {
     path: '/login',
@@ -34,7 +42,7 @@ const routes: RouteRecordRaw[] = [
     path: '/logs',
     name: 'logs',
     component: () => import('./views/LogsView.vue'),
-    meta: { title: '系統日誌' },
+    meta: { title: '系統日誌', requiresAdmin: true },
   },
 ]
 
@@ -54,13 +62,16 @@ export const router = createRouter({
 router.beforeEach((to) => {
   if (to.meta.public) return true
 
-  const { user, loading } = useAuthStore()
+  const { user, loading, isAdmin } = useAuthStore()
 
   // While loading we don't block — App.vue controls the visible content.
   if (loading.value) return true
 
   // If auth is disabled (user is populated as anon), let through.
-  if (user.value !== null) return true
+  if (user.value === null) return { name: 'login' }
 
-  return { name: 'login' }
+  // Admin-only routes: redirect non-admin users to /monitor.
+  if (to.meta.requiresAdmin && !isAdmin.value) return { name: 'monitor' }
+
+  return true
 })
