@@ -396,3 +396,177 @@ async def test_admin_removes_owner_entirely_clears_their_slice(tmp_path: pathlib
         assert [e.sn for e in admin_remaining] == [10]
     finally:
         db.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Feature A: non-admin GET returns all entries with owner info
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_non_admin_list_entries_returns_all_users(tmp_path: pathlib.Path) -> None:
+    """After Feature A: non-admin list_entries returns all entries, not just own."""
+    service, entry_repo, user_repo, db = _make_service_with_repos(tmp_path)
+    try:
+        user_repo.upsert(id='admin1', username='Alice', avatar_url=None, role='admin')
+        user_repo.upsert(id='dl1', username='Bob', avatar_url=None, role='downloader')
+
+        entry_repo.replace_all_for_user('admin1', [AnimeListEntryDTO(sn=10)])
+        entry_repo.replace_all_for_user('dl1', [AnimeListEntryDTO(sn=20)])
+
+        downloader = _make_user_row('dl1', 'downloader')
+        entries = await service.list_entries(downloader)
+
+        # Non-admin should now see all entries.
+        assert len(entries) == 2
+        sns = {e.sn for e in entries}
+        assert sns == {10, 20}
+
+        # owner_id and owner_username are populated for all entries.
+        for e in entries:
+            assert e.owner_id is not None
+            assert e.owner_username is not None
+    finally:
+        db.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Feature B: duplicate bangumi_name detection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_duplicate_anime_name_forces_enabled_false(tmp_path: pathlib.Path) -> None:
+    """When an entry with the same anime_name already exists, the later one is disabled."""
+    service, entry_repo, user_repo, db = _make_service_with_repos(tmp_path)
+    try:
+        user_repo.upsert(id='u1', username='User1', avatar_url=None, role='downloader')
+        user_repo.upsert(id='u2', username='User2', avatar_url=None, role='downloader')
+
+        # First entry: sn=100 belongs to u1 with anime_name='進擊的巨人'.
+        entry_repo.replace_all_for_user('u1', [AnimeListEntryDTO(sn=100, anime_name='進擊的巨人')])
+
+        # Second entry: sn=200 belongs to u2 with the same anime_name.
+        # Include anime_name in the payload (mirrors the frontend sending back
+        # what it received from GET after UpdateLoop populated it).
+        u2 = _make_user_row('u2', 'downloader')
+        await service.replace_entries(
+            u2,
+            [
+                AnimeListEntry(
+                    sn=200,
+                    enabled=True,
+                    mode=None,
+                    tag='',
+                    season=1,
+                    comment='',
+                    owner_id='u2',
+                    anime_name='進擊的巨人',  # same as u1's entry
+                )
+            ],
+        )
+
+        u2_entries = entry_repo.list_for_user('u2')
+        assert len(u2_entries) == 1
+        assert u2_entries[0].enabled is False
+        assert u2_entries[0].duplicate_of_entry_id is not None
+    finally:
+        db.dispose()
+
+
+@pytest.mark.anyio
+async def test_enable_duplicate_raises_400(tmp_path: pathlib.Path) -> None:
+    """Attempting to enable an entry with duplicate_of_entry_id set → HTTP 400."""
+    service, entry_repo, user_repo, db = _make_service_with_repos(tmp_path)
+    try:
+        user_repo.upsert(id='u1', username='User1', avatar_url=None, role='downloader')
+        user_repo.upsert(id='u2', username='User2', avatar_url=None, role='downloader')
+
+        entry_repo.replace_all_for_user('u1', [AnimeListEntryDTO(sn=300, anime_name='鬼滅之刃')])
+        u1_entries = entry_repo.list_for_user('u1')
+        source_id = u1_entries[0].id
+        assert source_id is not None
+
+        entry_repo.replace_all_for_user(
+            'u2',
+            [AnimeListEntryDTO(sn=400, enabled=False, duplicate_of_entry_id=source_id)],
+        )
+
+        u2 = _make_user_row('u2', 'downloader')
+        with pytest.raises(Exception) as exc_info:
+            await service.replace_entries(
+                u2,
+                [
+                    AnimeListEntry(
+                        sn=400,
+                        enabled=True,  # ← trying to enable the duplicate
+                        mode=None,
+                        tag='',
+                        season=1,
+                        comment='',
+                        owner_id='u2',
+                        duplicate_of_entry_id=source_id,
+                    )
+                ],
+            )
+        # Should be an HTTPException with status 400.
+        import fastapi
+
+        assert isinstance(exc_info.value, fastapi.HTTPException)
+        assert exc_info.value.status_code == 400
+        assert 'cannot_enable_duplicate' in str(exc_info.value.detail)
+    finally:
+        db.dispose()
+
+
+@pytest.mark.anyio
+async def test_delete_original_clears_duplicate_pointer(tmp_path: pathlib.Path) -> None:
+    """When the original entry is absent from a new PUT payload, the duplicate's
+    pointer is re-evaluated: _apply_duplicate_flags finds u2 is the only entry with
+    that anime_name so clears its duplicate_of_entry_id."""
+    service, entry_repo, user_repo, db = _make_service_with_repos(tmp_path)
+    try:
+        user_repo.upsert(id='admin1', username='Admin', avatar_url=None, role='admin')
+        user_repo.upsert(id='u2', username='User2', avatar_url=None, role='downloader')
+
+        entry_repo.replace_all_for_user('admin1', [AnimeListEntryDTO(sn=500, anime_name='進擊的巨人')])
+        a1_entries = entry_repo.list_for_user('admin1')
+        source_id = a1_entries[0].id
+        assert source_id is not None
+
+        # u2 has a duplicate entry pointing at admin1's entry.
+        entry_repo.replace_all_for_user(
+            'u2',
+            [AnimeListEntryDTO(sn=600, enabled=False, anime_name='進擊的巨人', duplicate_of_entry_id=source_id)],
+        )
+
+        # Admin saves a payload that omits admin1's entry but includes u2's entry
+        # (preserving it).  Admin1's entry is therefore deleted.
+        admin = _make_user_row('admin1', 'admin')
+        await service.replace_entries(
+            admin,
+            [
+                # Include u2's entry so it isn't wiped by the admin replace-all.
+                AnimeListEntry(
+                    sn=600,
+                    enabled=False,
+                    mode=None,
+                    tag='',
+                    season=1,
+                    comment='',
+                    owner_id='u2',
+                    anime_name='進擊的巨人',
+                    duplicate_of_entry_id=source_id,
+                )
+            ],
+        )
+
+        # After the replace + duplicate pass, u2's entry should be the new "first"
+        # (no other entry with that name exists), so its duplicate_of_entry_id is cleared.
+        u2_entries = entry_repo.list_for_user('u2')
+        assert len(u2_entries) == 1
+        assert u2_entries[0].duplicate_of_entry_id is None
+        # Still disabled — user must re-enable manually.
+        assert u2_entries[0].enabled is False
+    finally:
+        db.dispose()

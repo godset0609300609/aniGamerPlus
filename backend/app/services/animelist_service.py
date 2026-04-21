@@ -18,9 +18,10 @@ Permission rules
   annotated with ``owner_username``.  ``replace_entries`` can supply entries
   with an explicit ``owner_id``; entries whose ``owner_id`` is ``None`` are
   assigned to the calling user.
-* downloader: ``list_entries`` returns only the caller's own entries (no
-  ``owner_username`` set).  ``replace_entries`` rejects any entry whose
-  ``owner_id`` differs from the caller's id (returns HTTP 400).
+* downloader: ``list_entries`` now also returns all entries across all users,
+  annotated with ``owner_username``.  ``replace_entries`` rejects any entry
+  whose ``owner_id`` differs from the caller's id (returns HTTP 400).
+  Creating new entries always assigns ``owner_id = current_user.id``.
 """
 
 from __future__ import annotations
@@ -48,6 +49,26 @@ if T.TYPE_CHECKING:
     from ..persistence.sn_list_repo import SnListRepository
     from ..persistence.user_repo import UserRepository
 
+
+def _update_duplicate_flag(
+    repo: AnimeListEntryRepository,
+    row_id: int,
+    duplicate_of_entry_id: int | None,
+    enabled: bool,
+) -> None:
+    """Sync helper: update ``duplicate_of_entry_id`` and ``enabled`` on one row."""
+    import sqlalchemy as _sa
+
+    from ..persistence.models import AnimeListEntryRow
+
+    with repo._db.session() as session:
+        session.execute(
+            _sa.update(AnimeListEntryRow)
+            .where(AnimeListEntryRow.id == row_id)
+            .values(duplicate_of_entry_id=duplicate_of_entry_id, enabled=enabled)
+        )
+
+
 _VALID_MODES: frozenset[str] = frozenset({'all', 'latest', 'largest-sn', 'single'})
 
 
@@ -71,32 +92,34 @@ class AnimeListService:
     async def list_entries(self, user: UserRow) -> _List[AnimeListEntry]:
         """Return the anime list for the given user.
 
-        * admin: returns all entries across all users; populates
-          ``owner_username`` on each entry.
-        * downloader: returns only entries belonging to ``user``; leaves
-          ``owner_username`` as ``None``.
+        Both admin and non-admin roles now receive all entries across all
+        users, each annotated with ``owner_id`` and ``owner_username``.
+        This allows the frontend to render the owner-grouped section view
+        for everyone, while enforcing per-row write permissions on the
+        client and server sides.
         """
         if self._anime_list_entry_repo is None:
             # Fallback to legacy flat-file path (e.g. during migration).
             return await self.list()
 
         entry_repo = self._anime_list_entry_repo
-        if user.role == 'admin':
-            dtos = await anyio.to_thread.run_sync(entry_repo.list_all)
-            # Build username cache to avoid N+1 queries.
-            user_ids = {dto.user_id for dto in dtos if dto.user_id is not None}
-            username_cache: dict[str, str] = {}
-            user_repo = self._user_repo
-            if user_repo is not None:
-                for uid in user_ids:
-                    row = await anyio.to_thread.run_sync(functools.partial(user_repo.get, uid))
-                    if row is not None:
-                        username_cache[uid] = row.username
-            entries = [self._dto_to_entry(dto, username_cache) for dto in dtos]
-        else:
-            user_id = user.id
-            dtos = await anyio.to_thread.run_sync(lambda: entry_repo.list_for_user(user_id))
-            entries = [self._dto_to_entry(dto, {}) for dto in dtos]
+        dtos = await anyio.to_thread.run_sync(entry_repo.list_all)
+
+        # Build username cache to avoid N+1 queries.
+        user_ids = {dto.user_id for dto in dtos if dto.user_id is not None}
+        username_cache: dict[str, str] = {}
+        user_repo = self._user_repo
+        if user_repo is not None:
+            for uid in user_ids:
+                row = await anyio.to_thread.run_sync(functools.partial(user_repo.get, uid))
+                if row is not None:
+                    username_cache[uid] = row.username
+
+        # Also build a cache from entry id → (anime_name, owner_username) for
+        # resolving duplicate_of_entry_id pointers.
+        id_to_dto: dict[int, AnimeListEntryDTO] = {dto.id: dto for dto in dtos if dto.id is not None}
+
+        entries = [self._dto_to_entry(dto, username_cache, id_to_dto) for dto in dtos]
 
         await self._enrich(entries)
         return entries
@@ -110,12 +133,26 @@ class AnimeListService:
         * downloader: only the caller's own entries are allowed.  Any entry
           whose ``owner_id`` is set to a different user id raises HTTP 400.
           ``owner_id=None`` entries are silently assigned to the caller.
+
+        Duplicate ``anime_name`` detection (Feature B) is applied to every
+        entry whose ``anime_name`` is set: if another entry with the same
+        name (case-insensitive trim) already exists, the new / updated entry
+        is forced ``enabled=False`` and ``duplicate_of_entry_id`` is set.
         """
         entry_repo_rw = self._anime_list_entry_repo
         if entry_repo_rw is None:
             # Fallback to legacy flat-file path.
             await self.replace_all(entries)
             return
+
+        # Feature B: if any entry explicitly sets enabled=True while having a
+        # duplicate_of_entry_id, reject with 400.
+        for entry in entries:
+            if entry.duplicate_of_entry_id is not None and entry.enabled:
+                raise fastapi.HTTPException(
+                    status_code=fastapi.status.HTTP_400_BAD_REQUEST,
+                    detail='cannot_enable_duplicate',
+                )
 
         if user.role == 'admin':
             # Group by owner_id (None → caller's id).
@@ -146,6 +183,68 @@ class AnimeListService:
             dtos = [self._entry_to_dto(e, idx) for idx, e in enumerate(entries)]
             await anyio.to_thread.run_sync(functools.partial(entry_repo_rw.replace_all_for_user, user.id, dtos))
 
+        # Feature B: after all slices are persisted, apply duplicate detection.
+        # We do this as a second pass so every entry's id is now known and
+        # cross-user name collisions can be detected correctly.
+        await self._apply_duplicate_flags(entry_repo_rw)
+
+    # -- duplicate-enable guard ------------------------------------------
+
+    async def check_enable_allowed(self, entry: AnimeListEntry) -> None:
+        """Raise HTTP 400 if the caller attempts to enable a duplicate entry."""
+        if entry.duplicate_of_entry_id is not None and entry.enabled:
+            raise fastapi.HTTPException(
+                status_code=fastapi.status.HTTP_400_BAD_REQUEST,
+                detail='cannot_enable_duplicate',
+            )
+
+    # -- duplicate detection pass ----------------------------------------
+
+    async def _apply_duplicate_flags(
+        self,
+        entry_repo: AnimeListEntryRepository,
+    ) -> None:
+        """Scan all entries and set/clear ``duplicate_of_entry_id`` as needed.
+
+        For each entry with a non-empty ``anime_name``:
+        - The earliest entry (by id) with that name is the "source" — its
+          ``duplicate_of_entry_id`` is cleared.
+        - All later entries with the same name get ``duplicate_of_entry_id``
+          set to the source id and are forced ``enabled=False``.
+        - Entries without an ``anime_name`` are untouched.
+        """
+        all_dtos = await anyio.to_thread.run_sync(entry_repo.list_all)
+
+        # Group by normalised name, preserving insertion order (already sorted
+        # by user_id then sort_order from list_all, but we sort by id to find
+        # the canonical "earliest" entry).
+        name_groups: dict[str, _List[AnimeListEntryDTO]] = {}
+        for dto in all_dtos:
+            if dto.anime_name and dto.anime_name.strip():
+                key = dto.anime_name.strip().lower()
+                name_groups.setdefault(key, []).append(dto)
+
+        for dtos_for_name in name_groups.values():
+            # Sort by row id so the lowest id is always the "source".
+            dtos_for_name.sort(key=lambda d: d.id or 0)
+            source_id = dtos_for_name[0].id
+
+            for idx, dto in enumerate(dtos_for_name):
+                if dto.id is None:
+                    continue
+                if idx == 0:
+                    # This is the source — clear any duplicate flag.
+                    if dto.duplicate_of_entry_id is not None:
+                        await anyio.to_thread.run_sync(
+                            functools.partial(_update_duplicate_flag, entry_repo, dto.id, None, dto.enabled)
+                        )
+                else:
+                    # Duplicate — force disabled and set pointer.
+                    if dto.duplicate_of_entry_id != source_id or dto.enabled:
+                        await anyio.to_thread.run_sync(
+                            functools.partial(_update_duplicate_flag, entry_repo, dto.id, source_id, False)
+                        )
+
     # -- legacy flat-file read (UpdateLoop / SnListService compat) -------
 
     async def list(self) -> _List[AnimeListEntry]:
@@ -166,9 +265,20 @@ class AnimeListService:
     def _dto_to_entry(
         dto: AnimeListEntryDTO,
         username_cache: dict[str, str],
+        id_to_dto: dict[int, AnimeListEntryDTO] | None = None,
     ) -> AnimeListEntry:
         user_id: str | None = dto.user_id
         owner_username = username_cache.get(user_id) if user_id else None
+
+        # Resolve duplicate_of fields for the UI tooltip.
+        dup_bangumi_name: str | None = None
+        dup_owner_username: str | None = None
+        if dto.duplicate_of_entry_id is not None and id_to_dto is not None:
+            source = id_to_dto.get(dto.duplicate_of_entry_id)
+            if source is not None:
+                dup_bangumi_name = source.anime_name
+                dup_owner_username = username_cache.get(source.user_id) if source.user_id else None
+
         return AnimeListEntry(
             sn=dto.sn,
             enabled=dto.enabled,
@@ -180,6 +290,9 @@ class AnimeListService:
             comment=dto.comment,
             owner_id=user_id,
             owner_username=owner_username,
+            duplicate_of_entry_id=dto.duplicate_of_entry_id,
+            duplicate_of_bangumi_name=dup_bangumi_name,
+            duplicate_of_owner_username=dup_owner_username,
         )
 
     @staticmethod
@@ -190,9 +303,11 @@ class AnimeListService:
             mode=entry.mode,
             tag=entry.tag,
             season=entry.season,
+            anime_name=entry.anime_name,  # preserve cached name sent back from frontend
             custom_name=entry.custom_name,
             comment=entry.comment,
             sort_order=sort_order,
+            duplicate_of_entry_id=entry.duplicate_of_entry_id,
         )
 
     # -- parsing ---------------------------------------------------------

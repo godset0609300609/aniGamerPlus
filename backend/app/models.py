@@ -194,9 +194,17 @@ class AnimeListEntry(pydantic.BaseModel):
 
     # Owner fields: None means "assign to the calling user" on write.
     # On read, owner_id is the user_id that owns the entry; owner_username
-    # is the human-readable name (admin view only).
+    # is the human-readable name (populated for all authenticated callers).
     owner_id: str | None = None
     owner_username: str | None = None
+
+    # Duplicate detection (Feature B).
+    # Set when this entry is disabled because another entry has the same anime_name.
+    # Points to the id of the earliest entry with the same name.
+    duplicate_of_entry_id: int | None = None
+    # Resolved fields — populated by the service for the UI tooltip.
+    duplicate_of_bangumi_name: str | None = None
+    duplicate_of_owner_username: str | None = None
 
     # Read-only, derived fields (set by the service, ignored on write):
     anime_name: str | None = None

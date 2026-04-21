@@ -115,6 +115,12 @@ export interface AnimeListEntry {
   known_episodes: number
   owner_id?: string | null
   owner_username?: string | null
+  /** Set when this entry is auto-disabled due to a duplicate anime_name. */
+  duplicate_of_entry_id?: number | null
+  /** Resolved: the anime_name of the original entry this one duplicates. */
+  duplicate_of_bangumi_name?: string | null
+  /** Resolved: the owner username of the original entry this one duplicates. */
+  duplicate_of_owner_username?: string | null
 }
 
 export interface AnimeListPayload {

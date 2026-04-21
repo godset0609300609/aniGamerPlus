@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { ref } from 'vue'
 import type { AnimeListEntry, AnimeListPayload } from '@/types'
 
 const list = vi.fn()
@@ -16,8 +17,17 @@ const { mockElMessageBoxConfirm } = vi.hoisted(() => ({
 }))
 
 vi.mock('element-plus', () => ({
-  ElMessage: { success: vi.fn(), error: vi.fn() },
+  ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
   ElMessageBox: { confirm: mockElMessageBoxConfirm },
+}))
+
+// Auth store mock: default to admin so all rows in component tests are writable.
+// Tests that need role-specific behaviour should use tests/views/AnimeListView.spec.ts.
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({
+    isAdmin: ref(true),
+    user: ref({ id: 'admin-1', username: 'admin', avatar_url: null, role: 'admin' }),
+  }),
 }))
 
 import { flushPromises, mount } from '@vue/test-utils'
@@ -41,6 +51,9 @@ function makeEntry(overrides: Partial<AnimeListEntry> = {}): AnimeListEntry {
     anime_name: null,
     downloaded_episodes: 0,
     known_episodes: 0,
+    // Default to the mocked admin owner so rows are editable in component tests.
+    owner_id: 'admin-1',
+    owner_username: 'admin',
     ...overrides,
   }
 }
