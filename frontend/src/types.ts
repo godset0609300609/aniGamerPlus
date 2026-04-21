@@ -126,3 +126,23 @@ export interface AnimeListEntry {
 export interface AnimeListPayload {
   entries: AnimeListEntry[]
 }
+
+export interface TelegramSettings {
+  enabled: boolean
+  bot_token: string
+  webhook_secret: string
+  public_url: string
+  notify_on: string[]
+  admin_broadcast: boolean
+  rate_limit_per_minute: number
+  allow_localhost: boolean
+}
+
+export interface TelegramWebhookInfo {
+  url?: string | null
+  has_custom_certificate?: boolean
+  pending_update_count?: number
+  last_error_date?: number | null
+  last_error_message?: string | null
+  max_connections?: number | null
+}

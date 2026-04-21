@@ -226,8 +226,21 @@ export function createElementPlusStubs(overrides: StubMap = {}): StubMap {
     },
     ElTooltip: {
       props: ['content', 'placement', 'effect', 'disabled'],
+      template: '<div class="el-tooltip" :title="content"><slot /></div>',
+    },
+    ElCheckboxGroup: {
+      props: ['modelValue'],
+      emits: ['update:modelValue'],
+      template: '<div class="el-checkbox-group"><slot /></div>',
+    },
+    ElCheckbox: {
+      props: ['modelValue', 'label', 'disabled'],
+      emits: ['update:modelValue', 'change'],
       template:
-        '<div class="el-tooltip" :title="content"><slot /></div>',
+        '<label class="el-checkbox">' +
+        '<input type="checkbox" :checked="modelValue" :disabled="disabled" ' +
+        "@change=\"$emit('update:modelValue', $event.target.checked)\" />" +
+        '<slot>{{ label }}</slot></label>',
     },
   }
   return { ...stubs, ...overrides }

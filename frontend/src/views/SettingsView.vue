@@ -2,9 +2,10 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ConfigApi, parseProxy, serializeProxy } from '@/api/config'
-import type { ProxyParts, WebSettings } from '@/types'
+import type { ProxyParts, TelegramSettings, TelegramWebhookInfo, WebSettings } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import { useTelegramBinding } from '@/composables/useTelegramBinding'
+import { getBotMe, getWebhookInfo, registerWebhook } from '@/api/telegram_admin'
 import DirtyFab from '@/components/DirtyFab.vue'
 
 const api = new ConfigApi()
@@ -137,13 +138,95 @@ async function handleNotifyEnabledChange(val: boolean): Promise<void> {
   await tg.setNotifyEnabled(val)
 }
 
+// ---------------------------------------------------------------------------
+// Admin Telegram Bot Settings
+// ---------------------------------------------------------------------------
+
+const _NOTIFY_OPTIONS = ['completed', 'failed', 'cancelled'] as const
+
+const tgSettings = ref<TelegramSettings>({
+  enabled: false,
+  bot_token: '',
+  webhook_secret: '',
+  public_url: '',
+  notify_on: ['completed', 'failed', 'cancelled'],
+  admin_broadcast: true,
+  rate_limit_per_minute: 30,
+  allow_localhost: false,
+})
+const tgBotUsername = ref<string | null>(null)
+const tgBotLoading = ref(false)
+const tgWebhookLoading = ref(false)
+const tgWebhookDialogVisible = ref(false)
+const tgWebhookInfo = ref<TelegramWebhookInfo | null>(null)
+
+function generateSecret(): void {
+  const arr = new Uint8Array(32)
+  crypto.getRandomValues(arr)
+  tgSettings.value.webhook_secret = Array.from(arr)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+async function verifyBotToken(): Promise<void> {
+  tgBotLoading.value = true
+  tgBotUsername.value = null
+  try {
+    const me = await getBotMe()
+    tgBotUsername.value = me.username ?? me.first_name ?? String(me.id)
+  } catch (err) {
+    ElMessage.error(`驗證失敗: ${(err as Error).message}`)
+  } finally {
+    tgBotLoading.value = false
+  }
+}
+
+async function handleRegisterWebhook(): Promise<void> {
+  tgWebhookLoading.value = true
+  try {
+    const result = await registerWebhook()
+    ElMessage.success(`Webhook 已註冊: ${result.url}`)
+  } catch (err) {
+    ElMessage.error(`註冊失敗: ${(err as Error).message}`)
+  } finally {
+    tgWebhookLoading.value = false
+  }
+}
+
+async function handleWebhookStatus(): Promise<void> {
+  tgWebhookLoading.value = true
+  try {
+    tgWebhookInfo.value = await getWebhookInfo()
+    tgWebhookDialogVisible.value = true
+  } catch (err) {
+    ElMessage.error(`查詢失敗: ${(err as Error).message}`)
+  } finally {
+    tgWebhookLoading.value = false
+  }
+}
+
+// Sync tgSettings from loaded config
+function syncTgFromSettings(s: WebSettings): void {
+  const raw = s as unknown as { telegram?: Partial<TelegramSettings> }
+  if (raw.telegram) {
+    Object.assign(tgSettings.value, raw.telegram)
+  }
+}
+
 onMounted(async () => {
   await load()
+  if (settings.value) {
+    syncTgFromSettings(settings.value)
+  }
   await tg.loadStatus()
   try {
     cookieStatus.value = await api.getCookieStatus()
   } catch {
     // Non-fatal — status badge stays at default (false)
+  }
+  // Auto-verify bot token for admin
+  if (isAdmin.value && tgSettings.value.bot_token) {
+    await verifyBotToken()
   }
 })
 
@@ -460,6 +543,141 @@ onUnmounted(() => {
         </template>
       </section>
 
+      <!-- Admin-only: Telegram Bot 設定 -->
+      <section
+        v-if="isAdmin"
+        class="ag-section"
+      >
+        <h2 class="ag-section-title">
+          Telegram Bot 設定
+        </h2>
+
+        <el-form-item label="啟用 Bot">
+          <el-switch v-model="tgSettings.enabled" />
+        </el-form-item>
+
+        <el-form-item label="Bot Token">
+          <div class="ag-ua-row">
+            <el-input
+              v-model="tgSettings.bot_token"
+              type="password"
+              show-password
+              placeholder="輸入 Bot Token"
+              class="ag-ua-input"
+            />
+            <el-button
+              :loading="tgBotLoading"
+              @click="verifyBotToken"
+            >
+              驗證 Bot Token
+            </el-button>
+          </div>
+          <div
+            v-if="tgBotUsername"
+            class="ag-muted"
+          >
+            Bot: @{{ tgBotUsername }}
+          </div>
+        </el-form-item>
+
+        <el-form-item label="Webhook Secret">
+          <div class="ag-ua-row">
+            <el-input
+              v-model="tgSettings.webhook_secret"
+              type="password"
+              show-password
+              placeholder="Webhook 密鑰"
+              class="ag-ua-input"
+            />
+            <el-button @click="generateSecret">
+              產生
+            </el-button>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="Public URL">
+          <el-input
+            v-model="tgSettings.public_url"
+            placeholder="https://example.com"
+          />
+        </el-form-item>
+
+        <el-row :gutter="16">
+          <el-col :md="8">
+            <el-form-item label="Admin 廣播">
+              <el-switch v-model="tgSettings.admin_broadcast" />
+            </el-form-item>
+          </el-col>
+          <el-col :md="8">
+            <el-form-item label="允許 Localhost（開發）">
+              <el-tooltip
+                content="僅限開發環境使用，正式環境請關閉"
+                placement="top"
+              >
+                <el-switch v-model="tgSettings.allow_localhost" />
+              </el-tooltip>
+            </el-form-item>
+          </el-col>
+          <el-col :md="8">
+            <el-form-item label="速率限制（/分鐘）">
+              <el-input-number
+                v-model="tgSettings.rate_limit_per_minute"
+                :min="1"
+                :max="300"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-form-item label="通知觸發條件">
+          <el-checkbox-group v-model="tgSettings.notify_on">
+            <el-checkbox
+              v-for="opt in _NOTIFY_OPTIONS"
+              :key="opt"
+              :label="opt"
+            >
+              {{ opt }}
+            </el-checkbox>
+          </el-checkbox-group>
+        </el-form-item>
+
+        <div class="ag-tg-actions">
+          <el-button
+            type="primary"
+            :loading="tgWebhookLoading"
+            @click="handleRegisterWebhook"
+          >
+            重新註冊 Webhook
+          </el-button>
+          <el-button
+            :loading="tgWebhookLoading"
+            @click="handleWebhookStatus"
+          >
+            查看 Webhook 狀態
+          </el-button>
+        </div>
+
+        <!-- Webhook info dialog -->
+        <el-dialog
+          v-model="tgWebhookDialogVisible"
+          title="Webhook 狀態"
+          width="500px"
+        >
+          <template v-if="tgWebhookInfo">
+            <p><strong>URL:</strong> {{ tgWebhookInfo.url ?? '（未設定）' }}</p>
+            <p><strong>待處理更新數:</strong> {{ tgWebhookInfo.pending_update_count ?? 0 }}</p>
+            <p v-if="tgWebhookInfo.last_error_message">
+              <strong>最後錯誤:</strong> {{ tgWebhookInfo.last_error_message }}
+            </p>
+          </template>
+          <template #footer>
+            <el-button @click="tgWebhookDialogVisible = false">
+              關閉
+            </el-button>
+          </template>
+        </el-dialog>
+      </section>
+
       <section class="ag-section">
         <h2 class="ag-section-title">
           Cookie
@@ -581,5 +799,11 @@ onUnmounted(() => {
 }
 .ag-tg-hint {
   margin-bottom: 8px;
+}
+.ag-tg-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
 }
 </style>
