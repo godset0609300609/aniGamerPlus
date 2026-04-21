@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.models import AppSettings, DiscordAuthSettings, WebSettings
+from app.models import AppSettings, DiscordAuthSettings, TelegramSettings, WebSettings
 
 
 def test_empty_dict_validates_to_defaults() -> None:
@@ -85,3 +85,36 @@ def test_auth_section_round_trips() -> None:
     dumped = settings.model_dump(by_alias=True)
     assert dumped['auth']['enabled'] is True
     assert dumped['auth']['client_id'] == 'my-client'
+
+
+def test_telegram_section_defaults() -> None:
+    settings = AppSettings.model_validate({})
+    assert isinstance(settings.telegram, TelegramSettings)
+    assert settings.telegram.enabled is False
+    assert settings.telegram.bot_token == ''
+    assert settings.telegram.webhook_secret == ''
+    assert settings.telegram.public_url == ''
+    assert settings.telegram.notify_on == ['completed', 'failed', 'cancelled']
+    assert settings.telegram.rate_limit_per_minute == 30
+
+
+def test_telegram_section_round_trips() -> None:
+    raw = {
+        'telegram': {
+            'enabled': True,
+            'bot_token': '123:ABC',
+            'webhook_secret': 'secret',
+            'public_url': 'https://example.com',
+            'notify_on': ['completed'],
+            'rate_limit_per_minute': 60,
+        }
+    }
+    settings = AppSettings.model_validate(raw)
+    assert settings.telegram.enabled is True
+    assert settings.telegram.bot_token == '123:ABC'
+    assert settings.telegram.notify_on == ['completed']
+    assert settings.telegram.rate_limit_per_minute == 60
+
+    dumped = settings.model_dump(by_alias=True)
+    assert dumped['telegram']['enabled'] is True
+    assert dumped['telegram']['bot_token'] == '123:ABC'

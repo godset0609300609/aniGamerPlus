@@ -28,6 +28,9 @@ class UserRow:
     role: str
     created_at: datetime.datetime
     last_login_at: datetime.datetime | None
+    telegram_chat_id: int | None = None
+    telegram_link_token: str | None = None
+    telegram_notify_enabled: bool = True
 
 
 def _to_row(orm: User) -> UserRow:
@@ -38,6 +41,9 @@ def _to_row(orm: User) -> UserRow:
         role=orm.role,
         created_at=orm.created_at,
         last_login_at=orm.last_login_at,
+        telegram_chat_id=orm.telegram_chat_id,
+        telegram_link_token=orm.telegram_link_token,
+        telegram_notify_enabled=orm.telegram_notify_enabled,
     )
 
 
@@ -119,3 +125,57 @@ class UserRepository:
             if orm is None:
                 return None
             return _to_row(orm)
+
+    # ------------------------------------------------------------------
+    # Telegram binding helpers
+    # ------------------------------------------------------------------
+
+    def set_telegram_link_token(self, user_id: str, token: str | None) -> None:
+        """Set (or clear) the ephemeral link token for *user_id*."""
+        with self._db.session() as session:
+            stmt = sqlalchemy.update(User).where(User.id == user_id).values(telegram_link_token=token)
+            session.execute(stmt)
+
+    def finalize_telegram_binding(self, user_id: str, chat_id: int) -> None:
+        """Write *chat_id* and clear the link token atomically."""
+        with self._db.session() as session:
+            stmt = (
+                sqlalchemy.update(User)
+                .where(User.id == user_id)
+                .values(telegram_chat_id=chat_id, telegram_link_token=None)
+            )
+            session.execute(stmt)
+
+    def clear_telegram_binding(self, user_id: str) -> None:
+        """Clear both *telegram_chat_id* and *telegram_link_token*."""
+        with self._db.session() as session:
+            stmt = (
+                sqlalchemy.update(User)
+                .where(User.id == user_id)
+                .values(telegram_chat_id=None, telegram_link_token=None)
+            )
+            session.execute(stmt)
+
+    def find_by_telegram_chat_id(self, chat_id: int) -> UserRow | None:
+        """Return the user whose ``telegram_chat_id`` matches, or ``None``."""
+        with self._db.session() as session:
+            stmt = sqlalchemy.select(User).where(User.telegram_chat_id == chat_id).limit(1)
+            orm = session.scalars(stmt).first()
+            if orm is None:
+                return None
+            return _to_row(orm)
+
+    def find_by_telegram_link_token(self, token: str) -> UserRow | None:
+        """Return the user whose ``telegram_link_token`` matches, or ``None``."""
+        with self._db.session() as session:
+            stmt = sqlalchemy.select(User).where(User.telegram_link_token == token).limit(1)
+            orm = session.scalars(stmt).first()
+            if orm is None:
+                return None
+            return _to_row(orm)
+
+    def set_telegram_notify_enabled(self, user_id: str, enabled: bool) -> None:
+        """Update the per-user Telegram notification opt-in flag."""
+        with self._db.session() as session:
+            stmt = sqlalchemy.update(User).where(User.id == user_id).values(telegram_notify_enabled=enabled)
+            session.execute(stmt)

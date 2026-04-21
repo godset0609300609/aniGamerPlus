@@ -94,6 +94,19 @@ class User(Base):
     last_login_at: sqlalchemy.orm.Mapped[datetime.datetime | None] = sqlalchemy.orm.mapped_column(
         sqlalchemy.DateTime, nullable=True
     )
+    # Added by revision 0008 — Telegram integration
+    telegram_chat_id: sqlalchemy.orm.Mapped[int | None] = sqlalchemy.orm.mapped_column(
+        sqlalchemy.BigInteger, nullable=True
+    )
+    telegram_link_token: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(
+        sqlalchemy.String(64), nullable=True
+    )
+    telegram_notify_enabled: sqlalchemy.orm.Mapped[bool] = sqlalchemy.orm.mapped_column(
+        sqlalchemy.Boolean,
+        nullable=False,
+        default=True,
+        server_default=sqlalchemy.true(),
+    )
 
 
 class AnimeListEntryRow(Base):
