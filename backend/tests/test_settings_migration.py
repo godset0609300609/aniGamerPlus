@@ -35,30 +35,6 @@ def test_legacy_proxies_dict_collapses_to_scalar_proxy() -> None:
     assert out['config_version'] == LATEST_CONFIG_VERSION
 
 
-def test_legacy_coolq_nested_shape_migrates_to_flat() -> None:
-    src = {
-        'config_version': 9.0,
-        'coolq_settings': {
-            'SSL': False,
-            'host': '127.0.0.1',
-            'port': '5700',
-            'api': 'send_group_msg',
-            'query': {'group_id': '123', 'access_token': 'abc'},
-            'user_message': 'suffix-text',
-        },
-    }
-    out = migrate(src)
-    cq = out['coolq_settings']
-    assert set(cq.keys()) == {'msg_argument_name', 'message_suffix', 'query'}
-    assert cq['message_suffix'] == 'suffix-text'
-    assert isinstance(cq['query'], list)
-    assert len(cq['query']) == 1
-    url = cq['query'][0]
-    assert url.startswith('http://127.0.0.1:5700/send_group_msg?')
-    assert 'group_id=123' in url
-    assert 'access_token=abc' in url
-
-
 def test_audio_language_jpn_is_stripped() -> None:
     src = {'config_version': 15.0, 'audio_language_jpn': True}
     out = migrate(src)
@@ -71,13 +47,6 @@ def test_migrate_is_idempotent() -> None:
     src = {
         'config_version': 2.0,
         'proxies': {'1': 'http://bar'},
-        'coolq_settings': {
-            'SSL': True,
-            'host': 'h',
-            'port': '1',
-            'api': 'a',
-            'query': {'k': 'v'},
-        },
         'audio_language_jpn': True,
     }
     once = migrate(src)
@@ -122,18 +91,9 @@ def test_migrated_dict_validates_against_app_settings() -> None:
         'proxies': {'1': 'http://legacy'},
         'ftp': {'server': 'f', 'port': ''},
         'multi-thread': 2,
-        'coolq_settings': {
-            'SSL': True,
-            'host': 'h',
-            'port': '1',
-            'api': 'send',
-            'query': {'g': '1'},
-            'user_message': 'after',
-        },
     }
     out = migrate(src)
     settings = AppSettings.model_validate(out)
     assert settings.multi_thread == 2
     assert settings.proxy == 'http://legacy'
     assert settings.ftp.server == 'f'
-    assert settings.coolq_settings.message_suffix == 'after'

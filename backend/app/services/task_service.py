@@ -36,7 +36,6 @@ class ManualTaskRunner(T.Protocol):
         ep_range: list[str] | None = ...,
         classify: bool = ...,
         get_info: bool = ...,
-        user_cmd: bool = ...,
         realtime_show: bool = ...,
         cui_danmu: bool = ...,
         owner_id: str | None = ...,

@@ -27,7 +27,6 @@ from .downloader.filename import FilenameBuilder
 from .downloader.http_client import AniGamerHttpClient
 from .downloader.m3u8_client import M3u8Client
 from .downloader.metadata import MetadataExtractor
-from .downloader.notifier import CompositeNotifier
 from .downloader.progress import ProgressBus
 from .downloader.segment_downloader import SegmentDownloader
 from .downloader.uploader_ftp import FtpUploader
@@ -82,7 +81,6 @@ class Container:
     segment_downloader: SegmentDownloader
     ffmpeg_downloader: FFmpegDownloader
     uploader: FtpUploader
-    notifier: CompositeNotifier
     task_queue: TaskQueue
     cooldown: DownloadCooldown
     parse_cooldown: DownloadCooldown
@@ -105,7 +103,6 @@ class Container:
             filename_builder=self.filename_builder,
             danmu_renderer=self.danmu_renderer,
             uploader=uploader,
-            notifier=self.notifier,
             progress=self.progress_bus,
             settings=settings,
             paths=self.paths,
@@ -216,7 +213,6 @@ def build_container() -> Container:
     ffmpeg_downloader = FFmpegDownloader(settings, ffmpeg, progress_bus, logger)
 
     uploader = FtpUploader(settings.ftp, logger)
-    notifier = CompositeNotifier(settings, http_client, logger)
 
     task_queue = TaskQueue(
         max_download=settings.multi_thread,
@@ -288,7 +284,6 @@ def build_container() -> Container:
         segment_downloader=segment_downloader,
         ffmpeg_downloader=ffmpeg_downloader,
         uploader=uploader,
-        notifier=notifier,
         task_queue=task_queue,
         cooldown=cooldown,
         parse_cooldown=parse_cooldown,

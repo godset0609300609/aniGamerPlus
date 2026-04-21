@@ -31,7 +31,6 @@ if T.TYPE_CHECKING:
     from .filename import FilenameBuilder
     from .m3u8_client import M3u8Client
     from .metadata import AnimeMetadata, MetadataExtractor
-    from .notifier import CompositeNotifier
     from .progress import ProgressBus
     from .segment_downloader import SegmentDownloader
     from .uploader_ftp import FtpUploader
@@ -64,7 +63,6 @@ class Anime:
         filename_builder: FilenameBuilder,
         danmu_renderer: DanmuRenderer,
         uploader: FtpUploader | None,
-        notifier: CompositeNotifier,
         progress: ProgressBus,
         settings: AppSettings,
         paths: WorkspacePaths,
@@ -79,7 +77,6 @@ class Anime:
         self._filename_builder = filename_builder
         self._danmu_renderer = danmu_renderer
         self._uploader = uploader
-        self._notifier = notifier
         self._progress = progress
         self._settings = settings
         self._paths = paths

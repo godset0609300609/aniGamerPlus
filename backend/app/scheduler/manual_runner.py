@@ -64,7 +64,6 @@ class ManualRunner:
         save_dir: pathlib.Path | None = None,
         classify: bool = True,
         get_info: bool = False,
-        user_cmd: bool = False,
         realtime_show: bool = True,
         cui_danmu: bool = False,
         owner_id: str | None = None,
