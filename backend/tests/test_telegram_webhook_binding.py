@@ -14,7 +14,7 @@ import fastapi
 import fastapi.testclient
 
 from app.api.deps import get_settings
-from app.api.telegram_webhook import _get_telegram_client, _get_user_repo
+from app.api.telegram_webhook import _get_dispatcher, _get_rate_limiter, _get_telegram_client, _get_user_repo
 from app.api.telegram_webhook import router as webhook_router
 from app.logging_ import Logger
 from app.models import AppSettings, TelegramSettings
@@ -60,6 +60,10 @@ def _make_app(
         app.dependency_overrides[_get_telegram_client] = lambda: telegram_client
     else:
         app.dependency_overrides[_get_telegram_client] = lambda: None
+
+    # Stub out container-bound deps so tests don't try to call build_container().
+    app.dependency_overrides[_get_dispatcher] = lambda: None
+    app.dependency_overrides[_get_rate_limiter] = lambda: None
 
     return app
 

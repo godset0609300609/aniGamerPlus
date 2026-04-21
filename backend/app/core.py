@@ -54,6 +54,8 @@ if T.TYPE_CHECKING:
     from .scheduler.event_sink import DownloadEventSink
     from .scheduler.watchdog import SchedulerWatchdog
     from .services.telegram_client import TelegramClient
+    from .services.telegram_commands import TelegramCommandDispatcher
+    from .services.telegram_rate_limiter import TelegramRateLimiter
 
 
 @dataclasses.dataclass
@@ -95,6 +97,9 @@ class Container:
     telegram_client: TelegramClient | None = None
     # None when bot_token is empty; used by the scheduler process to fire DMs.
     event_sink: DownloadEventSink | None = None
+    # None when bot_token is empty; rate limiter + dispatcher for webhook commands.
+    telegram_rate_limiter: TelegramRateLimiter | None = None
+    telegram_command_dispatcher: TelegramCommandDispatcher | None = None
 
     def anime_factory(self, sn: int) -> Anime:
         """Build an :class:`Anime` orchestrator wired with this container's collaborators."""
@@ -275,10 +280,17 @@ def build_container() -> Container:
     # fire download-event DMs from the sync worker thread.
     telegram_client = None
     event_sink = None
+    telegram_rate_limiter = None
+    telegram_command_dispatcher = None
     if settings.telegram.bot_token:
         from .scheduler.event_sink import DownloadEventSink as _DownloadEventSink
+        from .services.animelist_service import AnimeListService as _AnimeListService
+        from .services.progress_service import ProgressService as _ProgressService
+        from .services.task_service import TaskService as _TaskService
         from .services.telegram_client import TelegramClient as _TelegramClient
+        from .services.telegram_commands import TelegramCommandDispatcher as _TelegramCommandDispatcher
         from .services.telegram_notifier import TelegramNotifier as _TelegramNotifier
+        from .services.telegram_rate_limiter import TelegramRateLimiter as _TelegramRateLimiter
 
         telegram_client = _TelegramClient(settings.telegram.bot_token)
         _notifier = _TelegramNotifier(
@@ -288,6 +300,22 @@ def build_container() -> Container:
             logger=logger,
         )
         event_sink = _DownloadEventSink(_notifier)
+
+        telegram_rate_limiter = _TelegramRateLimiter(settings.telegram.rate_limit_per_minute)
+
+        _animelist_svc = _AnimeListService(sn_list_repo, anime_repo, anime_list_entry_repo, user_repo)
+        _progress_svc = _ProgressService(progress_bus, user_repo, scheduler_proxy)
+        _task_svc = _TaskService(settings_repo, manual_runner, scheduler_proxy, _progress_svc)
+
+        telegram_command_dispatcher = _TelegramCommandDispatcher(
+            client=telegram_client,
+            user_repo=user_repo,
+            animelist_service=_animelist_svc,
+            task_service=_task_svc,
+            progress_service=_progress_svc,
+            rate_limiter=telegram_rate_limiter,
+            logger=logger,
+        )
 
     container = Container(
         paths=paths,
@@ -320,6 +348,8 @@ def build_container() -> Container:
         scheduler_proxy=scheduler_proxy,
         telegram_client=telegram_client,
         event_sink=event_sink,
+        telegram_rate_limiter=telegram_rate_limiter,
+        telegram_command_dispatcher=telegram_command_dispatcher,
     )
     return container
 
