@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import datetime
 import logging
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.downloader.metadata import AnimeMetadata
 from app.models import AnimeListEntry, TaskProgressEntry, TaskProgressSnapshot
 from app.persistence.user_repo import UserRow
-from app.services.telegram_commands import TelegramCommandDispatcher
+from app.services.telegram_commands import TelegramCommandDispatcher, _parse_watch_args
 from app.services.telegram_rate_limiter import TelegramRateLimiter
 
 # ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ def _make_dispatcher(
     task_service: MagicMock | None = None,
     progress_service: MagicMock | None = None,
     rate_limiter: TelegramRateLimiter | None = None,
+    metadata_extractor: MagicMock | None = None,
 ) -> tuple[TelegramCommandDispatcher, MagicMock]:
     if client is None:
         client = MagicMock()
@@ -75,6 +77,7 @@ def _make_dispatcher(
         progress_service=progress_service,
         rate_limiter=rate_limiter,
         logger=logger,  # type: ignore[arg-type]
+        metadata_extractor=metadata_extractor,
     )
     return dispatcher, client
 
@@ -485,3 +488,230 @@ async def test_dispatcher_uses_current_client_provider() -> None:
 
     await dispatcher.dispatch(chat_id=111, user=user, text='/help')
     assert client_b.send_message.called
+
+
+# ---------------------------------------------------------------------------
+# _parse_watch_args unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_parse_watch_args_empty() -> None:
+    result = _parse_watch_args([])
+    assert result == (None, '', 1, None, None)
+
+
+def test_parse_watch_args_positional_name() -> None:
+    result = _parse_watch_args(['老名字'])
+    assert result == ('老名字', '', 1, None, None)
+
+
+def test_parse_watch_args_positional_name_multi_word() -> None:
+    result = _parse_watch_args(['我的', '名字'])
+    assert result == ('我的 名字', '', 1, None, None)
+
+
+def test_parse_watch_args_kwargs_all() -> None:
+    result = _parse_watch_args(['tag=進擊', 'season=2', 'mode=single', 'name=我的名字'])
+    assert result == (None, '進擊', 2, 'single', '我的名字')
+
+
+def test_parse_watch_args_unknown_kwarg() -> None:
+    result = _parse_watch_args(['foo=bar'])
+    assert isinstance(result, str)
+    assert 'foo' in result
+    assert 'tag' in result
+
+
+def test_parse_watch_args_invalid_season() -> None:
+    result = _parse_watch_args(['season=abc'])
+    assert isinstance(result, str)
+    assert 'season' in result
+    assert '整數' in result
+
+
+def test_parse_watch_args_mixed_ambiguous_rejected() -> None:
+    """Token without '=' after a kwarg-token is rejected."""
+    result = _parse_watch_args(['tag=進擊', '老名字'])
+    assert isinstance(result, str)
+    assert '老名字' in result
+
+
+# ---------------------------------------------------------------------------
+# /watch — metadata resolution
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_cmd_watch_metadata_happy_path() -> None:
+    """MetadataExtractor.fetch returns a name → saved entry uses it."""
+    animelist_service = MagicMock()
+    saved_entry = AnimeListEntry(sn=48613, enabled=True, owner_id='user-1', anime_name='進擊的巨人')
+    # list_entries: (1) cache check returns [], (2) dup check returns [], (3) after-save returns entry
+    animelist_service.list_entries = AsyncMock(side_effect=[[], [], [saved_entry]])
+    animelist_service.replace_entries = AsyncMock(return_value=None)
+
+    metadata_extractor = MagicMock()
+    metadata_extractor.fetch = MagicMock(
+        return_value=AnimeMetadata(
+            sn=48613,
+            title='進擊的巨人 第三季[01]',
+            bangumi_name='進擊的巨人',
+            bangumi_name_orig='進擊的巨人',
+            episode='01',
+            episode_list={'01': 48613},
+        )
+    )
+
+    dispatcher, client = _make_dispatcher(
+        animelist_service=animelist_service,
+        metadata_extractor=metadata_extractor,
+    )
+    user = _make_user()
+
+    with patch('anyio.to_thread.run_sync', new=AsyncMock(side_effect=lambda fn: fn())):
+        await dispatcher.dispatch(chat_id=111, user=user, text='/watch 48613')
+
+    # replace_entries was called; the entry passed in should have the resolved name
+    assert animelist_service.replace_entries.called
+    call_args = animelist_service.replace_entries.call_args
+    entries_saved: list[AnimeListEntry] = call_args[0][1]
+    new_e = next(e for e in entries_saved if e.sn == 48613)
+    assert new_e.anime_name == '進擊的巨人'
+
+    msg = _last_message(client)
+    assert '✅' in msg or '已加入追番' in msg
+    # Should NOT be the placeholder
+    assert 'SN 48613' not in msg
+
+
+@pytest.mark.anyio
+async def test_cmd_watch_metadata_fetch_fails_uses_placeholder() -> None:
+    """When fetch raises, fallback to 'SN {sn}' and include warning in reply."""
+    animelist_service = MagicMock()
+    saved_entry = AnimeListEntry(sn=48613, enabled=True, owner_id='user-1', anime_name='SN 48613')
+    animelist_service.list_entries = AsyncMock(side_effect=[[], [], [saved_entry]])
+    animelist_service.replace_entries = AsyncMock(return_value=None)
+
+    metadata_extractor = MagicMock()
+    metadata_extractor.fetch = MagicMock(side_effect=RuntimeError('network error'))
+
+    dispatcher, client = _make_dispatcher(
+        animelist_service=animelist_service,
+        metadata_extractor=metadata_extractor,
+    )
+    user = _make_user()
+
+    messages: list[str] = []
+    client.send_message = AsyncMock(side_effect=lambda chat_id, text, **kw: messages.append(text) or {})
+
+    with patch('anyio.to_thread.run_sync', new=AsyncMock(side_effect=lambda fn: fn())):
+        await dispatcher.dispatch(chat_id=111, user=user, text='/watch 48613')
+
+    # Should have sent the warning message
+    all_text = ' '.join(messages)
+    assert '無法從動畫瘋取得' in all_text or 'SN 48613' in all_text
+
+    # Entry saved with placeholder name
+    assert animelist_service.replace_entries.called
+    call_args = animelist_service.replace_entries.call_args
+    entries_saved: list[AnimeListEntry] = call_args[0][1]
+    new_e = next(e for e in entries_saved if e.sn == 48613)
+    assert new_e.anime_name == 'SN 48613'
+
+
+# ---------------------------------------------------------------------------
+# /watch — kwarg parsing integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_cmd_watch_kwargs_full() -> None:
+    """/watch 48613 tag=進擊 season=2 mode=single name=我的名字"""
+    animelist_service = MagicMock()
+    saved_entry = AnimeListEntry(
+        sn=48613,
+        enabled=True,
+        owner_id='user-1',
+        anime_name='SN 48613',
+        tag='進擊',
+        season=2,
+        mode='single',  # type: ignore[arg-type]
+        custom_name='我的名字',
+    )
+    animelist_service.list_entries = AsyncMock(side_effect=[[], [], [saved_entry]])
+    animelist_service.replace_entries = AsyncMock(return_value=None)
+
+    dispatcher, client = _make_dispatcher(animelist_service=animelist_service)
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text='/watch 48613 tag=進擊 season=2 mode=single name=我的名字')
+
+    assert animelist_service.replace_entries.called
+    entries_saved: list[AnimeListEntry] = animelist_service.replace_entries.call_args[0][1]
+    new_e = next(e for e in entries_saved if e.sn == 48613)
+    assert new_e.tag == '進擊'
+    assert new_e.season == 2
+    assert new_e.mode == 'single'
+    assert new_e.custom_name == '我的名字'
+
+
+@pytest.mark.anyio
+async def test_cmd_watch_backwards_compat_positional_name() -> None:
+    """/watch 48613 老名字 → custom_name='老名字'"""
+    animelist_service = MagicMock()
+    saved_entry = AnimeListEntry(sn=48613, enabled=True, owner_id='user-1', custom_name='老名字')
+    animelist_service.list_entries = AsyncMock(side_effect=[[], [], [saved_entry]])
+    animelist_service.replace_entries = AsyncMock(return_value=None)
+
+    dispatcher, client = _make_dispatcher(animelist_service=animelist_service)
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text='/watch 48613 老名字')
+
+    assert animelist_service.replace_entries.called
+    entries_saved: list[AnimeListEntry] = animelist_service.replace_entries.call_args[0][1]
+    new_e = next(e for e in entries_saved if e.sn == 48613)
+    assert new_e.custom_name == '老名字'
+
+
+@pytest.mark.anyio
+async def test_cmd_watch_unknown_kwarg_returns_error() -> None:
+    dispatcher, client = _make_dispatcher()
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text='/watch 48613 foo=bar')
+    msg = _last_message(client)
+    assert '⚠️' in msg
+    assert 'foo' in msg
+
+
+@pytest.mark.anyio
+async def test_cmd_watch_non_int_season_returns_error() -> None:
+    dispatcher, client = _make_dispatcher()
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text='/watch 48613 season=abc')
+    msg = _last_message(client)
+    assert '⚠️' in msg
+    assert 'season' in msg
+
+
+@pytest.mark.anyio
+async def test_cmd_watch_mixed_ambiguous_rejected() -> None:
+    """/watch 48613 tag=進擊 老名字 → error (mixed mode rejected)."""
+    dispatcher, client = _make_dispatcher()
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text='/watch 48613 tag=進擊 老名字')
+    msg = _last_message(client)
+    assert '⚠️' in msg
+
+
+# ---------------------------------------------------------------------------
+# /help includes kwarg documentation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_cmd_help_includes_watch_kwargs() -> None:
+    dispatcher, client = _make_dispatcher()
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text='/help')
+    msg = _last_message(client)
+    assert 'tag' in msg
+    assert 'season' in msg
