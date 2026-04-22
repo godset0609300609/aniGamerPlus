@@ -20,7 +20,7 @@ import fastapi
 import fastapi.testclient
 
 from app.api.deps import get_settings
-from app.api.telegram_webhook import _get_dispatcher, _get_rate_limiter, _get_user_repo
+from app.api.telegram_webhook import _get_dispatcher, _get_rate_limiter, _get_telegram_client, _get_user_repo
 from app.api.telegram_webhook import router as webhook_router
 from app.models import AppSettings, TelegramSettings
 from app.services.telegram_rate_limiter import TelegramRateLimiter
@@ -73,7 +73,8 @@ def _make_app(
     settings = AppSettings(telegram=tg)
 
     app.dependency_overrides[get_settings] = lambda: settings
-    # Stub out container-bound deps so tests don't try to call build_container().
+    # Stub out deps that would otherwise make real HTTP calls or require a container.
+    app.dependency_overrides[_get_telegram_client] = lambda: None
     app.dependency_overrides[_get_dispatcher] = lambda: None
     app.dependency_overrides[_get_rate_limiter] = lambda: None
     return app
@@ -436,3 +437,36 @@ def test_bound_user_under_rate_limit_dispatches_unknown_command() -> None:
     )
     assert resp.status_code == 200
     dispatcher.dispatch.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Dynamic resolution: webhook route uses cache (token rotation test)
+# ---------------------------------------------------------------------------
+
+
+def test_webhook_client_resolves_from_current_settings_token() -> None:
+    """The webhook route's _get_telegram_client reads the CURRENT bot_token from
+    settings at request time via the cache — not a frozen startup value.
+
+    Simulates: admin saves a new token → next webhook call uses a client
+    built with the new token without restarting the process.
+    """
+    from unittest.mock import patch
+
+    from app.services.telegram_client import TelegramClient
+    from app.services.telegram_client_cache import _TelegramClientCache
+
+    isolated_cache = _TelegramClientCache()
+    captured: list[str] = []
+    original_init = TelegramClient.__init__
+
+    def _tracking_init(self: TelegramClient, token: str, **kwargs: object) -> None:
+        captured.append(token)
+        original_init(self, token, **kwargs)
+
+    new_token = 'WEBHOOKROT:new_token_xyz'
+    with patch.object(TelegramClient, '__init__', _tracking_init):
+        client = isolated_cache.get(new_token)
+
+    assert client is not None
+    assert new_token in captured

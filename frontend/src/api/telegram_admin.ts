@@ -8,7 +8,11 @@
 import type { TelegramWebhookInfo } from '@/types'
 
 /** POST /api/admin/telegram/webhook/register */
-export async function registerWebhook(): Promise<{ ok: boolean; url: string }> {
+export async function registerWebhook(): Promise<{
+  ok: boolean
+  url: string
+  scheduler_restart_hint?: string
+}> {
   const res = await fetch('/api/admin/telegram/webhook/register', {
     method: 'POST',
     credentials: 'include',
@@ -17,7 +21,7 @@ export async function registerWebhook(): Promise<{ ok: boolean; url: string }> {
     const body = await res.json().catch(() => ({}))
     throw new Error((body as { detail?: string }).detail ?? `HTTP ${res.status}`)
   }
-  return res.json() as Promise<{ ok: boolean; url: string }>
+  return res.json() as Promise<{ ok: boolean; url: string; scheduler_restart_hint?: string }>
 }
 
 /** POST /api/admin/telegram/webhook/delete */

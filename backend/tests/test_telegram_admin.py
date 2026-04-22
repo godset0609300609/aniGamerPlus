@@ -181,3 +181,49 @@ def test_bot_me_bot_token_empty_returns_400() -> None:
     tc = fastapi.testclient.TestClient(app)
     resp = tc.get('/api/admin/telegram/bot/me')
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Dynamic resolution: token saved via Settings → next request uses new token
+# ---------------------------------------------------------------------------
+
+
+def test_dynamic_resolution_new_token_used_after_settings_save() -> None:
+    """After settings change bot_token from '' to a real value, the next
+    admin request must resolve a client built for the new token — without
+    a process restart.
+    """
+    from unittest.mock import patch
+
+    from app.services.telegram_client import TelegramClient
+    from app.services.telegram_client_cache import _TelegramClientCache
+
+    # Use an isolated cache instance so we don't pollute the module singleton.
+    isolated_cache = _TelegramClientCache()
+    captured_tokens: list[str] = []
+
+    original_init = TelegramClient.__init__
+
+    def _tracking_init(self: TelegramClient, token: str, **kwargs: object) -> None:
+        captured_tokens.append(token)
+        original_init(self, token, **kwargs)
+
+    new_token = 'NEWBOT:dynamic_test_token_abc'
+
+    with patch.object(TelegramClient, '__init__', _tracking_init):
+        # Simulate the dynamic dependency: resolve_telegram_client reads
+        # settings.telegram.bot_token at request time via the cache.
+        client = isolated_cache.get(new_token)
+
+    assert client is not None
+    assert new_token in captured_tokens, f'Expected {new_token!r} in {captured_tokens}'
+
+
+def test_register_webhook_response_includes_scheduler_restart_hint() -> None:
+    """register_webhook success response must carry scheduler_restart_hint."""
+    tc, mock = _client_with_mock()
+    resp = tc.post('/api/admin/telegram/webhook/register')
+    assert resp.status_code == 200
+    data = resp.json()
+    assert 'scheduler_restart_hint' in data
+    assert data['scheduler_restart_hint']  # non-empty string

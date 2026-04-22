@@ -23,6 +23,7 @@ from .api.telegram_webhook import router as telegram_webhook_router
 from .core import Container, build_container
 from .log_config import LogFileTailer, build_log_config, get_ring_buffer_handler
 from .persistence.paths import WorkspacePaths
+from .services.telegram_client_cache import close_telegram_client_cache
 
 #: Env-var that, when set to anything truthy, disables the background
 #: scheduler thread spawned by the FastAPI lifespan hook. Used by the
@@ -253,6 +254,10 @@ class DashboardApp:
                     await proxy_task
                 if proxy is not None:
                     await proxy.close()
+            # Close the dynamic API-side TelegramClient cache (used by admin
+            # endpoints and webhook route).  The scheduler-side client stored
+            # in container.telegram_client is closed separately below.
+            await close_telegram_client_cache()
             tg_client = getattr(self._container, 'telegram_client', None)
             if tg_client is not None:
                 await tg_client.close()

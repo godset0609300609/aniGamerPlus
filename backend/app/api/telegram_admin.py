@@ -11,16 +11,23 @@ import fastapi
 
 from ..models import AppSettings
 from ..persistence.user_repo import UserRow
-from ..services._factory import container_bound
 from ..services.telegram_client import TelegramClient
+from ..services.telegram_client_cache import resolve_telegram_client
 from .deps import get_settings, require_admin_user
 
 router = fastapi.APIRouter(prefix='/api/admin/telegram', tags=['telegram-admin'])
 
-# Container-bound dependency: resolves the TelegramClient (may be None).
-_get_telegram_client: T.Callable[[], TelegramClient | None] = container_bound(
-    lambda c: getattr(c, 'telegram_client', None)
-)
+
+def _get_telegram_client(
+    settings: T.Annotated[AppSettings, fastapi.Depends(get_settings)],
+) -> TelegramClient | None:
+    """Resolve a TelegramClient from the CURRENT settings.telegram.bot_token.
+
+    Recomputes every request via the module-level singleton cache, so an
+    admin who just saved a new token sees the new client without a process
+    restart.
+    """
+    return resolve_telegram_client(settings.telegram.bot_token)
 
 
 def _require_client(
@@ -61,7 +68,14 @@ async def register_webhook(
         secret_token=tg.webhook_secret,
         allowed_updates=['message', 'callback_query'],
     )
-    return {'ok': True, 'url': url}
+    # The scheduler process's TelegramNotifier reads its client from the
+    # container at startup and is NOT affected by the cache used here.
+    # Remind the admin to restart the scheduler after a token rotation.
+    return {
+        'ok': True,
+        'url': url,
+        'scheduler_restart_hint': '若剛才變更過 bot token，請重新啟動 scheduler 以讓下載通知使用新 token。',
+    }
 
 
 @router.post('/webhook/delete')
