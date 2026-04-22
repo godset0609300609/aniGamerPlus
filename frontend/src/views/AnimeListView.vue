@@ -61,6 +61,41 @@ const loading = ref(false)
 const saving = ref(false)
 const activeGroups = ref<string[]>([])
 
+// ---------------------------------------------------------------------------
+// localStorage persistence for collapse state (Fix 2)
+// ---------------------------------------------------------------------------
+
+const COLLAPSE_STORAGE_KEY = 'anigamerplus.animelist.collapse'
+
+function loadPersistedCollapse(): string[] | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(COLLAPSE_STORAGE_KEY)
+    if (raw === null) return null
+    const parsed: unknown = JSON.parse(raw)
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'open' in parsed &&
+      Array.isArray((parsed as { open: unknown }).open)
+    ) {
+      return (parsed as { open: string[] }).open
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function savePersistedCollapse(keys: string[]): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify({ open: keys }))
+  } catch {
+    // silently ignore (e.g. storage quota exceeded)
+  }
+}
+
 const MODES: { value: AnimeListMode; label: string }[] = [
   { value: 'single', label: '僅本集 (single)' },
   { value: 'latest', label: '最後一集 (latest)' },
@@ -130,11 +165,16 @@ const allSections = computed((): UserSection[] => {
     sections.push({ userId: uid, username, isSelf, tagGroups, totalCount: userEntries.length })
   }
 
-  // Sort: self first, then alphabetical by username.
+  // Sort: self first, then alphabetical by username (case-insensitive),
+  // with '(unknown)' / empty userId pushed to the very end.
   sections.sort((a, b) => {
     if (a.isSelf && !b.isSelf) return -1
     if (!a.isSelf && b.isSelf) return 1
-    return a.username.localeCompare(b.username)
+    const aUnknown = a.userId === ''
+    const bUnknown = b.userId === ''
+    if (aUnknown && !bUnknown) return 1
+    if (!aUnknown && bUnknown) return -1
+    return a.username.localeCompare(b.username, undefined, { sensitivity: 'base' })
   })
 
   return sections
@@ -157,7 +197,8 @@ const groupedEntries = computed(() => {
 })
 
 // Collapse keys for user sections: one per section (userId) + tag combo.
-const activeSections = ref<string[]>([])
+// Initialised with persisted value if available; otherwise filled on load().
+const activeSections = ref<string[]>(loadPersistedCollapse() ?? [])
 
 // Auto-expand groups that appear after the initial load (e.g. user
 // types a new tag into the 群組 column). We only _add_ to
@@ -195,21 +236,30 @@ async function load(): Promise<void> {
     entries.value = clone(payload.entries ?? [])
     original.value = snapshot(entries.value)
     activeGroups.value = groupedEntries.value.map((g) => g.tag)
-    activeSections.value = allSections.value.map((s) => sectionTagKey(s.userId, ''))
-    // Expand all tag keys across all sections.
+
+    // Build all collapse keys for the loaded sections.
     const allKeys: string[] = []
     for (const section of allSections.value) {
       for (const group of section.tagGroups) {
         allKeys.push(sectionTagKey(section.userId, group.tag))
       }
     }
-    activeSections.value = allKeys
+
+    // First-time users (no persisted state): expand everything (existing behaviour).
+    // Returning users: restore persisted state; stale/deleted keys are simply ignored.
+    const persisted = loadPersistedCollapse()
+    activeSections.value = persisted !== null ? persisted : allKeys
   } catch (err) {
     ElMessage.error(`讀取追番清單失敗：${(err as Error).message}`)
   } finally {
     loading.value = false
   }
 }
+
+// Persist collapse state whenever it changes.
+watch(activeSections, (keys) => {
+  savePersistedCollapse(keys)
+})
 
 async function save(): Promise<void> {
   saving.value = true

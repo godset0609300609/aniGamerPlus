@@ -360,3 +360,230 @@ describe('AnimeListView — admin mode: only own entries', () => {
     expect(wrapper.find('.ag-user-self-badge').exists()).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Fix 1: current user's section always at top + alphabetical sort
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — Fix 1: current user section always first', () => {
+  it('places current user (non-admin) section first regardless of entry order', async () => {
+    isAdminRef.value = false
+    userRef.value = { id: 'dl-bob', username: 'Bob', avatar_url: null, role: 'downloader' }
+
+    // Entries arrive alice-first
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 1001, owner_id: 'admin-alice', owner_username: 'alice' }),
+        makeEntry({ sn: 2001, owner_id: 'dl-bob', owner_username: 'Bob' }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const headers = wrapper.findAll('.ag-user-header')
+    expect(headers).toHaveLength(2)
+    expect(headers[0].text()).toContain('Bob')
+    expect(headers[1].text()).toContain('alice')
+  })
+
+  it('places current user (admin) section first among multiple users', async () => {
+    isAdminRef.value = true
+    userRef.value = { id: 'admin-charlie', username: 'charlie', avatar_url: null, role: 'admin' }
+
+    // Entries arrive: alice, bob, charlie
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 1001, owner_id: 'u-alice', owner_username: 'alice' }),
+        makeEntry({ sn: 2001, owner_id: 'u-bob', owner_username: 'bob' }),
+        makeEntry({ sn: 3001, owner_id: 'admin-charlie', owner_username: 'charlie' }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const headers = wrapper.findAll('.ag-user-header')
+    expect(headers).toHaveLength(3)
+    expect(headers[0].text()).toContain('charlie')
+  })
+
+  it('sorts other users alphabetically (case-insensitive) after self', async () => {
+    isAdminRef.value = true
+    userRef.value = { id: 'admin-1', username: 'admin', avatar_url: null, role: 'admin' }
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 3001, owner_id: 'u-charlie', owner_username: 'Charlie' }),
+        makeEntry({ sn: 2001, owner_id: 'u-alice', owner_username: 'alice' }),
+        makeEntry({ sn: 4001, owner_id: 'u-bob', owner_username: 'Bob' }),
+        makeEntry({ sn: 1001, owner_id: 'admin-1', owner_username: 'admin' }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const headers = wrapper.findAll('.ag-user-header')
+    expect(headers).toHaveLength(4)
+    // Self (admin) is first
+    expect(headers[0].text()).toContain('admin')
+    // Others: alice < Bob < Charlie (case-insensitive)
+    expect(headers[1].text()).toContain('alice')
+    expect(headers[2].text()).toContain('Bob')
+    expect(headers[3].text()).toContain('Charlie')
+  })
+
+  it('renders （我） badge on own section for both admin and non-admin', async () => {
+    for (const role of ['admin', 'downloader'] as const) {
+      isAdminRef.value = role === 'admin'
+      userRef.value = { id: 'self-id', username: 'selfuser', avatar_url: null, role }
+
+      mockList.mockResolvedValue({
+        entries: [
+          makeEntry({ sn: 1001, owner_id: 'self-id', owner_username: 'selfuser' }),
+          makeEntry({ sn: 2001, owner_id: 'other-id', owner_username: 'otheruser' }),
+        ],
+      })
+
+      const wrapper = mountView()
+      await flushPromises()
+
+      const selfBadge = wrapper.find('.ag-user-self-badge')
+      expect(selfBadge.exists(), `expected badge for role=${role}`).toBe(true)
+      expect(selfBadge.text()).toContain('我')
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fix 2: localStorage collapse persistence
+// ---------------------------------------------------------------------------
+
+const COLLAPSE_KEY = 'anigamerplus.animelist.collapse'
+
+describe('AnimeListView — Fix 2: localStorage collapse persistence', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it('expands all sections by default when no localStorage key exists', async () => {
+    isAdminRef.value = true
+    userRef.value = { id: 'admin-1', username: 'alice', avatar_url: null, role: 'admin' }
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 1001, owner_id: 'admin-1', owner_username: 'alice', tag: 'default' }),
+      ],
+    })
+
+    mountView()
+    await flushPromises()
+
+    // localStorage should now contain the key with the expanded section
+    const raw = localStorage.getItem(COLLAPSE_KEY)
+    expect(raw).not.toBeNull()
+    const parsed = JSON.parse(raw!) as { open: string[] }
+    expect(Array.isArray(parsed.open)).toBe(true)
+    // The key 'admin-1::default' should be in the open array
+    expect(parsed.open).toContain('admin-1::default')
+  })
+
+  it('restores persisted open sections on mount', async () => {
+    isAdminRef.value = false
+    userRef.value = { id: 'dl-2', username: 'bob', avatar_url: null, role: 'downloader' }
+
+    // Pre-seed localStorage: only 'dl-2::spring' open
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify({ open: ['dl-2::spring'] }))
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 2001, owner_id: 'dl-2', owner_username: 'bob', tag: 'spring' }),
+        makeEntry({ sn: 2002, owner_id: 'dl-2', owner_username: 'bob', tag: 'fall' }),
+      ],
+    })
+
+    mountView()
+    await flushPromises()
+
+    // After mount, the persisted state should be preserved (not overwritten with all-open)
+    const raw = localStorage.getItem(COLLAPSE_KEY)
+    const parsed = JSON.parse(raw!) as { open: string[] }
+    expect(parsed.open).toContain('dl-2::spring')
+    // 'fall' was not in the persisted state so it stays collapsed
+    expect(parsed.open).not.toContain('dl-2::fall')
+  })
+
+  it('saves updated collapse state to localStorage when activeSections changes', async () => {
+    isAdminRef.value = false
+    userRef.value = { id: 'dl-2', username: 'bob', avatar_url: null, role: 'downloader' }
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 2001, owner_id: 'dl-2', owner_username: 'bob', tag: 'spring' }),
+        makeEntry({ sn: 2002, owner_id: 'dl-2', owner_username: 'bob', tag: 'fall' }),
+      ],
+    })
+
+    // No pre-seeded localStorage — component will expand all on first load.
+    mountView()
+    await flushPromises()
+
+    // After data load, the watcher fires and writes the current open array to localStorage.
+    const raw = localStorage.getItem(COLLAPSE_KEY)
+    expect(raw).not.toBeNull()
+    const parsed = JSON.parse(raw!) as { open: string[] }
+    expect(Array.isArray(parsed.open)).toBe(true)
+    // Both tag groups should appear as open (first-time = all-expanded behaviour)
+    expect(parsed.open).toContain('dl-2::spring')
+    expect(parsed.open).toContain('dl-2::fall')
+  })
+
+  it('falls back to empty array on malformed localStorage JSON', async () => {
+    isAdminRef.value = false
+    userRef.value = { id: 'dl-2', username: 'bob', avatar_url: null, role: 'downloader' }
+
+    // Tampered JSON
+    localStorage.setItem(COLLAPSE_KEY, 'not-valid-json{{')
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 2001, owner_id: 'dl-2', owner_username: 'bob', tag: '' }),
+      ],
+    })
+
+    // Should not throw
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.exists()).toBe(true)
+    // After load (no persisted = all expanded), the key should be written with a valid array
+    const raw = localStorage.getItem(COLLAPSE_KEY)
+    expect(raw).not.toBeNull()
+    const parsed = JSON.parse(raw!) as { open: string[] }
+    expect(Array.isArray(parsed.open)).toBe(true)
+  })
+
+  it('falls back gracefully when localStorage value has wrong shape', async () => {
+    isAdminRef.value = false
+    userRef.value = { id: 'dl-2', username: 'bob', avatar_url: null, role: 'downloader' }
+
+    // Valid JSON but wrong shape (no 'open' array)
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify({ wrong: 'shape' }))
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 2001, owner_id: 'dl-2', owner_username: 'bob' }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    // Should render without crashing and expand all (fallback behaviour)
+    expect(wrapper.exists()).toBe(true)
+    const raw = localStorage.getItem(COLLAPSE_KEY)
+    const parsed = JSON.parse(raw!) as { open: string[] }
+    expect(Array.isArray(parsed.open)).toBe(true)
+  })
+})
