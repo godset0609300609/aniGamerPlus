@@ -125,6 +125,88 @@ def test_put_config_round_trips_through_pydantic(
     assert persisted.download_resolution == '720'
 
 
+def test_get_config_includes_telegram_subobject(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """GET /config response must include a 'telegram' sub-object with all expected fields."""
+    r = client.get('/api/config')
+    assert r.status_code == 200
+    body = r.json()
+
+    assert 'telegram' in body
+    tg = body['telegram']
+    for field in (
+        'enabled',
+        'bot_token',
+        'webhook_secret',
+        'public_url',
+        'notify_on',
+        'admin_broadcast',
+        'rate_limit_per_minute',
+        'allow_localhost',
+    ):
+        assert field in tg, f'telegram.{field} missing from GET /config response'
+
+
+def test_put_config_telegram_round_trips(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """PUT /config with telegram payload persists the telegram fields."""
+    payload = {
+        'bangumi_dir': '',
+        'temp_dir': '',
+        'classify_bangumi': True,
+        'lock_resolution': False,
+        'segment_download_mode': True,
+        'add_bangumi_name_to_video_filename': True,
+        'add_resolution_to_video_filename': True,
+        'download_resolution': '1080',
+        'default_download_mode': 'latest',
+        'check_frequency': 5,
+        'multi-thread': 1,
+        'multi_downloading_segment': 2,
+        'customized_video_filename_prefix': '',
+        'customized_video_filename_suffix': '',
+        'ua': '',
+        'use_mobile_api': False,
+        'danmu': False,
+        'use_proxy': False,
+        'proxy': '',
+        'read_sn_list_when_checking_update': True,
+        'read_config_when_checking_update': True,
+        'save_logs': True,
+        'quantity_of_logs': 7,
+        'download_cd': 60,
+        'parse_sn_cd': 5,
+        'parse_cd': 3,
+        'telegram': {
+            'enabled': True,
+            'bot_token': 'test_bot_token_12345',
+            'webhook_secret': 'deadsecret',
+            'public_url': 'https://example.com',
+            'notify_on': ['completed'],
+            'admin_broadcast': False,
+            'rate_limit_per_minute': 60,
+            'allow_localhost': True,
+        },
+    }
+
+    r = client.put('/api/config', json=payload)
+    assert r.status_code == 200
+    assert r.json() == {'status': 'ok'}
+
+    persisted = fake_container.settings_repo.load()
+    assert persisted.telegram.enabled is True
+    assert persisted.telegram.bot_token == 'test_bot_token_12345'
+    assert persisted.telegram.webhook_secret == 'deadsecret'
+    assert persisted.telegram.public_url == 'https://example.com'
+    assert persisted.telegram.notify_on == ['completed']
+    assert persisted.telegram.admin_broadcast is False
+    assert persisted.telegram.rate_limit_per_minute == 60
+    assert persisted.telegram.allow_localhost is True
+
+
 def test_put_config_rejects_invalid_resolution(
     client: fastapi.testclient.TestClient,
 ) -> None:

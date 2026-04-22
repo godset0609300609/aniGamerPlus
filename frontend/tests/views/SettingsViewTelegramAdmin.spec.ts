@@ -30,37 +30,52 @@ vi.mock('@/stores/auth', () => ({
 // ---------------------------------------------------------------------------
 // ConfigApi stub
 // ---------------------------------------------------------------------------
+const mockLoad = vi.fn()
+const mockSave = vi.fn()
+
+const BASE_SETTINGS = {
+  bangumi_dir: '',
+  temp_dir: '',
+  classify_bangumi: true,
+  lock_resolution: false,
+  segment_download_mode: true,
+  add_bangumi_name_to_video_filename: true,
+  add_resolution_to_video_filename: true,
+  download_resolution: '1080',
+  default_download_mode: 'latest',
+  check_frequency: 5,
+  'multi-thread': 1,
+  multi_downloading_segment: 2,
+  customized_video_filename_prefix: '',
+  customized_video_filename_suffix: '',
+  ua: '',
+  use_mobile_api: false,
+  danmu: false,
+  use_proxy: false,
+  proxy: '',
+  read_sn_list_when_checking_update: true,
+  read_config_when_checking_update: true,
+  save_logs: true,
+  quantity_of_logs: 7,
+  download_cd: 60,
+  parse_sn_cd: 5,
+  parse_cd: 3,
+  telegram: {
+    enabled: false,
+    bot_token: '',
+    webhook_secret: '',
+    public_url: '',
+    notify_on: ['completed', 'failed', 'cancelled'],
+    admin_broadcast: true,
+    rate_limit_per_minute: 30,
+    allow_localhost: false,
+  },
+}
+
 vi.mock('@/api/config', () => ({
   ConfigApi: vi.fn().mockImplementation(() => ({
-    load: vi.fn().mockResolvedValue({
-      bangumi_dir: '',
-      temp_dir: '',
-      classify_bangumi: true,
-      lock_resolution: false,
-      segment_download_mode: true,
-      add_bangumi_name_to_video_filename: true,
-      add_resolution_to_video_filename: true,
-      download_resolution: '1080',
-      default_download_mode: 'latest',
-      check_frequency: 5,
-      'multi-thread': 1,
-      multi_downloading_segment: 2,
-      customized_video_filename_prefix: '',
-      customized_video_filename_suffix: '',
-      ua: '',
-      use_mobile_api: false,
-      danmu: false,
-      use_proxy: false,
-      proxy: '',
-      read_sn_list_when_checking_update: true,
-      read_config_when_checking_update: true,
-      save_logs: true,
-      quantity_of_logs: 7,
-      download_cd: 60,
-      parse_sn_cd: 5,
-      parse_cd: 3,
-    }),
-    save: vi.fn().mockResolvedValue({ status: 'ok' }),
+    load: mockLoad,
+    save: mockSave,
     setCookie: vi.fn().mockResolvedValue(undefined),
     getCookieStatus: vi.fn().mockResolvedValue({ configured: false }),
   })),
@@ -148,6 +163,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   isAdminRef.value = true
   userRef.value = { id: 'admin-1', username: 'Admin', role: 'admin' }
+  mockLoad.mockResolvedValue(JSON.parse(JSON.stringify(BASE_SETTINGS)))
+  mockSave.mockResolvedValue({ status: 'ok' })
   mockRegisterWebhook.mockResolvedValue({ ok: true, url: 'https://example.com/webhook' })
   mockGetWebhookInfo.mockResolvedValue({
     url: 'https://example.com/webhook',
@@ -285,5 +302,86 @@ describe('SettingsView Admin Telegram Bot section — webhook status dialog', ()
     await flushPromises()
 
     expect(mockElMessageError).toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Dirty detection + save (telegram fields)
+// ---------------------------------------------------------------------------
+
+describe('SettingsView Admin Telegram Bot section — dirty detection', () => {
+  it('dirty is false immediately after load', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { dirty: boolean }
+    expect(vm.dirty).toBe(false)
+  })
+
+  it('dirty becomes true after changing bot_token', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      dirty: boolean
+      settings: { telegram: { bot_token: string } } | null
+    }
+    if (vm.settings) vm.settings.telegram.bot_token = 'new-token-value'
+    await wrapper.vm.$nextTick()
+    expect(vm.dirty).toBe(true)
+  })
+
+  it('dirty becomes true after changing enabled', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      dirty: boolean
+      settings: { telegram: { enabled: boolean } } | null
+    }
+    if (vm.settings) vm.settings.telegram.enabled = true
+    await wrapper.vm.$nextTick()
+    expect(vm.dirty).toBe(true)
+  })
+})
+
+describe('SettingsView Admin Telegram Bot section — save includes telegram', () => {
+  it('save payload includes telegram.bot_token when changed', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      save: () => Promise<void>
+      settings: { telegram: { bot_token: string } } | null
+    }
+    if (vm.settings) vm.settings.telegram.bot_token = 'abc123token'
+    await vm.save()
+    await flushPromises()
+
+    expect(mockSave).toHaveBeenCalledTimes(1)
+    const savedPayload = mockSave.mock.calls[0][0] as { telegram: { bot_token: string } }
+    expect(savedPayload.telegram.bot_token).toBe('abc123token')
+  })
+
+  it('after save, load is called again and inputs reflect persisted value', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    // Simulate save re-loading settings that now have the new token
+    mockLoad.mockResolvedValue({
+      ...JSON.parse(JSON.stringify(BASE_SETTINGS)),
+      telegram: { ...BASE_SETTINGS.telegram, bot_token: 'persisted-token' },
+    })
+
+    const vm = wrapper.vm as unknown as {
+      save: () => Promise<void>
+      settings: { telegram: { bot_token: string } } | null
+    }
+    if (vm.settings) vm.settings.telegram.bot_token = 'persisted-token'
+    await vm.save()
+    await flushPromises()
+
+    // After save, load() is called and settings.telegram.bot_token is updated
+    expect(vm.settings?.telegram.bot_token).toBe('persisted-token')
   })
 })

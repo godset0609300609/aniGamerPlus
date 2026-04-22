@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ConfigApi, parseProxy, serializeProxy } from '@/api/config'
-import type { ProxyParts, TelegramSettings, TelegramWebhookInfo, WebSettings } from '@/types'
+import type { ProxyParts, TelegramWebhookInfo, WebSettings } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import { useTelegramBinding } from '@/composables/useTelegramBinding'
 import { getBotMe, getWebhookInfo, registerWebhook } from '@/api/telegram_admin'
@@ -144,16 +144,6 @@ async function handleNotifyEnabledChange(val: boolean): Promise<void> {
 
 const _NOTIFY_OPTIONS = ['completed', 'failed', 'cancelled'] as const
 
-const tgSettings = ref<TelegramSettings>({
-  enabled: false,
-  bot_token: '',
-  webhook_secret: '',
-  public_url: '',
-  notify_on: ['completed', 'failed', 'cancelled'],
-  admin_broadcast: true,
-  rate_limit_per_minute: 30,
-  allow_localhost: false,
-})
 const tgBotUsername = ref<string | null>(null)
 const tgBotLoading = ref(false)
 const tgWebhookLoading = ref(false)
@@ -161,9 +151,10 @@ const tgWebhookDialogVisible = ref(false)
 const tgWebhookInfo = ref<TelegramWebhookInfo | null>(null)
 
 function generateSecret(): void {
+  if (!settings.value) return
   const arr = new Uint8Array(32)
   crypto.getRandomValues(arr)
-  tgSettings.value.webhook_secret = Array.from(arr)
+  settings.value.telegram.webhook_secret = Array.from(arr)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('')
 }
@@ -205,19 +196,8 @@ async function handleWebhookStatus(): Promise<void> {
   }
 }
 
-// Sync tgSettings from loaded config
-function syncTgFromSettings(s: WebSettings): void {
-  const raw = s as unknown as { telegram?: Partial<TelegramSettings> }
-  if (raw.telegram) {
-    Object.assign(tgSettings.value, raw.telegram)
-  }
-}
-
 onMounted(async () => {
   await load()
-  if (settings.value) {
-    syncTgFromSettings(settings.value)
-  }
   await tg.loadStatus()
   try {
     cookieStatus.value = await api.getCookieStatus()
@@ -225,7 +205,7 @@ onMounted(async () => {
     // Non-fatal — status badge stays at default (false)
   }
   // Auto-verify bot token for admin
-  if (isAdmin.value && tgSettings.value.bot_token) {
+  if (isAdmin.value && settings.value?.telegram?.bot_token) {
     await verifyBotToken()
   }
 })
@@ -545,7 +525,7 @@ onUnmounted(() => {
 
       <!-- Admin-only: Telegram Bot 設定 -->
       <section
-        v-if="isAdmin"
+        v-if="isAdmin && settings"
         class="ag-section"
       >
         <h2 class="ag-section-title">
@@ -553,13 +533,13 @@ onUnmounted(() => {
         </h2>
 
         <el-form-item label="啟用 Bot">
-          <el-switch v-model="tgSettings.enabled" />
+          <el-switch v-model="settings.telegram.enabled" />
         </el-form-item>
 
         <el-form-item label="Bot Token">
           <div class="ag-ua-row">
             <el-input
-              v-model="tgSettings.bot_token"
+              v-model="settings.telegram.bot_token"
               type="password"
               show-password
               placeholder="輸入 Bot Token"
@@ -583,7 +563,7 @@ onUnmounted(() => {
         <el-form-item label="Webhook Secret">
           <div class="ag-ua-row">
             <el-input
-              v-model="tgSettings.webhook_secret"
+              v-model="settings.telegram.webhook_secret"
               type="password"
               show-password
               placeholder="Webhook 密鑰"
@@ -597,7 +577,7 @@ onUnmounted(() => {
 
         <el-form-item label="Public URL">
           <el-input
-            v-model="tgSettings.public_url"
+            v-model="settings.telegram.public_url"
             placeholder="https://example.com"
           />
         </el-form-item>
@@ -605,7 +585,7 @@ onUnmounted(() => {
         <el-row :gutter="16">
           <el-col :md="8">
             <el-form-item label="Admin 廣播">
-              <el-switch v-model="tgSettings.admin_broadcast" />
+              <el-switch v-model="settings.telegram.admin_broadcast" />
             </el-form-item>
           </el-col>
           <el-col :md="8">
@@ -614,14 +594,14 @@ onUnmounted(() => {
                 content="僅限開發環境使用，正式環境請關閉"
                 placement="top"
               >
-                <el-switch v-model="tgSettings.allow_localhost" />
+                <el-switch v-model="settings.telegram.allow_localhost" />
               </el-tooltip>
             </el-form-item>
           </el-col>
           <el-col :md="8">
             <el-form-item label="速率限制（/分鐘）">
               <el-input-number
-                v-model="tgSettings.rate_limit_per_minute"
+                v-model="settings.telegram.rate_limit_per_minute"
                 :min="1"
                 :max="300"
               />
@@ -630,7 +610,7 @@ onUnmounted(() => {
         </el-row>
 
         <el-form-item label="通知觸發條件">
-          <el-checkbox-group v-model="tgSettings.notify_on">
+          <el-checkbox-group v-model="settings.telegram.notify_on">
             <el-checkbox
               v-for="opt in _NOTIFY_OPTIONS"
               :key="opt"

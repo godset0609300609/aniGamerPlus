@@ -49,6 +49,16 @@ vi.mock('@/api/config', () => ({
       download_cd: 60,
       parse_sn_cd: 5,
       parse_cd: 3,
+      telegram: {
+        enabled: false,
+        bot_token: '',
+        webhook_secret: '',
+        public_url: '',
+        notify_on: ['completed', 'failed', 'cancelled'],
+        admin_broadcast: true,
+        rate_limit_per_minute: 30,
+        allow_localhost: false,
+      },
     }),
     save: vi.fn().mockResolvedValue({ status: 'ok' }),
     setCookie: vi.fn().mockResolvedValue(undefined),
@@ -117,6 +127,16 @@ vi.mock('element-plus', () =>
     },
   }),
 )
+
+// ---------------------------------------------------------------------------
+// telegram_admin API stub
+// ---------------------------------------------------------------------------
+vi.mock('@/api/telegram_admin', () => ({
+  registerWebhook: vi.fn().mockResolvedValue({ ok: true, url: 'https://example.com/webhook' }),
+  getWebhookInfo: vi.fn().mockResolvedValue({ url: null, pending_update_count: 0 }),
+  getBotMe: vi.fn().mockResolvedValue({ id: 1, username: 'bot' }),
+  deleteWebhook: vi.fn(),
+}))
 
 // Import component AFTER mocks are set up.
 import SettingsView from '@/views/SettingsView.vue'

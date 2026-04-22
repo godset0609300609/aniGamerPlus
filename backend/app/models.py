@@ -40,6 +40,26 @@ class ConfigSchema(pydantic.BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Telegram settings (defined early so WebSettings can reference it)
+# ---------------------------------------------------------------------------
+
+
+class TelegramSettings(pydantic.BaseModel):
+    """Telegram Bot integration configuration."""
+
+    model_config = pydantic.ConfigDict(extra='ignore')
+
+    enabled: bool = False
+    bot_token: str = ''
+    webhook_secret: str = ''  # path segment + X-Telegram-Bot-Api-Secret-Token
+    public_url: str = ''  # e.g. "https://example.com" — used to build webhook URL
+    notify_on: list[str] = pydantic.Field(default_factory=lambda: ['completed', 'failed', 'cancelled'])
+    admin_broadcast: bool = True  # also DM every admin user who is bound + opted-in
+    rate_limit_per_minute: int = 30  # per-user command rate limit
+    allow_localhost: bool = False  # dev/test bypass: accept 127.0.0.1 in IP allowlist
+
+
+# ---------------------------------------------------------------------------
 # Web-visible config
 # ---------------------------------------------------------------------------
 
@@ -81,6 +101,7 @@ class WebSettings(pydantic.BaseModel):
     download_cd: int = pydantic.Field(default=60, ge=0)
     parse_sn_cd: int = pydantic.Field(default=5, ge=0)
     parse_cd: int = pydantic.Field(default=3, ge=0)
+    telegram: TelegramSettings = pydantic.Field(default_factory=TelegramSettings)
 
 
 # ---------------------------------------------------------------------------
@@ -250,21 +271,6 @@ class DiscordAuthSettings(pydantic.BaseModel):
     redirect_uri: str = 'http://localhost:8000/api/auth/callback'
     bootstrap_admin_ids: list[str] = pydantic.Field(default_factory=list)
     session_secret: str = ''  # auto-generated on first boot
-
-
-class TelegramSettings(pydantic.BaseModel):
-    """Telegram Bot integration configuration."""
-
-    model_config = pydantic.ConfigDict(extra='ignore')
-
-    enabled: bool = False
-    bot_token: str = ''
-    webhook_secret: str = ''  # path segment + X-Telegram-Bot-Api-Secret-Token
-    public_url: str = ''  # e.g. "https://example.com" — used to build webhook URL
-    notify_on: list[str] = pydantic.Field(default_factory=lambda: ['completed', 'failed', 'cancelled'])
-    admin_broadcast: bool = True  # also DM every admin user who is bound + opted-in
-    rate_limit_per_minute: int = 30  # per-user command rate limit
-    allow_localhost: bool = False  # dev/test bypass: accept 127.0.0.1 in IP allowlist
 
 
 class AppSettings(pydantic.BaseModel):
