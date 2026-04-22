@@ -20,6 +20,7 @@ from ..models import AppSettings
 from ..persistence.user_repo import UserRepository, UserRow
 from ..services._factory import container_bound
 from ..services.telegram_client import TelegramClient
+from ..services.telegram_client_cache import resolve_telegram_client
 from .deps import get_settings, require_any_user
 
 _log = logging.getLogger(__name__)
@@ -28,10 +29,18 @@ _TOKEN_TTL_SECONDS = 600  # 10 minutes
 
 router = fastapi.APIRouter(prefix='/api/profile/telegram', tags=['profile-telegram'])
 
-# Container-bound dependency: resolves the TelegramClient (may be None).
-_get_telegram_client: T.Callable[[], TelegramClient | None] = container_bound(
-    lambda c: getattr(c, 'telegram_client', None)
-)
+
+def _get_telegram_client(
+    settings: T.Annotated[AppSettings, fastapi.Depends(get_settings)],
+) -> TelegramClient | None:
+    """Resolve a TelegramClient from the CURRENT settings.telegram.bot_token.
+
+    Recomputes every request via the module-level singleton cache, so
+    an admin who just saved a new token sees the new client without a
+    process restart.
+    """
+    return resolve_telegram_client(settings.telegram.bot_token)
+
 
 _get_user_repo: T.Callable[[], UserRepository] = container_bound(lambda c: c.user_repo)
 
@@ -100,9 +109,10 @@ async def start_link(
         me = await telegram_client.get_me()
     except Exception as exc:
         _log.exception('profile/telegram/start-link: failed to call getMe')
+        reason = type(exc).__name__  # short, safe — don't leak token in string form
         raise fastapi.HTTPException(
             status_code=fastapi.status.HTTP_502_BAD_GATEWAY,
-            detail='telegram_bot_unreachable',
+            detail=f'telegram_bot_unreachable: {reason}',
         ) from exc
 
     bot_username = str(me.get('username', ''))

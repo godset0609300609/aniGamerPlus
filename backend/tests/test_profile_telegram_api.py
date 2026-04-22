@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime
 import pathlib
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fastapi
 import fastapi.testclient
@@ -164,6 +164,88 @@ def test_start_link_no_client_returns_400() -> None:
     resp = tc.post('/api/profile/telegram/start-link')
     assert resp.status_code == 400
     assert resp.json()['detail'] == 'telegram_not_configured'
+
+
+def test_start_link_resolves_after_token_saved(tmp_path: pathlib.Path) -> None:
+    """Token saved between requests is picked up without a process restart.
+
+    Simulates the bug: container was built with bot_token='' (cache returns
+    None). Admin saves a token via settings. The very next POST succeeds
+    because _get_telegram_client reads the CURRENT settings and resolves
+    via the module-level cache rather than the stale container.
+    """
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id=_DOWNLOADER.id, username=_DOWNLOADER.username, avatar_url=None)
+
+        mock_client = _mock_telegram_client()
+
+        # Build app WITHOUT overriding _get_telegram_client so the real
+        # resolve_telegram_client path is exercised.
+        app = fastapi.FastAPI()
+        app.include_router(profile_router)
+
+        # Settings start with an empty token (simulates container built before
+        # admin configured the bot).
+        tg = TelegramSettings(bot_token='', public_url='https://example.com')
+        settings = AppSettings(telegram=tg)
+
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[require_any_user] = lambda: _DOWNLOADER
+        app.dependency_overrides[_get_user_repo] = lambda: repo
+
+        tc = fastapi.testclient.TestClient(app)
+
+        # First call: token empty → 400 telegram_not_configured.
+        resp = tc.post('/api/profile/telegram/start-link')
+        assert resp.status_code == 400
+
+        # Admin saves a valid token.  Update settings in-place so the
+        # get_settings override returns the updated value.
+        settings.telegram = TelegramSettings(bot_token='NEW_TOKEN', public_url='https://example.com')
+
+        # Patch resolve_telegram_client to return our mock without a real HTTP call.
+        with patch(
+            'app.api.profile_telegram_api.resolve_telegram_client',
+            return_value=mock_client,
+        ):
+            resp2 = tc.post('/api/profile/telegram/start-link')
+
+        assert resp2.status_code == 200
+        data = resp2.json()
+        assert 'link_url' in data
+        assert 'https://t.me/mybot?start=' in data['link_url']
+    finally:
+        db.dispose()
+
+
+def test_start_link_get_me_raises_returns_502_with_exception_name(
+    tmp_path: pathlib.Path,
+) -> None:
+    """502 detail contains the exception class name for diagnostics.
+
+    Verifies that ConnectError raised by get_me() is surfaced in the
+    response detail so the user can distinguish network vs auth failures.
+    """
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id=_DOWNLOADER.id, username=_DOWNLOADER.username, avatar_url=None)
+
+        mock_client = MagicMock()
+        mock_client.get_me = AsyncMock(side_effect=ConnectionError('network failure'))
+
+        app, _ = _make_app(telegram_client=mock_client, user_repo=repo)
+        tc = fastapi.testclient.TestClient(app)
+
+        resp = tc.post('/api/profile/telegram/start-link')
+        assert resp.status_code == 502
+        detail = resp.json()['detail']
+        assert detail.startswith('telegram_bot_unreachable:')
+        assert 'ConnectionError' in detail
+    finally:
+        db.dispose()
 
 
 # ---------------------------------------------------------------------------
