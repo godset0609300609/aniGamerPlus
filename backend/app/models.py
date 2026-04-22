@@ -59,7 +59,6 @@ class TelegramSettings(pydantic.BaseModel):
     )
     admin_broadcast: bool = True  # also DM every admin user who is bound + opted-in
     rate_limit_per_minute: int = pydantic.Field(default=30, ge=1, le=300)
-    allow_localhost: bool = False  # dev/test bypass: accept 127.0.0.1 in IP allowlist
 
 
 # ---------------------------------------------------------------------------

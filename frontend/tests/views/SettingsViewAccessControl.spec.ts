@@ -2,7 +2,7 @@
  * Tests for Issues 1–4 in SettingsView.vue:
  *
  * Issue 1  — Non-admin sees only Telegram binding; admin sees all.
- * Issue 2  — Notify-on checkboxes show 中文 labels; allow_localhost label is 允許本機.
+ * Issue 2  — Notify-on checkboxes show 中文 labels.
  * Issue 3  — Admin action buttons disabled when telegram.enabled=false; reactive to form state.
  * Issue 4  — Non-admin with telegram.enabled=false sees muted notice; bound user sees warning.
  */
@@ -125,7 +125,6 @@ function makeSettings(telegramOverrides: Record<string, unknown> = {}) {
       notify_on: ['completed', 'failed', 'cancelled'],
       admin_broadcast: true,
       rate_limit_per_minute: 30,
-      allow_localhost: false,
       ...telegramOverrides,
     },
   }
@@ -280,18 +279,6 @@ describe('Issue 2 — Chinese labels in admin Telegram Bot section', () => {
     const wrapper = mountView()
     await flushPromises()
     expect(wrapper.text()).toContain('下載取消')
-  })
-
-  it('renders 允許本機 label (not 允許 Localhost) in form-item attribute', async () => {
-    const wrapper = mountView()
-    await flushPromises()
-    // ElFormItem stub discards the label prop from rendered text, so assert on the attribute directly.
-    const formItems = wrapper.findAll('[label]')
-    const labels = formItems.map((el) => el.attributes('label') ?? '')
-    const hasAllowLocalhost = labels.some((l) => l.includes('允許本機'))
-    const hasOldText = labels.some((l) => l.includes('允許 Localhost'))
-    expect(hasAllowLocalhost).toBe(true)
-    expect(hasOldText).toBe(false)
   })
 })
 

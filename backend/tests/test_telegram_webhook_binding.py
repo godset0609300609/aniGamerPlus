@@ -42,7 +42,6 @@ def _make_app(
     *,
     user_repo: UserRepository,
     telegram_client: object | None = None,
-    allow_localhost: bool = True,
 ) -> fastapi.FastAPI:
     app = fastapi.FastAPI()
     app.include_router(webhook_router)
@@ -50,7 +49,6 @@ def _make_app(
     tg = TelegramSettings(
         bot_token='BOT_TOKEN',
         webhook_secret=_SECRET,
-        allow_localhost=allow_localhost,
     )
     settings = AppSettings(telegram=tg)
 
@@ -71,8 +69,6 @@ def _make_app(
 def _post(
     app: fastapi.FastAPI,
     body: object,
-    *,
-    client_ip: str = '127.0.0.1',
 ) -> fastapi.testclient.TestClient:
     tc = fastapi.testclient.TestClient(app)
     return tc.post(
@@ -80,7 +76,6 @@ def _post(
         json=body,
         headers={
             'X-Telegram-Bot-Api-Secret-Token': _SECRET,
-            'X-Real-IP': client_ip,
         },
     )
 

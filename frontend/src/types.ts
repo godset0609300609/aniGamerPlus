@@ -136,7 +136,6 @@ export interface TelegramSettings {
   notify_on: string[]
   admin_broadcast: boolean
   rate_limit_per_minute: number
-  allow_localhost: boolean
 }
 
 export interface TelegramWebhookInfo {

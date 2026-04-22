@@ -96,7 +96,6 @@ def test_telegram_section_defaults() -> None:
     assert settings.telegram.public_url == ''
     assert settings.telegram.notify_on == ['completed', 'failed', 'cancelled']
     assert settings.telegram.rate_limit_per_minute == 30
-    assert settings.telegram.allow_localhost is False
 
 
 def test_telegram_section_round_trips() -> None:
