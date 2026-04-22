@@ -64,7 +64,7 @@ describe('useTelegramBinding — loadStatus', () => {
   it('sets bound=false on fresh user', async () => {
     const timer = makeTimerFactory()
     const tb = useTelegramBinding({
-      fetchFn: okFetch({ bound: false, chat_id: null, enabled: true, link_pending: false }) as typeof fetch,
+      fetchFn: okFetch({ bound: false, chat_id: null, enabled: true, link_pending: false, link_expires_in_seconds: null }) as typeof fetch,
       timerFactory: timer,
       openFn: mockOpenFn,
     })
@@ -77,7 +77,7 @@ describe('useTelegramBinding — loadStatus', () => {
   it('sets bound=true when API says bound', async () => {
     const timer = makeTimerFactory()
     const tb = useTelegramBinding({
-      fetchFn: okFetch({ bound: true, chat_id: 12345, enabled: true, link_pending: false }) as typeof fetch,
+      fetchFn: okFetch({ bound: true, chat_id: 12345, enabled: true, link_pending: false, link_expires_in_seconds: null }) as typeof fetch,
       timerFactory: timer,
       openFn: mockOpenFn,
     })
@@ -94,6 +94,67 @@ describe('useTelegramBinding — loadStatus', () => {
     })
     await tb.loadStatus()
     expect(tb.error.value).not.toBeNull()
+  })
+
+  it('hydrates countdown when loadStatus returns link_pending with expires_in_seconds=400', async () => {
+    const timer = makeTimerFactory()
+    const tb = useTelegramBinding({
+      fetchFn: okFetch({ bound: false, chat_id: null, enabled: true, link_pending: true, link_expires_in_seconds: 400 }) as typeof fetch,
+      timerFactory: timer,
+      openFn: mockOpenFn,
+      nowFn: () => baseNow,
+    })
+    await tb.loadStatus()
+    expect(tb.linkPending.value).toBe(true)
+    // secondsRemaining should be ~400 (computed from absolute expiry).
+    expect(tb.secondsRemaining.value).toBe(400)
+  })
+
+  it('clears pending state when loadStatus returns link_pending=false with null expiry', async () => {
+    const timer = makeTimerFactory()
+    const tb = useTelegramBinding({
+      fetchFn: okFetch({ bound: false, chat_id: null, enabled: true, link_pending: false, link_expires_in_seconds: null }) as typeof fetch,
+      timerFactory: timer,
+      openFn: mockOpenFn,
+      nowFn: () => baseNow,
+    })
+    // Pre-set pending state to simulate a prior startLink call.
+    tb.linkPending.value = true
+    await tb.loadStatus()
+    expect(tb.linkPending.value).toBe(false)
+    expect(tb.secondsRemaining.value).toBe(0)
+  })
+
+  it('clears pending state defensively when link_pending=true but link_expires_in_seconds is null', async () => {
+    const timer = makeTimerFactory()
+    const tb = useTelegramBinding({
+      fetchFn: okFetch({ bound: false, chat_id: null, enabled: true, link_pending: true, link_expires_in_seconds: null }) as typeof fetch,
+      timerFactory: timer,
+      openFn: mockOpenFn,
+      nowFn: () => baseNow,
+    })
+    await tb.loadStatus()
+    expect(tb.linkPending.value).toBe(false)
+    expect(tb.secondsRemaining.value).toBe(0)
+  })
+
+  it('page-reload simulation: loadStatus then 100s tick leaves ~300s remaining', async () => {
+    // Simulate: server says 400s left; we tick the countdown 100 times (100s).
+    let fakeNow = baseNow
+    const timer = makeTimerFactory()
+    const tb = useTelegramBinding({
+      fetchFn: okFetch({ bound: false, chat_id: null, enabled: true, link_pending: true, link_expires_in_seconds: 400 }) as typeof fetch,
+      timerFactory: timer,
+      openFn: mockOpenFn,
+      nowFn: () => fakeNow,
+    })
+    await tb.loadStatus()
+    expect(tb.secondsRemaining.value).toBe(400)
+
+    // Advance clock by 100 seconds and trigger countdown ticks.
+    fakeNow += 100_000
+    timer.tick() // fires all registered intervals (countdown tick)
+    expect(tb.secondsRemaining.value).toBe(300)
   })
 })
 
@@ -246,12 +307,13 @@ describe('useTelegramBinding — polling', () => {
         ok: true,
         status: 200,
         text: async () =>
-          JSON.stringify({ bound: shouldBeBound, chat_id: shouldBeBound ? 99 : null, enabled: true, link_pending: !shouldBeBound }),
+          JSON.stringify({ bound: shouldBeBound, chat_id: shouldBeBound ? 99 : null, enabled: true, link_pending: !shouldBeBound, link_expires_in_seconds: shouldBeBound ? null : 590 }),
         json: async () => ({
           bound: shouldBeBound,
           chat_id: shouldBeBound ? 99 : null,
           enabled: true,
           link_pending: !shouldBeBound,
+          link_expires_in_seconds: shouldBeBound ? null : 590,
         }),
       }
     }) as unknown as typeof fetch

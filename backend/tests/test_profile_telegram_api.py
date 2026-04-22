@@ -368,6 +368,98 @@ def test_status_expired_token_not_pending(tmp_path: pathlib.Path) -> None:
         db.dispose()
 
 
+def test_status_no_token_link_expires_in_seconds_is_none(tmp_path: pathlib.Path) -> None:
+    """GET /status returns link_expires_in_seconds=None when no token is pending."""
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id=_DOWNLOADER.id, username=_DOWNLOADER.username, avatar_url=None)
+
+        app, _ = _make_app(user_repo=repo)
+        tc = fastapi.testclient.TestClient(app)
+
+        resp = tc.get('/api/profile/telegram/status')
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data['link_pending'] is False
+        assert data['link_expires_in_seconds'] is None
+    finally:
+        db.dispose()
+
+
+def test_status_fresh_token_link_expires_in_seconds(tmp_path: pathlib.Path) -> None:
+    """GET /status right after token mint returns link_expires_in_seconds close to TTL."""
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id=_DOWNLOADER.id, username=_DOWNLOADER.username, avatar_url=None)
+        # Mint a token with full TTL (600 s).
+        expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=600)
+        repo.set_telegram_link_token(_DOWNLOADER.id, 'freshtoken', expires_at)
+
+        app, _ = _make_app(user_repo=repo)
+        tc = fastapi.testclient.TestClient(app)
+
+        resp = tc.get('/api/profile/telegram/status')
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data['link_pending'] is True
+        remaining = data['link_expires_in_seconds']
+        assert remaining is not None
+        assert 595 <= remaining <= 600
+    finally:
+        db.dispose()
+
+
+def test_status_expired_token_link_expires_in_seconds_is_none(tmp_path: pathlib.Path) -> None:
+    """GET /status with expired token: link_pending=False, link_expires_in_seconds=None."""
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id=_DOWNLOADER.id, username=_DOWNLOADER.username, avatar_url=None)
+        past_expiry = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=5)
+        repo.set_telegram_link_token(_DOWNLOADER.id, 'expiredtoken2', past_expiry)
+
+        app, _ = _make_app(user_repo=repo)
+        tc = fastapi.testclient.TestClient(app)
+
+        resp = tc.get('/api/profile/telegram/status')
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data['link_pending'] is False
+        assert data['link_expires_in_seconds'] is None
+    finally:
+        db.dispose()
+
+
+def test_status_token_expiring_in_one_second(tmp_path: pathlib.Path) -> None:
+    """GET /status with token expiring in 1 s: link_pending=True, remaining >= 0."""
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id=_DOWNLOADER.id, username=_DOWNLOADER.username, avatar_url=None)
+        # Use a near-future expiry — gives at least 0 s by the time the response arrives.
+        expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=1)
+        repo.set_telegram_link_token(_DOWNLOADER.id, 'almostexpiredtoken', expires_at)
+
+        app, _ = _make_app(user_repo=repo)
+        tc = fastapi.testclient.TestClient(app)
+
+        resp = tc.get('/api/profile/telegram/status')
+        assert resp.status_code == 200
+        data = resp.json()
+        # The token is technically still valid (expires_at is in the future when stored).
+        # Depending on execution speed link_pending may be True or False;
+        # just assert that if pending, remaining >= 0, and if not pending, remaining is None.
+        if data['link_pending']:
+            assert data['link_expires_in_seconds'] is not None
+            assert data['link_expires_in_seconds'] >= 0
+        else:
+            assert data['link_expires_in_seconds'] is None
+    finally:
+        db.dispose()
+
+
 # ---------------------------------------------------------------------------
 # PATCH /api/profile/telegram/notify-enabled
 # ---------------------------------------------------------------------------
