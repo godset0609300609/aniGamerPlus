@@ -225,8 +225,8 @@ export function createElementPlusStubs(overrides: StubMap = {}): StubMap {
       template: '<span class="el-icon"><slot /></span>',
     },
     ElTooltip: {
-      props: ['content', 'placement', 'effect', 'disabled'],
-      template: '<div class="el-tooltip" :title="content"><slot /></div>',
+      props: ['content', 'placement', 'effect', 'disabled', 'showAfter'],
+      template: '<div class="el-tooltip" :title="content" :data-content="content"><slot /></div>',
     },
     ElCheckboxGroup: {
       props: ['modelValue'],

@@ -587,3 +587,70 @@ describe('AnimeListView — Fix 2: localStorage collapse persistence', () => {
     expect(Array.isArray(parsed.open)).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Truncation + tooltip on long anime names
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — long anime_name: tooltip + truncation', () => {
+  it('renders long anime_name inside el-tooltip with matching content prop', async () => {
+    isAdminRef.value = true
+    userRef.value = { id: 'admin-1', username: 'alice', avatar_url: null, role: 'admin' }
+
+    const longName = 'Super Long Bangumi Name That Exceeds Fifty Characters For Truncation Test'
+    expect(longName.length).toBeGreaterThan(50)
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 1001, owner_id: 'admin-1', owner_username: 'alice', anime_name: longName }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    // The el-tooltip stub renders as `.el-tooltip` with data-content attribute.
+    const tooltip = wrapper.find('.el-tooltip[data-content]')
+    expect(tooltip.exists()).toBe(true)
+    expect(tooltip.attributes('data-content')).toBe(longName)
+  })
+
+  it('renders anime_name text inside ag-truncate span within the tooltip', async () => {
+    isAdminRef.value = false
+    userRef.value = { id: 'dl-2', username: 'bob', avatar_url: null, role: 'downloader' }
+
+    const longName = 'Super Long Anime Name That Should Be Truncated In The Table Cell Display'
+    expect(longName.length).toBeGreaterThan(50)
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 2001, owner_id: 'dl-2', owner_username: 'bob', anime_name: longName }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const truncateSpan = wrapper.find('.ag-truncate')
+    expect(truncateSpan.exists()).toBe(true)
+    expect(truncateSpan.text()).toBe(longName)
+  })
+
+  it('does NOT render tooltip or ag-truncate span when anime_name is null', async () => {
+    isAdminRef.value = false
+    userRef.value = { id: 'dl-2', username: 'bob', avatar_url: null, role: 'downloader' }
+
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 2001, owner_id: 'dl-2', owner_username: 'bob', anime_name: null }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('.ag-truncate').exists()).toBe(false)
+    // The muted placeholder should show instead.
+    expect(wrapper.find('.ag-muted').exists()).toBe(true)
+  })
+})
