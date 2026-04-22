@@ -96,7 +96,13 @@ async function confirmCancel(): Promise<void> {
     :style="{ borderLeftColor: borderColor }"
   >
     <div class="task-card__header">
-      <span class="task-card__title">{{ title }}</span>
+      <el-tooltip
+        :content="title"
+        placement="top"
+        :show-after="300"
+      >
+        <span class="task-card__title">{{ title }}</span>
+      </el-tooltip>
       <span
         v-if="task.resolution"
         class="task-card__badge task-card__badge--resolution"

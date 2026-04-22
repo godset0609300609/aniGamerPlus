@@ -509,7 +509,14 @@ onMounted(load)
               min-width="180"
             >
               <template #default="{ row }">
-                <span v-if="row.anime_name">{{ row.anime_name }}</span>
+                <el-tooltip
+                  v-if="row.anime_name"
+                  :content="row.anime_name"
+                  placement="top"
+                  :show-after="300"
+                >
+                  <span class="ag-truncate">{{ row.anime_name }}</span>
+                </el-tooltip>
                 <span
                   v-else
                   class="ag-muted"
@@ -684,6 +691,14 @@ onMounted(load)
 }
 .ag-muted {
   color: #9ca3af;
+}
+.ag-truncate {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 .ag-episode {
   font-variant-numeric: tabular-nums;

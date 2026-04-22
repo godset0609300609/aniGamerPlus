@@ -340,3 +340,42 @@ describe('TaskCard — cancel button', () => {
     expect(cancelTaskMock).toHaveBeenCalledWith(99)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Truncation + tooltip on long bangumi names
+// ---------------------------------------------------------------------------
+
+describe('TaskCard — long bangumi_name: tooltip + truncation', () => {
+  it('renders title inside el-tooltip with content equal to the full formatted title', () => {
+    const longName = 'This Is An Extremely Long Bangumi Name That Should Trigger Truncation Effect'
+    expect(longName.length).toBeGreaterThan(50)
+
+    const wrapper = mountCard(makeTask({ bangumi_name: longName, episode: '5', filename: 'ep5.mp4' }))
+
+    // The el-tooltip stub exposes content via data-content attribute.
+    const tooltip = wrapper.find('.el-tooltip[data-content]')
+    expect(tooltip.exists()).toBe(true)
+    // The computed title wraps with 《》and appends the episode.
+    const expectedTitle = `《${longName}》 - EP 5`
+    expect(tooltip.attributes('data-content')).toBe(expectedTitle)
+  })
+
+  it('renders title text inside the task-card__title span (within tooltip)', () => {
+    const longName = 'Another Very Long Anime Series Name For Testing Ellipsis Truncation Behavior'
+    expect(longName.length).toBeGreaterThan(50)
+
+    const wrapper = mountCard(makeTask({ bangumi_name: longName, episode: undefined }))
+
+    const titleSpan = wrapper.find('.task-card__title')
+    expect(titleSpan.exists()).toBe(true)
+    expect(titleSpan.text()).toContain(longName)
+  })
+
+  it('tooltip content equals filename when bangumi_name is absent', () => {
+    const wrapper = mountCard(makeTask({ bangumi_name: undefined, filename: 'fallback-file.mp4' }))
+
+    const tooltip = wrapper.find('.el-tooltip[data-content]')
+    expect(tooltip.exists()).toBe(true)
+    expect(tooltip.attributes('data-content')).toBe('fallback-file.mp4')
+  })
+})
