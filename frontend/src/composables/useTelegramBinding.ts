@@ -16,6 +16,7 @@ export interface TelegramStatus {
   chat_id: number | null
   enabled: boolean
   link_pending: boolean
+  link_expires_in_seconds: number | null
 }
 
 export interface StartLinkResponse {
@@ -153,7 +154,17 @@ export function useTelegramBinding(options?: UseTelegramBindingOptions) {
       const data = await _apiFetch<TelegramStatus>('/api/profile/telegram/status')
       bound.value = data.bound
       notifyEnabled.value = data.enabled
-      linkPending.value = data.link_pending
+      if (data.link_pending && data.link_expires_in_seconds != null && data.link_expires_in_seconds > 0) {
+        linkPending.value = true
+        const expiresAt = nowFn() + data.link_expires_in_seconds * 1000
+        _startCountdown(expiresAt)
+        _startPolling()
+      } else {
+        // Not pending, already expired server-side, or missing expiry — clear pending state.
+        linkPending.value = false
+        _stopPoll()
+        _stopCountdown()
+      }
     } catch (e) {
       error.value = (e as Error).message
     } finally {

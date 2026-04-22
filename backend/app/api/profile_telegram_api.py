@@ -61,6 +61,23 @@ def _token_is_expired(expires_at: datetime.datetime | None) -> bool:
     return now >= expires_at
 
 
+def _seconds_until(expires_at: datetime.datetime | None) -> int | None:
+    """Return seconds remaining until *expires_at*, or None if expired/absent.
+
+    Normalises naive UTC datetimes (as stored by SQLite) to aware before
+    computing the delta, using the same convention as :func:`_token_is_expired`.
+    """
+    if expires_at is None:
+        return None
+    now = datetime.datetime.now(datetime.UTC)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=datetime.UTC)
+    remaining = (expires_at - now).total_seconds()
+    if remaining <= 0:
+        return None
+    return max(0, int(remaining))
+
+
 # ---------------------------------------------------------------------------
 # Request / response schemas
 # ---------------------------------------------------------------------------
@@ -164,11 +181,13 @@ async def status(
 
     bound = user.telegram_chat_id is not None
     link_pending = user.telegram_link_token is not None and not _token_is_expired(user.telegram_link_token_expires_at)
+    link_expires_in_seconds: int | None = _seconds_until(user.telegram_link_token_expires_at) if link_pending else None
     return {
         'bound': bound,
         'chat_id': user.telegram_chat_id,
         'enabled': user.telegram_notify_enabled,
         'link_pending': link_pending,
+        'link_expires_in_seconds': link_expires_in_seconds,
     }
 
 
