@@ -638,16 +638,6 @@ onUnmounted(() => {
               </el-form-item>
             </el-col>
             <el-col :md="8">
-              <el-form-item label="允許本機（開發）">
-                <el-tooltip
-                  content="僅限開發環境使用，正式環境請關閉"
-                  placement="top"
-                >
-                  <el-switch v-model="settings.telegram.allow_localhost" />
-                </el-tooltip>
-              </el-form-item>
-            </el-col>
-            <el-col :md="8">
               <el-form-item label="速率限制（/分鐘）">
                 <el-input-number
                   v-model="settings.telegram.rate_limit_per_minute"

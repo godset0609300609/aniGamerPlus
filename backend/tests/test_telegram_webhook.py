@@ -1,8 +1,6 @@
 """Tests for the Telegram webhook receiver endpoint.
 
 Covers:
-- IP allowlist (localhost with allow_localhost=False/True, Telegram CIDR, random public IP)
-- X-Forwarded-For header parsing
 - Path secret verification
 - Header secret verification
 - Valid message update returns 200 {"ok": True}
@@ -57,7 +55,6 @@ def _make_app(
     *,
     bot_token: str = 'TOKEN',
     webhook_secret: str = _SECRET,
-    allow_localhost: bool = True,
 ) -> fastapi.FastAPI:
     """Build a minimal FastAPI app with the webhook router + overridden settings."""
     from app.api.telegram_webhook import _get_dispatcher, _get_rate_limiter
@@ -68,7 +65,6 @@ def _make_app(
     tg = TelegramSettings(
         bot_token=bot_token,
         webhook_secret=webhook_secret,
-        allow_localhost=allow_localhost,
     )
     settings = AppSettings(telegram=tg)
 
@@ -82,10 +78,9 @@ def _make_app(
 
 def _client(
     *,
-    allow_localhost: bool = True,
     webhook_secret: str = _SECRET,
 ) -> fastapi.testclient.TestClient:
-    return fastapi.testclient.TestClient(_make_app(allow_localhost=allow_localhost, webhook_secret=webhook_secret))
+    return fastapi.testclient.TestClient(_make_app(webhook_secret=webhook_secret))
 
 
 def _post(
@@ -94,14 +89,9 @@ def _post(
     *,
     path_secret: str = _SECRET,
     header_secret: str = _SECRET,
-    client_ip: str = '127.0.0.1',
     extra_headers: dict[str, str] | None = None,
 ) -> T.Any:
-    # Default client_ip is 127.0.0.1 (works when allow_localhost=True).
-    # Tests that need a specific IP override via client_ip; set to '' to omit.
     headers: dict[str, str] = {'X-Telegram-Bot-Api-Secret-Token': header_secret}
-    if client_ip:
-        headers['X-Real-IP'] = client_ip
     if extra_headers:
         headers.update(extra_headers)
     return tc.post(
@@ -109,77 +99,6 @@ def _post(
         json=body,
         headers=headers,
     )
-
-
-# ---------------------------------------------------------------------------
-# IP allowlist tests
-# ---------------------------------------------------------------------------
-
-
-def test_localhost_rejected_when_allow_localhost_false() -> None:
-    tc = _client(allow_localhost=False)
-    resp = _post(tc, client_ip='127.0.0.1')
-    assert resp.status_code == 403
-    assert resp.json()['detail'] == 'forbidden'
-
-
-def test_localhost_accepted_when_allow_localhost_true() -> None:
-    tc = _client(allow_localhost=True)
-    resp = _post(tc, client_ip='127.0.0.1')
-    assert resp.status_code == 200
-
-
-def test_telegram_cidr_ip_accepted() -> None:
-    """IP from Telegram's 149.154.160.0/20 range should be accepted."""
-    tc = _client(allow_localhost=False)
-    resp = _post(tc, client_ip='149.154.160.5')
-    assert resp.status_code == 200
-
-
-def test_second_telegram_cidr_range_accepted() -> None:
-    """IP from Telegram's 91.108.4.0/22 range should be accepted."""
-    tc = _client(allow_localhost=False)
-    resp = _post(tc, client_ip='91.108.4.1')
-    assert resp.status_code == 200
-
-
-def test_random_public_ip_rejected() -> None:
-    """Google's DNS IP 8.8.8.8 is not in Telegram's CIDRs."""
-    tc = _client(allow_localhost=False)
-    resp = _post(tc, client_ip='8.8.8.8')
-    assert resp.status_code == 403
-    assert resp.json()['detail'] == 'forbidden'
-
-
-def test_x_forwarded_for_first_element_used() -> None:
-    """XFF first element = Telegram CIDR → accepted (no X-Real-IP header).
-
-    The first entry in X-Forwarded-For is the original client IP set by the
-    edge proxy (trustworthy). Later entries are added by intermediate proxies.
-    """
-    tc = _client(allow_localhost=False)
-    # Omit X-Real-IP so XFF is the fallback; first entry is in Telegram's CIDR.
-    resp = _post(tc, client_ip='', extra_headers={'X-Forwarded-For': '149.154.160.5, 10.0.0.1, 172.16.0.1'})
-    assert resp.status_code == 200
-
-
-def test_x_forwarded_for_first_element_not_telegram_rejected() -> None:
-    """XFF first element non-Telegram → rejected even when later entries are Telegram IPs."""
-    tc = _client(allow_localhost=False)
-    resp = _post(tc, client_ip='', extra_headers={'X-Forwarded-For': '10.0.0.1, 149.154.160.5'})
-    assert resp.status_code == 403
-
-
-def test_x_real_ip_takes_precedence_over_xff() -> None:
-    """X-Real-IP shadows X-Forwarded-For."""
-    tc = _client(allow_localhost=False)
-    # client_ip sets X-Real-IP to a non-Telegram IP; XFF has a Telegram IP.
-    resp = _post(
-        tc,
-        client_ip='8.8.8.8',
-        extra_headers={'X-Forwarded-For': '149.154.160.5'},
-    )
-    assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +152,6 @@ def test_malformed_json_returns_422() -> None:
         headers={
             'Content-Type': 'application/json',
             'X-Telegram-Bot-Api-Secret-Token': _SECRET,
-            'X-Real-IP': '127.0.0.1',  # pass IP check (allow_localhost=True)
         },
     )
     assert resp.status_code == 422
@@ -342,7 +260,6 @@ def _make_app_with_overrides(
     tg = TelegramSettings(
         bot_token='TOKEN',
         webhook_secret=_SECRET,
-        allow_localhost=True,
     )
     settings = AppSettings(telegram=tg)
 
@@ -390,7 +307,7 @@ def test_unbound_user_gets_bind_hint_not_dispatcher() -> None:
     resp = tc.post(
         _WEBHOOK_PATH,
         json=_cmd_msg('/download 48430'),
-        headers={'X-Telegram-Bot-Api-Secret-Token': _SECRET, 'X-Real-IP': '127.0.0.1'},
+        headers={'X-Telegram-Bot-Api-Secret-Token': _SECRET},
     )
     assert resp.status_code == 200
     dispatcher.dispatch.assert_not_called()
@@ -421,7 +338,7 @@ def test_bound_user_over_rate_limit_gets_retry_hint() -> None:
     resp = tc.post(
         _WEBHOOK_PATH,
         json=_cmd_msg('/download 48430'),
-        headers={'X-Telegram-Bot-Api-Secret-Token': _SECRET, 'X-Real-IP': '127.0.0.1'},
+        headers={'X-Telegram-Bot-Api-Secret-Token': _SECRET},
     )
     assert resp.status_code == 200
     dispatcher.dispatch.assert_not_called()
@@ -445,7 +362,7 @@ def test_bound_user_under_rate_limit_dispatches_unknown_command() -> None:
     resp = tc.post(
         _WEBHOOK_PATH,
         json=_cmd_msg('/unknown_command_for_test'),
-        headers={'X-Telegram-Bot-Api-Secret-Token': _SECRET, 'X-Real-IP': '127.0.0.1'},
+        headers={'X-Telegram-Bot-Api-Secret-Token': _SECRET},
     )
     assert resp.status_code == 200
     dispatcher.dispatch.assert_awaited_once()

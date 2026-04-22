@@ -136,7 +136,6 @@ function defaultSettings() {
       notify_on: ['completed', 'failed', 'cancelled'],
       admin_broadcast: true,
       rate_limit_per_minute: 30,
-      allow_localhost: false,
     },
   }
 }

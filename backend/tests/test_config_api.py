@@ -143,7 +143,6 @@ def test_get_config_includes_telegram_subobject(
         'notify_on',
         'admin_broadcast',
         'rate_limit_per_minute',
-        'allow_localhost',
     ):
         assert field in tg, f'telegram.{field} missing from GET /config response'
 
@@ -188,7 +187,6 @@ def test_put_config_telegram_round_trips(
             'notify_on': ['completed'],
             'admin_broadcast': False,
             'rate_limit_per_minute': 60,
-            'allow_localhost': True,
         },
     }
 
@@ -204,7 +202,6 @@ def test_put_config_telegram_round_trips(
     assert persisted.telegram.notify_on == ['completed']
     assert persisted.telegram.admin_broadcast is False
     assert persisted.telegram.rate_limit_per_minute == 60
-    assert persisted.telegram.allow_localhost is True
 
 
 def test_put_config_rejects_invalid_resolution(

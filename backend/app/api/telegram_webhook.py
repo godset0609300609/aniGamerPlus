@@ -3,17 +3,14 @@
 FastAPI router mounted at ``/api/webhooks/telegram``.
 
 Verification order (each failure → 403 ``{"detail": "forbidden"}``):
-1. IP allowlist — Telegram's published CIDR ranges only (or localhost when
-   ``settings.telegram.allow_localhost`` is True).
-2. Path secret — constant-time compare against ``settings.telegram.webhook_secret``.
-3. Header secret — ``X-Telegram-Bot-Api-Secret-Token`` constant-time compare.
+1. Path secret — constant-time compare against ``settings.telegram.webhook_secret``.
+2. Header secret — ``X-Telegram-Bot-Api-Secret-Token`` constant-time compare.
 """
 
 from __future__ import annotations
 
 import datetime
 import hmac
-import ipaddress
 import logging
 import re
 import typing as T
@@ -59,14 +56,6 @@ _get_rate_limiter: T.Callable[[], TelegramRateLimiter | None] = container_bound(
 _START_RE = re.compile(r'^/start (?P<token>[A-Za-z0-9_-]+)$')
 
 _log = logging.getLogger(__name__)
-
-# Telegram's published IP ranges (https://core.telegram.org/bots/webhooks#the-short-version)
-_TELEGRAM_CIDRS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
-    ipaddress.ip_network('149.154.160.0/20'),
-    ipaddress.ip_network('91.108.4.0/22'),
-)
-
-_LOCALHOST: ipaddress.IPv4Network | ipaddress.IPv6Network = ipaddress.ip_network('127.0.0.1/32')
 
 # ---------------------------------------------------------------------------
 # Telegram Update pydantic models
@@ -115,28 +104,6 @@ class TelegramUpdate(pydantic.BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _client_ip(request: fastapi.Request) -> str:
-    """Return the real client IP, preferring X-Real-IP set by nginx."""
-    xri = request.headers.get('X-Real-IP')
-    if xri:
-        return xri.strip()
-    xff = request.headers.get('X-Forwarded-For')
-    if xff:
-        return xff.split(',')[0].strip()
-    return request.client.host if request.client else ''
-
-
-def _ip_allowed(ip_str: str, *, allow_localhost: bool) -> bool:
-    """Return True if ``ip_str`` is in Telegram's CIDRs (or localhost when allowed)."""
-    try:
-        addr = ipaddress.ip_address(ip_str)
-    except ValueError:
-        return False
-    if allow_localhost and addr in _LOCALHOST:
-        return True
-    return any(addr in net for net in _TELEGRAM_CIDRS)
 
 
 def _update_type(update: TelegramUpdate) -> str:
@@ -254,27 +221,29 @@ async def receive(
 ) -> dict[str, bool]:
     """Receive a Telegram Update.
 
-    Verifies IP allowlist, path secret, and header secret before processing.
+    Verifies path secret and header secret before processing.
     Handles ``/start <token>`` binding flow and bound-user commands.
     """
+    # Request authentication relies on two secret checks:
+    # 1. Path-segment secret must equal settings.telegram.webhook_secret
+    # 2. X-Telegram-Bot-Api-Secret-Token header must match the same
+    # Telegram's official docs (https://core.telegram.org/bots/api#setwebhook)
+    # support secret_token as the recommended defence. We intentionally do
+    # NOT enforce a Telegram-CIDR IP allowlist: it's incompatible with common
+    # deployments (docker bridge, Cloudflare, reverse proxy without X-Real-IP)
+    # and the secret provides equivalent authenticity guarantees.
     tg = settings.telegram
 
-    # 1. IP allowlist
-    client_ip = _client_ip(request)
-    if not _ip_allowed(client_ip, allow_localhost=tg.allow_localhost):
-        _log.warning('Telegram webhook: rejected request from disallowed IP %s', client_ip)
-        raise fastapi.HTTPException(status_code=403, detail='forbidden')
-
-    # 2. Path secret
+    # 1. Path secret
     expected = tg.webhook_secret
     if not expected or not hmac.compare_digest(secret.encode(), expected.encode()):
-        _log.warning('Telegram webhook: path secret mismatch from IP %s', client_ip)
+        _log.warning('Telegram webhook: path secret mismatch')
         raise fastapi.HTTPException(status_code=403, detail='forbidden')
 
-    # 3. Header secret
+    # 2. Header secret
     header_secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token', '')
     if not hmac.compare_digest(header_secret.encode(), expected.encode()):
-        _log.warning('Telegram webhook: header secret mismatch from IP %s', client_ip)
+        _log.warning('Telegram webhook: header secret mismatch')
         raise fastapi.HTTPException(status_code=403, detail='forbidden')
 
     # All checks passed — dispatch update.
