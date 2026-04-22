@@ -202,6 +202,13 @@ describe('SettingsView Admin Telegram Bot section — visibility', () => {
 // ---------------------------------------------------------------------------
 
 describe('SettingsView Admin Telegram Bot section — register webhook', () => {
+  beforeEach(() => {
+    // Enable telegram so action buttons are not disabled
+    mockLoad.mockResolvedValue(
+      JSON.parse(JSON.stringify({ ...BASE_SETTINGS, telegram: { ...BASE_SETTINGS.telegram, enabled: true } })),
+    )
+  })
+
   it('clicking "重新註冊 Webhook" calls registerWebhook and shows success', async () => {
     const wrapper = mountView()
     await flushPromises()
@@ -238,6 +245,13 @@ describe('SettingsView Admin Telegram Bot section — register webhook', () => {
 // ---------------------------------------------------------------------------
 
 describe('SettingsView Admin Telegram Bot section — verify bot token', () => {
+  beforeEach(() => {
+    // Enable telegram so the verify button is not disabled
+    mockLoad.mockResolvedValue(
+      JSON.parse(JSON.stringify({ ...BASE_SETTINGS, telegram: { ...BASE_SETTINGS.telegram, enabled: true } })),
+    )
+  })
+
   it('clicking "驗證 Bot Token" calls getBotMe and renders username', async () => {
     const wrapper = mountView()
     await flushPromises()
@@ -275,6 +289,13 @@ describe('SettingsView Admin Telegram Bot section — verify bot token', () => {
 // ---------------------------------------------------------------------------
 
 describe('SettingsView Admin Telegram Bot section — webhook status dialog', () => {
+  beforeEach(() => {
+    // Enable telegram so the status button is not disabled
+    mockLoad.mockResolvedValue(
+      JSON.parse(JSON.stringify({ ...BASE_SETTINGS, telegram: { ...BASE_SETTINGS.telegram, enabled: true } })),
+    )
+  })
+
   it('clicking "查看 Webhook 狀態" calls getWebhookInfo and opens dialog', async () => {
     const wrapper = mountView()
     await flushPromises()

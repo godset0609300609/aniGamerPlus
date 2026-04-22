@@ -50,8 +50,8 @@ vi.mock('@/api/config', () => ({
       parse_sn_cd: 5,
       parse_cd: 3,
       telegram: {
-        enabled: false,
-        bot_token: '',
+        enabled: true,
+        bot_token: 'fake-token',
         webhook_secret: '',
         public_url: '',
         notify_on: ['completed', 'failed', 'cancelled'],
