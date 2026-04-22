@@ -304,3 +304,34 @@ def test_cookie_status_returns_configured_false(
     r = client.get('/api/config/cookie/status')
     assert r.status_code == 200
     assert r.json() == {'configured': False}
+
+
+# ---------------------------------------------------------------------------
+# Non-admin read access (Issue 1 backend requirement)
+# ---------------------------------------------------------------------------
+
+
+def test_get_config_accessible_by_downloader(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """GET /api/config must succeed for any authenticated user (not admin-gated).
+
+    Non-admin users need telegram.enabled from this endpoint to gate the
+    binding UI.  Route uses require_any_user, so downloader role → 200.
+    """
+    downloader_client = _make_downloader_client(client)
+    r = downloader_client.get('/api/config')
+    assert r.status_code == 200
+    body = r.json()
+    # Basic shape check: telegram subobject must be present.
+    assert 'telegram' in body
+    assert 'enabled' in body['telegram']
+
+
+def test_put_config_rejects_downloader(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """PUT /api/config is still admin-only — downloader gets 403."""
+    downloader_client = _make_downloader_client(client)
+    r = downloader_client.put('/api/config', json={})
+    assert r.status_code == 403

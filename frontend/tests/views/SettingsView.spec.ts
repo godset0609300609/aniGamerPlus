@@ -282,7 +282,7 @@ describe('SettingsView — cookie submit', () => {
 // ---------------------------------------------------------------------------
 
 describe('SettingsView — downloader role restrictions', () => {
-  it('disables the cookie input for a downloader user', async () => {
+  it('non-admin does NOT see the cookie section', async () => {
     isAdminRef.value = false
     const wrapper = mountView()
     await flushPromises()
@@ -291,19 +291,17 @@ describe('SettingsView — downloader role restrictions', () => {
     const cookieInput = inputs.find(
       (i) => i.attributes('placeholder') === '貼上完整 cookie 字串',
     )
-    expect(cookieInput).toBeDefined()
-    expect(cookieInput!.attributes('disabled')).toBeDefined()
+    expect(cookieInput).toBeUndefined()
   })
 
-  it('disables the save button for a downloader user', async () => {
+  it('non-admin does NOT see the save button (cookie)', async () => {
     isAdminRef.value = false
     const wrapper = mountView()
     await flushPromises()
 
     const buttons = wrapper.findAll('button')
     const saveBtn = buttons.find((b) => b.text().includes('儲存'))
-    expect(saveBtn).toBeDefined()
-    expect(saveBtn!.attributes('disabled')).toBeDefined()
+    expect(saveBtn).toBeUndefined()
   })
 })
 
