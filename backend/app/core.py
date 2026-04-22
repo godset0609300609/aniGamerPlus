@@ -301,14 +301,22 @@ def build_container() -> Container:
         )
         event_sink = _DownloadEventSink(_notifier)
 
-        telegram_rate_limiter = _TelegramRateLimiter(settings.telegram.rate_limit_per_minute)
+        def _rate_limit_provider() -> int:
+            return settings_repo.load().telegram.rate_limit_per_minute
+
+        telegram_rate_limiter = _TelegramRateLimiter(_rate_limit_provider)
+
+        from .services.telegram_client_cache import resolve_telegram_client as _resolve_client
+
+        def _client_provider() -> _TelegramClient | None:
+            return _resolve_client(settings_repo.load().telegram.bot_token)
 
         _animelist_svc = _AnimeListService(sn_list_repo, anime_repo, anime_list_entry_repo, user_repo)
         _progress_svc = _ProgressService(progress_bus, user_repo, scheduler_proxy)
         _task_svc = _TaskService(settings_repo, manual_runner, scheduler_proxy, _progress_svc)
 
         telegram_command_dispatcher = _TelegramCommandDispatcher(
-            client=telegram_client,
+            client_provider=_client_provider,
             user_repo=user_repo,
             animelist_service=_animelist_svc,
             task_service=_task_svc,

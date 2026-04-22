@@ -151,12 +151,23 @@ def test_random_public_ip_rejected() -> None:
     assert resp.json()['detail'] == 'forbidden'
 
 
-def test_x_forwarded_for_last_element_used() -> None:
-    """XFF last element = Telegram CIDR → accepted (no X-Real-IP header)."""
+def test_x_forwarded_for_first_element_used() -> None:
+    """XFF first element = Telegram CIDR → accepted (no X-Real-IP header).
+
+    The first entry in X-Forwarded-For is the original client IP set by the
+    edge proxy (trustworthy). Later entries are added by intermediate proxies.
+    """
     tc = _client(allow_localhost=False)
-    # Omit X-Real-IP so XFF is the fallback; last entry is in Telegram's CIDR.
-    resp = _post(tc, client_ip='', extra_headers={'X-Forwarded-For': '10.0.0.1, 149.154.160.5'})
+    # Omit X-Real-IP so XFF is the fallback; first entry is in Telegram's CIDR.
+    resp = _post(tc, client_ip='', extra_headers={'X-Forwarded-For': '149.154.160.5, 10.0.0.1, 172.16.0.1'})
     assert resp.status_code == 200
+
+
+def test_x_forwarded_for_first_element_not_telegram_rejected() -> None:
+    """XFF first element non-Telegram → rejected even when later entries are Telegram IPs."""
+    tc = _client(allow_localhost=False)
+    resp = _post(tc, client_ip='', extra_headers={'X-Forwarded-For': '10.0.0.1, 149.154.160.5'})
+    assert resp.status_code == 403
 
 
 def test_x_real_ip_takes_precedence_over_xff() -> None:
@@ -372,7 +383,7 @@ def test_unbound_user_gets_bind_hint_not_dispatcher() -> None:
     app = _make_app_with_overrides(
         user_repo=repo,
         dispatcher=dispatcher,
-        rate_limiter=TelegramRateLimiter(30),
+        rate_limiter=TelegramRateLimiter(max_provider=lambda: 30),
         telegram_client=tg_client,
     )
     tc = fastapi.testclient.TestClient(app)
@@ -393,8 +404,9 @@ def test_bound_user_over_rate_limit_gets_retry_hint() -> None:
     repo = _make_user_repo_mock(bound=True)
     dispatcher = _make_dispatcher_mock()
 
-    # Rate limiter already exhausted
-    rl = TelegramRateLimiter(max_per_minute=0)  # 0 = always deny
+    # Rate limiter already exhausted: allow 1 then pre-exhaust it
+    rl = TelegramRateLimiter(max_provider=lambda: 1)
+    rl.allow('user-1')  # exhaust the single slot
 
     tg_client = MagicMock()
     tg_client.send_message = AsyncMock(return_value={})
@@ -422,7 +434,7 @@ def test_bound_user_under_rate_limit_dispatches_unknown_command() -> None:
     """Bound user under rate limit, unknown command → dispatcher is called."""
     repo = _make_user_repo_mock(bound=True)
     dispatcher = _make_dispatcher_mock()
-    rl = TelegramRateLimiter(max_per_minute=30)
+    rl = TelegramRateLimiter(max_provider=lambda: 30)
 
     app = _make_app_with_overrides(
         user_repo=repo,

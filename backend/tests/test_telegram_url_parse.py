@@ -63,11 +63,11 @@ def _make_dispatcher(
     user_repo = MagicMock()
     user_repo.list_all = MagicMock(return_value=[])
 
-    rate_limiter = TelegramRateLimiter(max_per_minute=100)
+    rate_limiter = TelegramRateLimiter(max_provider=lambda: 100)
     logger = logging.getLogger('test_telegram_url_parse')
 
     dispatcher = TelegramCommandDispatcher(
-        client=client,
+        client_provider=lambda: client,
         user_repo=user_repo,
         animelist_service=animelist_service,
         task_service=task_service,
