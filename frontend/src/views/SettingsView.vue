@@ -189,6 +189,12 @@ async function handleRegisterWebhook(): Promise<void> {
   try {
     const result = await registerWebhook()
     ElMessage.success(`Webhook 已註冊: ${result.url}`)
+    ElMessage({
+      message:
+        'Webhook 已註冊。若剛才變更過 bot token，建議重新啟動 scheduler 以讓通知使用新 token。',
+      type: 'info',
+      duration: 6000,
+    })
   } catch (err) {
     ElMessage.error(`註冊失敗: ${(err as Error).message}`)
   } finally {

@@ -31,13 +31,23 @@ from ..services.telegram_client import (
     TelegramClient,
     escape_markdown_v2,
 )
+from ..services.telegram_client_cache import resolve_telegram_client
 from ..services.telegram_commands import TelegramCommandDispatcher
 from ..services.telegram_rate_limiter import TelegramRateLimiter
 from .deps import get_settings
 
-_get_telegram_client: T.Callable[[], TelegramClient | None] = container_bound(
-    lambda c: getattr(c, 'telegram_client', None)
-)
+
+def _get_telegram_client(
+    settings: T.Annotated[AppSettings, fastapi.Depends(get_settings)],
+) -> TelegramClient | None:
+    """Resolve a TelegramClient from the CURRENT settings.telegram.bot_token.
+
+    Uses the module-level singleton cache so token rotations take effect
+    without restarting the API process.
+    """
+    return resolve_telegram_client(settings.telegram.bot_token)
+
+
 _get_user_repo: T.Callable[[], UserRepository] = container_bound(lambda c: c.user_repo)
 _get_dispatcher: T.Callable[[], TelegramCommandDispatcher | None] = container_bound(
     lambda c: getattr(c, 'telegram_command_dispatcher', None)

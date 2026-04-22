@@ -9,6 +9,13 @@ Errors:
   user's telegram_chat_id in the repo and log. The user must re-bind.
 - Any other error → log WARN + swallow. Never let a notification
   failure kill a download or abort the scheduler loop.
+
+SCHEDULER-RESTART NOTE: This notifier receives its TelegramClient from
+the container, which is built once at process startup (build_container).
+If the admin rotates the bot token via the Settings UI, this notifier
+continues using the old token until the scheduler process is restarted.
+Run ``docker compose restart scheduler`` (or the equivalent) after
+rotating the token so download-event DMs go through the new bot account.
 """
 
 from __future__ import annotations
