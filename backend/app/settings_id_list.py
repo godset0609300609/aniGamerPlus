@@ -32,4 +32,5 @@ WEB_SETTINGS_KEYS: list[str] = [
     'download_cd',
     'parse_sn_cd',
     'parse_cd',
+    'telegram',
 ]

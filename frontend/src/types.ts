@@ -32,6 +32,7 @@ export interface WebSettings {
   download_cd: number
   parse_sn_cd: number
   parse_cd: number
+  telegram: TelegramSettings
 }
 
 export interface ProxyParts {

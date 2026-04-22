@@ -128,6 +128,16 @@ function defaultSettings() {
     download_cd: 60,
     parse_sn_cd: 5,
     parse_cd: 3,
+    telegram: {
+      enabled: false,
+      bot_token: '',
+      webhook_secret: '',
+      public_url: '',
+      notify_on: ['completed', 'failed', 'cancelled'],
+      admin_broadcast: true,
+      rate_limit_per_minute: 30,
+      allow_localhost: false,
+    },
   }
 }
 

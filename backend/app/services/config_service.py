@@ -8,7 +8,7 @@ import typing as T
 
 import anyio.to_thread
 
-from ..models import WebSettings
+from ..models import AppSettings, WebSettings
 from ..settings_id_list import WEB_SETTINGS_KEYS
 from ._factory import container_bound
 
@@ -58,15 +58,18 @@ class ConfigService:
             incoming = settings.model_dump(by_alias=False)
 
             # Only the intersection of the payload and ``WebSettings``' field
-            # set is trusted; extra keys in the payload are dropped. We copy
-            # the current settings and mutate field-by-field so nested models
-            # are untouched.
+            # set is trusted; extra keys in the payload are dropped.
+            # We merge onto the full AppSettings dict so nested models are
+            # re-validated by AppSettings.model_validate — this preserves
+            # every non-web key while correctly coercing nested sub-models
+            # (e.g. telegram) from dicts to their typed pydantic instances.
             allowed_fields = set(WebSettings.model_fields.keys())
-            updated = current.model_copy(deep=True)
+            current_blob = current.model_dump(by_alias=False)
             for field_name in allowed_fields:
                 if field_name in incoming:
-                    setattr(updated, field_name, incoming[field_name])
+                    current_blob[field_name] = incoming[field_name]
 
+            updated = AppSettings.model_validate(current_blob)
             self._repo.save(updated)
 
         await anyio.to_thread.run_sync(_do_write)
