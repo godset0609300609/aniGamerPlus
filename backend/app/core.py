@@ -131,6 +131,7 @@ class Container:
             settings_provider=self.settings_repo.load,
             logger=self.logger,
             event_sink=self.event_sink,
+            anime_list_repo=self.anime_list_entry_repo,
         )
 
     def build_update_loop(self, watchdog: SchedulerWatchdog | None = None) -> UpdateLoop:
