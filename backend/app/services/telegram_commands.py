@@ -20,6 +20,7 @@ from .telegram_client import TelegramClient, escape_markdown_v2
 from .telegram_rate_limiter import TelegramRateLimiter
 
 if T.TYPE_CHECKING:
+    from ..downloader.metadata import MetadataExtractor
     from ..logging_ import Logger
     from ..persistence.user_repo import UserRepository
     from .animelist_service import AnimeListService
@@ -30,7 +31,10 @@ _HELP_TEXT = (
     '*可用指令*\n'
     '\n'
     '/download `<sn>` \\[解析度\\] — 立即下載單集\n'
-    '/watch `<sn>` \\[自訂名稱\\] — 加入追番清單\n'
+    '/watch `<sn>` \\[選項\\] — 加入追番清單\n'
+    '　　選項：`tag=系列名` `season=2` `mode=largest` `name=自訂名`\n'
+    '　　例：`/watch 48613 tag=進擊系列 season=2 name=我的名字`\n'
+    '　　名稱含空格請用底線代替（e\\.g\\. `name=我的_名字`）\n'
     '/unwatch `<sn>` — 從追番清單移除\n'
     '/list — 查看你的追番清單\n'
     '/status — 查看你的任務狀態\n'
@@ -74,6 +78,60 @@ def _inline_keyboard(*rows: list[dict[str, str]]) -> dict[str, object]:
     return {'inline_keyboard': list(rows)}
 
 
+_WATCH_VALID_KWARGS = frozenset({'tag', 'season', 'mode', 'name'})
+
+
+def _parse_watch_args(
+    args: list[str],
+) -> tuple[str | None, str, int, str | None, str | None] | str:
+    """Parse args after the sn token for /watch.
+
+    Returns either a tuple ``(custom_name, tag, season, mode, name_kwarg)``
+    or a string error message to send back to the user.
+
+    Rules:
+    - If the first token (after sn) has no ``=``, treat ALL remaining tokens as
+      a legacy positional custom_name (backwards compat).
+    - Otherwise parse each token as ``key=value``.
+    - Unknown keys → return error string.
+    - Invalid int for season → return error string.
+    """
+    if not args:
+        return (None, '', 1, None, None)
+
+    # Backwards compat: first extra token has no '='
+    if '=' not in args[0]:
+        positional_name = ' '.join(args)
+        return (positional_name, '', 1, None, None)
+
+    # Kwarg mode
+    tag: str = ''
+    season: int = 1
+    mode: str | None = None
+    name_kwarg: str | None = None
+
+    for token in args:
+        if '=' not in token:
+            # Mixed ambiguous: positional token after kwargs → reject
+            return f'⚠️ 無法解析參數 "{token}"，請使用 key=value 格式（tag / season / mode / name）'
+        key, _, value = token.partition('=')
+        if key not in _WATCH_VALID_KWARGS:
+            return f'⚠️ 未知選項：{key}，可用選項：tag / season / mode / name'
+        if key == 'tag':
+            tag = value
+        elif key == 'season':
+            try:
+                season = int(value)
+            except ValueError:
+                return '⚠️ season 必須是整數'
+        elif key == 'mode':
+            mode = value
+        elif key == 'name':
+            name_kwarg = value
+
+    return (None, tag, season, mode, name_kwarg)
+
+
 class TelegramCommandDispatcher:
     """Parses a command string and calls the matching service method."""
 
@@ -87,6 +145,7 @@ class TelegramCommandDispatcher:
         progress_service: ProgressService,
         rate_limiter: TelegramRateLimiter,
         logger: Logger,
+        metadata_extractor: MetadataExtractor | None = None,
     ) -> None:
         self._client_provider = client_provider
         self._user_repo = user_repo
@@ -94,6 +153,7 @@ class TelegramCommandDispatcher:
         self._task_service = task_service
         self._progress_service = progress_service
         self._rate_limiter = rate_limiter
+        self._metadata_extractor = metadata_extractor
         self._log = logging.getLogger(__name__)
 
     @property
@@ -428,7 +488,10 @@ class TelegramCommandDispatcher:
 
     async def _cmd_watch(self, chat_id: int, user: UserRow, args: list[str]) -> None:
         if not args:
-            await self._send(chat_id, escape_markdown_v2('用法：/watch <sn> [自訂名稱]'))
+            await self._send(
+                chat_id,
+                escape_markdown_v2('用法：/watch <sn> [tag=系列 season=1 mode=single name=自訂名]'),
+            )
             return
         try:
             sn = int(args[0])
@@ -436,27 +499,38 @@ class TelegramCommandDispatcher:
             await self._send(chat_id, escape_markdown_v2(f'❌ SN 必須是整數，收到：{args[0]}'))
             return
 
-        custom_name: str | None = ' '.join(args[1:]) if len(args) > 1 else None
+        # Parse kwargs / positional args after sn
+        parse_result = _parse_watch_args(args[1:])
+        if isinstance(parse_result, str):
+            await self._send(chat_id, escape_markdown_v2(parse_result))
+            return
+        positional_name, tag, season, mode, name_kwarg = parse_result
+        # kwargs name= takes priority; fall back to positional
+        custom_name: str | None = name_kwarg if name_kwarg is not None else positional_name
 
-        # Fetch metadata to resolve bangumi_name (sync call via run_sync)
+        # Resolve bangumi_name: fast-path cache → network fetch → placeholder
         bangumi_name: str | None = None
+        name_warning: str | None = None
         try:
-            # Try anime_repo then metadata_extractor
             existing_entries = await self._animelist_service.list_entries(user)
             for e in existing_entries:
                 if e.sn == sn and e.anime_name:
                     bangumi_name = e.anime_name
                     break
-
-            if bangumi_name is None:
-                # Try the anime_repo for a previously-downloaded episode's name
-                bangumi_name = await self._resolve_bangumi_name(sn)
-
         except Exception:  # noqa: BLE001
             pass
 
+        if bangumi_name is None and self._metadata_extractor is not None:
+            try:
+                metadata = await anyio.to_thread.run_sync(
+                    lambda: self._metadata_extractor.fetch(sn),  # type: ignore[union-attr]
+                )
+                bangumi_name = metadata.bangumi_name
+            except Exception:  # noqa: BLE001
+                self._log.warning('MetadataExtractor.fetch(%d) failed; falling back to placeholder', sn)
+                name_warning = f'⚠️ 無法從動畫瘋取得 SN {sn} 的名稱，將以 "SN {sn}" 暫存，下一次掃描時自動補齊'
+
         if bangumi_name is None:
-            # Still no name — use a placeholder; the UpdateLoop will fill it in later
             bangumi_name = f'SN {sn}'
 
         # Build the new entry
@@ -466,11 +540,13 @@ class TelegramCommandDispatcher:
             owner_id=user.id,
             anime_name=bangumi_name,
             custom_name=custom_name,
+            tag=tag,
+            season=season,
+            mode=mode,  # type: ignore[arg-type]
         )
 
-        # Fetch existing entries, append, save
+        # Fetch existing entries, check dups, append, save
         existing = await self._animelist_service.list_entries(user)
-        # Check if already watching this sn
         own_entries = [e for e in existing if e.owner_id == user.id]
         if any(e.sn == sn for e in own_entries):
             await self._send(chat_id, escape_markdown_v2(f'⚠️ 你已在追番清單中有 SN {sn}'))
@@ -480,6 +556,9 @@ class TelegramCommandDispatcher:
         updated.append(new_entry)
 
         await self._animelist_service.replace_entries(user, updated)
+
+        if name_warning:
+            await self._send(chat_id, escape_markdown_v2(name_warning))
 
         # Re-fetch to check if it was flagged as duplicate
         after = await self._animelist_service.list_entries(user)
@@ -495,14 +574,6 @@ class TelegramCommandDispatcher:
             )
         else:
             await self._send(chat_id, escape_markdown_v2(f'✅ 已加入追番：{display_name}'))
-
-    async def _resolve_bangumi_name(self, sn: int) -> str | None:
-        """Try to resolve a bangumi_name for the given sn from the anime_repo."""
-        # We'll look through the animelist_service's internal anime_repo if exposed.
-        # AnimeListService doesn't expose it directly, so use the service's _enrich path
-        # by creating a temporary entry and letting list_entries enrich it.
-        # Simpler: just return None and let UpdateLoop fill it in.
-        return None
 
     async def _cmd_unwatch(self, chat_id: int, user: UserRow, args: list[str]) -> None:
         if not args:

@@ -323,6 +323,7 @@ def build_container() -> Container:
             progress_service=_progress_svc,
             rate_limiter=telegram_rate_limiter,
             logger=logger,
+            metadata_extractor=metadata_extractor,
         )
 
     container = Container(
