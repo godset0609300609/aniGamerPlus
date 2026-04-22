@@ -79,7 +79,8 @@ class TelegramCommandDispatcher:
 
     def __init__(
         self,
-        client: TelegramClient,
+        *,
+        client_provider: T.Callable[[], TelegramClient | None],
         user_repo: UserRepository,
         animelist_service: AnimeListService,
         task_service: TaskService,
@@ -87,13 +88,21 @@ class TelegramCommandDispatcher:
         rate_limiter: TelegramRateLimiter,
         logger: Logger,
     ) -> None:
-        self._client = client
+        self._client_provider = client_provider
         self._user_repo = user_repo
         self._animelist_service = animelist_service
         self._task_service = task_service
         self._progress_service = progress_service
         self._rate_limiter = rate_limiter
         self._log = logging.getLogger(__name__)
+
+    @property
+    def _client(self) -> TelegramClient:
+        """Resolve client per-call so token rotations take effect immediately."""
+        client = self._client_provider()
+        if client is None:
+            raise RuntimeError('TelegramClient is not available (no bot_token configured)')
+        return client
 
     # ------------------------------------------------------------------
     # Public entry point

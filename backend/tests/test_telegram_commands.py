@@ -62,13 +62,13 @@ def _make_dispatcher(
         progress_service.snapshot = AsyncMock(return_value=TaskProgressSnapshot(tasks={}))
 
     if rate_limiter is None:
-        rate_limiter = TelegramRateLimiter(max_per_minute=100)
+        rate_limiter = TelegramRateLimiter(max_provider=lambda: 100)
 
     user_repo = MagicMock()
     logger = logging.getLogger('test_telegram_commands')
 
     dispatcher = TelegramCommandDispatcher(
-        client=client,
+        client_provider=lambda: client,
         user_repo=user_repo,
         animelist_service=animelist_service,
         task_service=task_service,
@@ -438,3 +438,50 @@ async def test_botname_suffix_stripped() -> None:
     await dispatcher.dispatch(chat_id=111, user=user, text='/help@mybot')
     msg = _last_message(client)
     assert '/download' in msg or '指令' in msg
+
+
+# ---------------------------------------------------------------------------
+# Hot-reload: dispatcher uses client_provider per dispatch call
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_dispatcher_uses_current_client_provider() -> None:
+    """Mutating the value the provider returns changes which client is used."""
+    client_a = MagicMock()
+    client_a.send_message = AsyncMock(return_value={})
+    client_b = MagicMock()
+    client_b.send_message = AsyncMock(return_value={})
+
+    current: list[MagicMock] = [client_a]
+
+    animelist_service = MagicMock()
+    animelist_service.list_entries = AsyncMock(return_value=[])
+    animelist_service.replace_entries = AsyncMock(return_value=None)
+    task_service = MagicMock()
+    task_service.enqueue = AsyncMock(return_value=None)
+    task_service.cancel_task = AsyncMock(return_value=None)
+    progress_service = MagicMock()
+    progress_service.snapshot = AsyncMock(return_value=MagicMock(tasks={}))
+
+    dispatcher = TelegramCommandDispatcher(
+        client_provider=lambda: current[0],
+        user_repo=MagicMock(),
+        animelist_service=animelist_service,
+        task_service=task_service,
+        progress_service=progress_service,
+        rate_limiter=TelegramRateLimiter(max_provider=lambda: 100),
+        logger=logging.getLogger('test_dispatcher_hot_reload'),  # type: ignore[arg-type]
+    )
+    user = _make_user()
+
+    # First dispatch → client_a is used
+    await dispatcher.dispatch(chat_id=111, user=user, text='/help')
+    assert client_a.send_message.called
+    assert not client_b.send_message.called
+
+    # Swap the provider's value to client_b
+    current[0] = client_b
+
+    await dispatcher.dispatch(chat_id=111, user=user, text='/help')
+    assert client_b.send_message.called

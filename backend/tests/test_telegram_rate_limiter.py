@@ -9,7 +9,7 @@ from app.services.telegram_rate_limiter import TelegramRateLimiter
 
 def test_allow_up_to_max() -> None:
     """All N requests within the window are allowed."""
-    rl = TelegramRateLimiter(max_per_minute=3)
+    rl = TelegramRateLimiter(max_provider=lambda: 3)
     assert rl.allow('u1') is True
     assert rl.allow('u1') is True
     assert rl.allow('u1') is True
@@ -17,7 +17,7 @@ def test_allow_up_to_max() -> None:
 
 def test_deny_after_max() -> None:
     """The (N+1)th request within the window is denied."""
-    rl = TelegramRateLimiter(max_per_minute=3)
+    rl = TelegramRateLimiter(max_provider=lambda: 3)
     for _ in range(3):
         rl.allow('u1')
     assert rl.allow('u1') is False
@@ -25,7 +25,7 @@ def test_deny_after_max() -> None:
 
 def test_allow_resumes_after_window_slides() -> None:
     """After the oldest timestamp exits the 60-second window, a new slot opens."""
-    rl = TelegramRateLimiter(max_per_minute=2)
+    rl = TelegramRateLimiter(max_provider=lambda: 2)
     base = 1000.0
 
     with patch('time.monotonic', return_value=base):
@@ -44,7 +44,7 @@ def test_allow_resumes_after_window_slides() -> None:
 
 def test_different_users_do_not_share_windows() -> None:
     """Rate limit is per-user — one user's exhaustion does not affect others."""
-    rl = TelegramRateLimiter(max_per_minute=1)
+    rl = TelegramRateLimiter(max_provider=lambda: 1)
     rl.allow('alice')
     assert rl.allow('alice') is False
     assert rl.allow('bob') is True  # bob is unaffected
@@ -52,13 +52,13 @@ def test_different_users_do_not_share_windows() -> None:
 
 def test_retry_after_seconds_returns_zero_when_under_limit() -> None:
     """retry_after_seconds returns 0 when no request has been made."""
-    rl = TelegramRateLimiter(max_per_minute=5)
+    rl = TelegramRateLimiter(max_provider=lambda: 5)
     assert rl.retry_after_seconds('u1') == 0
 
 
 def test_retry_after_seconds_estimates_correctly() -> None:
     """retry_after_seconds returns a positive estimate when at the limit."""
-    rl = TelegramRateLimiter(max_per_minute=1)
+    rl = TelegramRateLimiter(max_provider=lambda: 1)
     base = 5000.0
 
     with patch('time.monotonic', return_value=base):
@@ -74,7 +74,7 @@ def test_retry_after_seconds_estimates_correctly() -> None:
 
 def test_retry_after_zero_after_window_expires() -> None:
     """retry_after_seconds returns 0 once the window has fully cleared."""
-    rl = TelegramRateLimiter(max_per_minute=1)
+    rl = TelegramRateLimiter(max_provider=lambda: 1)
     base = 1000.0
 
     with patch('time.monotonic', return_value=base):
@@ -88,7 +88,7 @@ def test_thread_safety() -> None:
     """Concurrent calls from many threads don't raise or corrupt state."""
     import threading
 
-    rl = TelegramRateLimiter(max_per_minute=100)
+    rl = TelegramRateLimiter(max_provider=lambda: 100)
     errors: list[Exception] = []
 
     def _worker(uid: str) -> None:
@@ -105,3 +105,37 @@ def test_thread_safety() -> None:
         t.join()
 
     assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# Hot-reload: provider callable is consulted on every call
+# ---------------------------------------------------------------------------
+
+
+def test_provider_hot_reload_raises_limit() -> None:
+    """Changing max via the provider takes effect immediately on the next allow()."""
+    limit: list[int] = [30]
+    rl = TelegramRateLimiter(max_provider=lambda: limit[0])
+
+    # Exhaust 30 slots
+    for _ in range(30):
+        assert rl.allow('u1') is True
+    assert rl.allow('u1') is False  # 31st is denied
+
+    # Raise the limit to 60; the deque still has 30 timestamps inside the window.
+    # The next 30 calls should now be allowed (30 + 30 = 60 within window).
+    limit[0] = 60
+    for _ in range(30):
+        assert rl.allow('u1') is True
+    assert rl.allow('u1') is False  # 61st is denied
+
+
+def test_provider_zero_or_negative_clamped_to_one() -> None:
+    """max_provider returning 0 or negative is clamped to 1 (one request allowed)."""
+    rl_zero = TelegramRateLimiter(max_provider=lambda: 0)
+    assert rl_zero.allow('u1') is True  # first always allowed (clamped to 1)
+    assert rl_zero.allow('u1') is False  # second denied
+
+    rl_neg = TelegramRateLimiter(max_provider=lambda: -5)
+    assert rl_neg.allow('u2') is True
+    assert rl_neg.allow('u2') is False

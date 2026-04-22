@@ -335,3 +335,140 @@ def test_put_config_rejects_downloader(
     downloader_client = _make_downloader_client(client)
     r = downloader_client.put('/api/config', json={})
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: notify_on must have at least one item (BUG-4)
+# ---------------------------------------------------------------------------
+
+
+def _base_payload() -> dict:
+    """Minimal valid WebSettings payload used as a base for telegram tests."""
+    return {
+        'bangumi_dir': '',
+        'temp_dir': '',
+        'classify_bangumi': True,
+        'lock_resolution': False,
+        'segment_download_mode': True,
+        'add_bangumi_name_to_video_filename': True,
+        'add_resolution_to_video_filename': True,
+        'download_resolution': '1080',
+        'default_download_mode': 'latest',
+        'check_frequency': 5,
+        'multi-thread': 1,
+        'multi_downloading_segment': 2,
+        'customized_video_filename_prefix': '',
+        'customized_video_filename_suffix': '',
+        'ua': '',
+        'use_mobile_api': False,
+        'danmu': False,
+        'use_proxy': False,
+        'proxy': '',
+        'read_sn_list_when_checking_update': True,
+        'read_config_when_checking_update': True,
+        'save_logs': True,
+        'quantity_of_logs': 7,
+        'download_cd': 60,
+        'parse_sn_cd': 5,
+        'parse_cd': 3,
+    }
+
+
+def test_put_config_rejects_empty_notify_on(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """telegram.notify_on=[] → 422 (min_length=1 constraint)."""
+    payload = _base_payload()
+    payload['telegram'] = {
+        'enabled': True,
+        'bot_token': 'tok',
+        'webhook_secret': 'sec',
+        'public_url': '',
+        'notify_on': [],
+        'admin_broadcast': True,
+        'rate_limit_per_minute': 30,
+        'allow_localhost': False,
+    }
+    r = client.put('/api/config', json=payload)
+    assert r.status_code == 422
+
+
+def test_put_config_accepts_single_notify_on(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """telegram.notify_on=['completed'] → 200 (list with one item is valid)."""
+    payload = _base_payload()
+    payload['telegram'] = {
+        'enabled': True,
+        'bot_token': 'tok',
+        'webhook_secret': 'sec',
+        'public_url': '',
+        'notify_on': ['completed'],
+        'admin_broadcast': True,
+        'rate_limit_per_minute': 30,
+        'allow_localhost': False,
+    }
+    r = client.put('/api/config', json=payload)
+    assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: rate_limit_per_minute must be in [1, 300] (BUG-5)
+# ---------------------------------------------------------------------------
+
+
+def test_put_config_rejects_rate_limit_zero(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """telegram.rate_limit_per_minute=0 → 422 (ge=1 constraint)."""
+    payload = _base_payload()
+    payload['telegram'] = {
+        'enabled': True,
+        'bot_token': 'tok',
+        'webhook_secret': 'sec',
+        'public_url': '',
+        'notify_on': ['completed'],
+        'admin_broadcast': True,
+        'rate_limit_per_minute': 0,
+        'allow_localhost': False,
+    }
+    r = client.put('/api/config', json=payload)
+    assert r.status_code == 422
+
+
+def test_put_config_rejects_rate_limit_over_300(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """telegram.rate_limit_per_minute=350 → 422 (le=300 constraint)."""
+    payload = _base_payload()
+    payload['telegram'] = {
+        'enabled': True,
+        'bot_token': 'tok',
+        'webhook_secret': 'sec',
+        'public_url': '',
+        'notify_on': ['completed'],
+        'admin_broadcast': True,
+        'rate_limit_per_minute': 350,
+        'allow_localhost': False,
+    }
+    r = client.put('/api/config', json=payload)
+    assert r.status_code == 422
+
+
+def test_put_config_accepts_rate_limit_150(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """telegram.rate_limit_per_minute=150 → 200 (within valid range)."""
+    payload = _base_payload()
+    payload['telegram'] = {
+        'enabled': True,
+        'bot_token': 'tok',
+        'webhook_secret': 'sec',
+        'public_url': '',
+        'notify_on': ['completed'],
+        'admin_broadcast': True,
+        'rate_limit_per_minute': 150,
+        'allow_localhost': False,
+    }
+    r = client.put('/api/config', json=payload)
+    assert r.status_code == 200

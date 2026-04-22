@@ -124,7 +124,7 @@ def _client_ip(request: fastapi.Request) -> str:
         return xri.strip()
     xff = request.headers.get('X-Forwarded-For')
     if xff:
-        return xff.split(',')[-1].strip()
+        return xff.split(',')[0].strip()
     return request.client.host if request.client else ''
 
 
