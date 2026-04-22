@@ -17,6 +17,7 @@ if T.TYPE_CHECKING:
     from ..downloader.progress import ProgressBus
     from ..logging_ import Logger
     from ..models import AppSettings
+    from ..persistence.anime_list_repo import AnimeListEntryRepository
     from ..persistence.repositories import AnimeRepository
     from .event_sink import DownloadEventSink
     from .queue_ import TaskQueue
@@ -35,6 +36,7 @@ class DownloadWorker:
         settings_provider: collections.abc.Callable[[], AppSettings],
         logger: Logger,
         event_sink: DownloadEventSink | None = None,
+        anime_list_repo: AnimeListEntryRepository | None = None,
     ) -> None:
         self._queue = queue
         self._anime_factory = anime_factory
@@ -43,6 +45,7 @@ class DownloadWorker:
         self._settings_provider = settings_provider
         self._logger = logger
         self._event_sink = event_sink
+        self._anime_list_repo = anime_list_repo
 
     # ------------------------------------------------------------------ entry
 
@@ -144,6 +147,7 @@ class DownloadWorker:
             self._queue.pop(sn)
             self._queue.unmark_processing(sn)
             if self._event_sink is not None:
+                _custom_name, _season, _ep_num = self._lookup_notifier_meta(info.owner_id, sn, None)
                 self._event_sink.fire_failed(
                     owner_id=info.owner_id,
                     bangumi_name=str(sn),
@@ -151,6 +155,9 @@ class DownloadWorker:
                     resolution=None,
                     sn=sn,
                     error_message=f'無可用影片源: {exc}'[:200],
+                    custom_name=_custom_name,
+                    season=_season,
+                    episode_number=_ep_num,
                 )
             return True
         except exceptions.TryTooManyTimeError as exc:
@@ -188,12 +195,17 @@ class DownloadWorker:
             self._queue.pop(sn)
             self._queue.unmark_processing(sn)
             if self._event_sink is not None:
+                _ep = anime.get_episode()
+                _custom_name, _season, _ep_num = self._lookup_notifier_meta(info.owner_id, sn, _ep)
                 self._event_sink.fire_cancelled(
                     owner_id=info.owner_id,
                     bangumi_name=anime.get_bangumi_name(),
-                    episode=anime.get_episode(),
+                    episode=_ep,
                     resolution=str(anime.get_resolution()),
                     sn=sn,
+                    custom_name=_custom_name,
+                    season=_season,
+                    episode_number=_ep_num,
                 )
             return False  # do NOT call finish() — cancel() already scheduled it
         except exceptions.NoAvailableStreamError as exc:
@@ -209,13 +221,18 @@ class DownloadWorker:
             self._queue.pop(sn)
             self._queue.unmark_processing(sn)
             if self._event_sink is not None:
+                _ep = anime.get_episode()
+                _custom_name, _season, _ep_num = self._lookup_notifier_meta(info.owner_id, sn, _ep)
                 self._event_sink.fire_failed(
                     owner_id=info.owner_id,
                     bangumi_name=anime.get_bangumi_name(),
-                    episode=anime.get_episode(),
+                    episode=_ep,
                     resolution=str(anime.get_resolution()),
                     sn=sn,
                     error_message=f'無可用影片源: {exc}'[:200],
+                    custom_name=_custom_name,
+                    season=_season,
+                    episode_number=_ep_num,
                 )
             return True
         except exceptions.TryTooManyTimeError as exc:
@@ -249,13 +266,18 @@ class DownloadWorker:
 
         # Notify on success.
         if self._event_sink is not None:
+            _ep = anime.get_episode()
+            _custom_name, _season, _ep_num = self._lookup_notifier_meta(info.owner_id, sn, _ep)
             self._event_sink.fire_completed(
                 owner_id=info.owner_id,
                 bangumi_name=anime.get_bangumi_name(),
-                episode=anime.get_episode(),
+                episode=_ep,
                 resolution=str(anime.get_resolution()),
                 sn=sn,
                 file_size_mb=int(result.size_mb),
+                custom_name=_custom_name,
+                season=_season,
+                episode_number=_ep_num,
             )
 
         # Terminal success: caller's ``finally`` finishes the progress entry.
@@ -264,6 +286,48 @@ class DownloadWorker:
         return True
 
     # ------------------------------------------------------------------ helpers
+
+    def _lookup_notifier_meta(
+        self,
+        owner_id: str | None,
+        sn: int,
+        episode: str | None,
+    ) -> tuple[str | None, int, int | None]:
+        """Return (custom_name, season, episode_number) for a notification.
+
+        Looks up the anime-list entry for (owner_id, sn).  Defaults to
+        (None, 1) when owner_id is None, the repo is unavailable, or no
+        entry exists (manual task).  Never raises — failures fall back to
+        defaults so a metadata lookup can never break a download hook.
+
+        episode_number is the integer parsed from the episode string.
+        Returns None for episode_number when the string is non-numeric
+        (e.g. "SP1", "OVA") — callers use the raw episode string in that case.
+        """
+        import contextlib
+        import re
+
+        custom_name: str | None = None
+        season: int = 1
+
+        if owner_id is not None and self._anime_list_repo is not None:
+            try:
+                entry = self._anime_list_repo.get_by_user_sn(owner_id, sn)
+                if entry is not None:
+                    custom_name = entry.custom_name
+                    season = entry.season
+            except Exception:  # noqa: BLE001
+                pass  # defensive: never let a metadata lookup fail a download hook
+
+        # Parse episode_number from the episode string.
+        episode_number: int | None = None
+        if episode is not None:
+            m = re.search(r'\d+', episode)
+            if m:
+                with contextlib.suppress(ValueError):
+                    episode_number = int(m.group())
+
+        return custom_name, season, episode_number
 
     def _persist_download(
         self,

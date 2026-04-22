@@ -230,3 +230,17 @@ class AnimeListEntryRepository:
         with self._db.session() as session:
             orm = session.get(AnimeListEntryRow, entry_id)
             return _to_dto(orm) if orm is not None else None
+
+    def get_by_user_sn(self, user_id: str, sn: int) -> AnimeListEntryDTO | None:
+        """Fetch the entry for ``(user_id, sn)``, or ``None`` if absent."""
+        with self._db.session() as session:
+            stmt = (
+                sqlalchemy.select(AnimeListEntryRow)
+                .where(
+                    AnimeListEntryRow.user_id == user_id,
+                    AnimeListEntryRow.sn == sn,
+                )
+                .limit(1)
+            )
+            orm = session.scalars(stmt).first()
+            return _to_dto(orm) if orm is not None else None

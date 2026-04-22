@@ -57,6 +57,9 @@ class TelegramNotifier:
         sn: int,
         file_size_mb: int | None = None,
         error_message: str | None = None,
+        custom_name: str | None = None,
+        season: int = 1,
+        episode_number: int | None = None,
     ) -> None:
         """Send DM to owner + all admins.
 
@@ -76,6 +79,9 @@ class TelegramNotifier:
             resolution=resolution,
             file_size_mb=file_size_mb,
             error_message=error_message,
+            custom_name=custom_name,
+            season=season,
+            episode_number=episode_number,
         )
 
         recipients = await self._recipient_chat_ids(owner_id)
@@ -144,6 +150,36 @@ class TelegramNotifier:
 # ---------------------------------------------------------------------------
 
 
+def _build_name_line(
+    *,
+    bangumi_name: str,
+    episode: str | None,
+    custom_name: str | None,
+    season: int,
+    episode_number: int | None,
+) -> str:
+    """Return the MarkdownV2-escaped name line for a download-event message.
+
+    Format (normal): ``{display_name} 第 {season} 季 - 第 {episode_number} 集``
+    Fallback (unparseable episode like SP/OVA): ``{display_name} 第 {season} 季 - {raw_episode}``
+    """
+    display_name = custom_name or bangumi_name
+    name_esc = escape_markdown_v2(display_name)
+    season_str = escape_markdown_v2(str(season))
+
+    # MarkdownV2 requires '-' to be escaped as '\-' in literal text.
+    dash = escape_markdown_v2('-')
+
+    if episode_number is not None:
+        # Normal case: numeric episode number available.
+        ep_str = escape_markdown_v2(str(episode_number))
+        return f'{name_esc} 第 {season_str} 季 {dash} 第 {ep_str} 集'
+    else:
+        # Unparseable episode (SP / OVA / etc.) — use raw string without "第 N 集" wrapper.
+        raw_ep = escape_markdown_v2(episode or '')
+        return f'{name_esc} 第 {season_str} 季 {dash} {raw_ep}'.rstrip()
+
+
 def _format_message(
     *,
     event: str,
@@ -152,16 +188,24 @@ def _format_message(
     resolution: str | None,
     file_size_mb: int | None,
     error_message: str | None,
+    custom_name: str | None = None,
+    season: int = 1,
+    episode_number: int | None = None,
 ) -> str:
     """Build a MarkdownV2-escaped message for the given event."""
-    name_esc = escape_markdown_v2(bangumi_name)
-    ep_esc = escape_markdown_v2(episode) if episode else None
+    name_line = _build_name_line(
+        bangumi_name=bangumi_name,
+        episode=episode,
+        custom_name=custom_name,
+        season=season,
+        episode_number=episode_number,
+    )
 
     if event == 'completed':
         lines = [
             '✅ *下載完成*',
             '',
-            f'{name_esc} {ep_esc}' if ep_esc else name_esc,
+            name_line,
         ]
         if resolution is not None:
             res_esc = escape_markdown_v2(str(resolution))
@@ -175,7 +219,7 @@ def _format_message(
         lines = [
             '❌ *下載失敗*',
             '',
-            f'{name_esc} {ep_esc}' if ep_esc else name_esc,
+            name_line,
         ]
         if error_message is not None:
             err_esc = escape_markdown_v2(error_message[:200])
@@ -186,6 +230,6 @@ def _format_message(
     lines = [
         '🛑 *下載取消*',
         '',
-        f'{name_esc} {ep_esc}' if ep_esc else name_esc,
+        name_line,
     ]
     return '\n'.join(lines)

@@ -145,10 +145,11 @@ def test_format_completed_includes_all_fields() -> None:
         resolution='1080',
         file_size_mb=500,
         error_message=None,
+        episode_number=1,
     )
     assert '下載完成' in msg
     assert '進擊的巨人' in msg
-    assert '01' in msg
+    assert '1' in msg
     assert '1080' in msg
     assert '500' in msg
 
@@ -174,6 +175,7 @@ def test_format_failed_includes_reason() -> None:
         resolution=None,
         file_size_mb=None,
         error_message='network timeout',
+        episode_number=2,
     )
     assert '下載失敗' in msg
     assert 'network timeout' in msg
@@ -187,24 +189,106 @@ def test_format_cancelled() -> None:
         resolution=None,
         file_size_mb=None,
         error_message=None,
+        episode_number=3,
     )
     assert '下載取消' in msg
-    assert '03' in msg
+    assert '3' in msg
 
 
 def test_format_escapes_markdown_special_chars() -> None:
     msg = _format_message(
         event='completed',
         bangumi_name='進_擊*的[巨人]',
-        episode='01.5',
+        episode='01',
         resolution='1080',
         file_size_mb=100,
         error_message=None,
+        episode_number=1,
     )
     # Underscores and asterisks must be escaped with backslash.
     assert '\\_' in msg
     assert '\\*' in msg
     assert '\\[' in msg
+
+
+# ---------------------------------------------------------------------------
+# New name-line format tests
+# ---------------------------------------------------------------------------
+
+
+def test_format_name_line_with_all_fields() -> None:
+    """Completed event with all fields: renders 第 N 季 - 第 M 集."""
+    msg = _format_message(
+        event='completed',
+        bangumi_name='某番',
+        episode='05',
+        resolution='1080',
+        file_size_mb=300,
+        error_message=None,
+        custom_name='我的名字',
+        season=2,
+        episode_number=5,
+    )
+    # custom_name takes priority over bangumi_name.
+    assert '我的名字' in msg
+    assert '某番' not in msg
+    # Season and episode formatted correctly (- is escaped to \-).
+    assert '第 2 季' in msg
+    assert '第 5 集' in msg
+    assert '\\-' in msg
+
+
+def test_format_name_line_no_custom_name_falls_back_to_bangumi() -> None:
+    """When custom_name is None, bangumi_name is used."""
+    msg = _format_message(
+        event='completed',
+        bangumi_name='進擊的巨人',
+        episode='10',
+        resolution=None,
+        file_size_mb=None,
+        error_message=None,
+        custom_name=None,
+        season=1,
+        episode_number=10,
+    )
+    assert '進擊的巨人' in msg
+    assert '第 1 季' in msg
+    assert '第 10 集' in msg
+
+
+def test_format_name_line_episode_number_none_uses_raw_episode() -> None:
+    """episode_number=None (SP/OVA) — raw episode string used, no 第 N 集 wrapper."""
+    msg = _format_message(
+        event='completed',
+        bangumi_name='某番',
+        episode='SP1',
+        resolution=None,
+        file_size_mb=None,
+        error_message=None,
+        custom_name=None,
+        season=1,
+        episode_number=None,
+    )
+    assert '某番' in msg
+    assert '第 1 季' in msg
+    assert 'SP1' in msg
+    # Should NOT have 第 N 集 wrapper.
+    assert '第 SP1 集' not in msg
+
+
+def test_format_name_line_default_season_1() -> None:
+    """When season is omitted it defaults to 1."""
+    msg = _format_message(
+        event='completed',
+        bangumi_name='Test',
+        episode='03',
+        resolution=None,
+        file_size_mb=None,
+        error_message=None,
+        episode_number=3,
+    )
+    assert '第 1 季' in msg
+    assert '第 3 集' in msg
 
 
 # ---------------------------------------------------------------------------

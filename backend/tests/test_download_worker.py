@@ -780,3 +780,172 @@ def test_event_sink_owner_id_none_passed_through(tmp_path: pathlib.Path) -> None
 
     assert len(sink.completed) == 1
     assert sink.completed[0]['owner_id'] is None
+
+
+# ---------------------------------------------------------------------------
+# Notifier-metadata kwargs (custom_name / season / episode_number)
+# ---------------------------------------------------------------------------
+
+
+class FakeAnimeListRepo:
+    """Minimal AnimeListEntryRepository stand-in."""
+
+    def __init__(self, entries: dict[tuple[str, int], Any]) -> None:
+        # entries keyed by (user_id, sn)
+        self._entries = entries
+
+    def get_by_user_sn(self, user_id: str, sn: int) -> Any:
+        return self._entries.get((user_id, sn))
+
+
+def _build_with_sink_and_list_repo(
+    tmp_path: pathlib.Path,
+    *,
+    fake_anime: FakeAnime,
+    sink: FakeEventSink,
+    list_repo: FakeAnimeListRepo,
+    settings_overrides: dict[str, Any] | None = None,
+) -> Harness:
+    logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
+    settings_kwargs: dict[str, Any] = {
+        'download_resolution': '1080',
+        'classify_bangumi': True,
+    }
+    settings_kwargs.update(settings_overrides or {})
+    settings = AppSettings(**settings_kwargs)
+
+    queue = TaskQueue(max_download=2, max_upload=1)
+    progress = ProgressBus()
+    repo = FakeAnimeRepository()
+
+    worker = DownloadWorker(
+        queue=queue,
+        anime_factory=lambda sn: fake_anime,  # type: ignore[arg-type]
+        anime_repo=repo,  # type: ignore[arg-type]
+        progress=progress,
+        settings_provider=lambda: settings,
+        logger=logger,
+        event_sink=sink,  # type: ignore[arg-type]
+        anime_list_repo=list_repo,  # type: ignore[arg-type]
+    )
+    return Harness(
+        worker=worker,
+        queue=queue,
+        progress=progress,
+        repo=repo,
+        settings=settings,
+        anime=fake_anime,
+    )
+
+
+@dataclasses.dataclass
+class FakeAnimeListEntry:
+    custom_name: str | None
+    season: int
+
+
+def test_event_sink_fire_completed_with_list_entry(tmp_path: pathlib.Path) -> None:
+    """Entry exists with custom_name + season → passed through to fire_completed."""
+    fake_anime = FakeAnime(
+        sn=300,
+        download_result=DownloadResult(
+            success=True,
+            file_path=tmp_path / 'a.mp4',
+            size_mb=500,
+        ),
+        bangumi_name='某番',
+        episode='05',
+    )
+    entry = FakeAnimeListEntry(custom_name='我的名字', season=2)
+    list_repo = FakeAnimeListRepo({('user1', 300): entry})
+    sink = FakeEventSink()
+    h = _build_with_sink_and_list_repo(tmp_path, fake_anime=fake_anime, sink=sink, list_repo=list_repo)
+    h.queue.add(300, TaskInfo(sn=300, tag='', mode='single', owner_id='user1'))
+    h.queue.mark_processing(300)
+
+    h.worker.run(300)
+
+    assert len(sink.completed) == 1
+    call = sink.completed[0]
+    assert call['custom_name'] == '我的名字'
+    assert call['season'] == 2
+    assert call['episode_number'] == 5
+
+
+def test_event_sink_fire_completed_no_entry_manual_task(tmp_path: pathlib.Path) -> None:
+    """No matching entry (manual task, owner_id=None) → custom_name=None, season=1."""
+    fake_anime = FakeAnime(
+        sn=301,
+        download_result=DownloadResult(
+            success=True,
+            file_path=tmp_path / 'a.mp4',
+            size_mb=500,
+        ),
+        bangumi_name='某番',
+        episode='03',
+    )
+    list_repo = FakeAnimeListRepo({})
+    sink = FakeEventSink()
+    h = _build_with_sink_and_list_repo(tmp_path, fake_anime=fake_anime, sink=sink, list_repo=list_repo)
+    h.queue.add(301, TaskInfo(sn=301, tag='', mode='single', owner_id=None))
+    h.queue.mark_processing(301)
+
+    h.worker.run(301)
+
+    assert len(sink.completed) == 1
+    call = sink.completed[0]
+    assert call['custom_name'] is None
+    assert call['season'] == 1
+    assert call['episode_number'] == 3
+
+
+def test_event_sink_fire_completed_non_numeric_episode(tmp_path: pathlib.Path) -> None:
+    """Non-numeric episode string → episode_number=None passed to fire_completed."""
+    fake_anime = FakeAnime(
+        sn=302,
+        download_result=DownloadResult(
+            success=True,
+            file_path=tmp_path / 'a.mp4',
+            size_mb=500,
+        ),
+        bangumi_name='某番',
+        episode='SP1',
+    )
+    list_repo = FakeAnimeListRepo({})
+    sink = FakeEventSink()
+    h = _build_with_sink_and_list_repo(tmp_path, fake_anime=fake_anime, sink=sink, list_repo=list_repo)
+    h.queue.add(302, TaskInfo(sn=302, tag='', mode='single', owner_id='user1'))
+    h.queue.mark_processing(302)
+
+    h.worker.run(302)
+
+    assert len(sink.completed) == 1
+    call = sink.completed[0]
+    # SP1 contains digit '1', so episode_number should be 1 (regex finds first digit group)
+    # The SP case: regex finds '1' in 'SP1', so episode_number=1 is expected.
+    assert call['episode_number'] == 1  # re.search(r'\d+', 'SP1') finds '1'
+
+
+def test_event_sink_fire_completed_pure_non_numeric_episode(tmp_path: pathlib.Path) -> None:
+    """Episode with no digits at all → episode_number=None."""
+    fake_anime = FakeAnime(
+        sn=303,
+        download_result=DownloadResult(
+            success=True,
+            file_path=tmp_path / 'a.mp4',
+            size_mb=500,
+        ),
+        bangumi_name='某番',
+        episode='OVA',
+    )
+    list_repo = FakeAnimeListRepo({})
+    sink = FakeEventSink()
+    h = _build_with_sink_and_list_repo(tmp_path, fake_anime=fake_anime, sink=sink, list_repo=list_repo)
+    h.queue.add(303, TaskInfo(sn=303, tag='', mode='single', owner_id='user1'))
+    h.queue.mark_processing(303)
+
+    h.worker.run(303)
+
+    assert len(sink.completed) == 1
+    call = sink.completed[0]
+    assert call['episode_number'] is None

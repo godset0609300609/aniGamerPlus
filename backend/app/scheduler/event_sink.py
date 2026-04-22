@@ -70,6 +70,9 @@ class DownloadEventSink:
         resolution: str | None,
         sn: int,
         file_size_mb: int | None,
+        custom_name: str | None = None,
+        season: int = 1,
+        episode_number: int | None = None,
     ) -> None:
         """Fire a 'completed' notification.  Sync; returns immediately."""
         self._fire(
@@ -80,6 +83,9 @@ class DownloadEventSink:
             resolution=resolution,
             sn=sn,
             file_size_mb=file_size_mb,
+            custom_name=custom_name,
+            season=season,
+            episode_number=episode_number,
         )
 
     def fire_failed(
@@ -91,6 +97,9 @@ class DownloadEventSink:
         resolution: str | None,
         sn: int,
         error_message: str | None,
+        custom_name: str | None = None,
+        season: int = 1,
+        episode_number: int | None = None,
     ) -> None:
         """Fire a 'failed' notification.  Sync; returns immediately."""
         self._fire(
@@ -101,6 +110,9 @@ class DownloadEventSink:
             resolution=resolution,
             sn=sn,
             error_message=error_message,
+            custom_name=custom_name,
+            season=season,
+            episode_number=episode_number,
         )
 
     def fire_cancelled(
@@ -111,6 +123,9 @@ class DownloadEventSink:
         episode: str | None,
         resolution: str | None,
         sn: int,
+        custom_name: str | None = None,
+        season: int = 1,
+        episode_number: int | None = None,
     ) -> None:
         """Fire a 'cancelled' notification.  Sync; returns immediately."""
         self._fire(
@@ -120,6 +135,9 @@ class DownloadEventSink:
             episode=episode,
             resolution=resolution,
             sn=sn,
+            custom_name=custom_name,
+            season=season,
+            episode_number=episode_number,
         )
 
     def close(self) -> None:
