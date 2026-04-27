@@ -118,7 +118,7 @@ def test_record_finish_updates_metadata(repo: TaskHistoryRepository, db: Databas
     # Simulate: record_start called before metadata is available.
     row_id = repo.record_start(sn=900, filename='sn900.mp4', bangumi_name=None)
 
-    finished = datetime.datetime(2026, 4, 18, 15, 0, 0, tzinfo=datetime.UTC)
+    finished = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=2)
     repo.record_finish(
         row_id,
         final_status='下載完成',
@@ -249,9 +249,9 @@ def test_list_recent_ordered_by_finished_at_desc(repo: TaskHistoryRepository) ->
 
 def test_list_recent_returns_parsed_datetimes(repo: TaskHistoryRepository) -> None:
     """finished_at and started_at must be parsed back to UTC-aware datetimes."""
-    started = datetime.datetime(2026, 4, 17, 0, 0, 0, tzinfo=datetime.UTC)
+    started = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=3)
     row_id = repo.record_start(sn=500, filename='ep500.mp4', started_at=started)
-    finished = datetime.datetime(2026, 4, 18, 0, 0, 0, tzinfo=datetime.UTC)
+    finished = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=2)
     repo.record_finish(row_id, final_status='任務完成', finished_at=finished)
 
     entries = repo.list_recent(days=7)
