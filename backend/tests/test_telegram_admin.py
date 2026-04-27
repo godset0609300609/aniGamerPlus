@@ -70,6 +70,8 @@ def _client_with_mock() -> tuple[fastapi.testclient.TestClient, MagicMock]:
         return_value={'url': 'https://example.com/api/webhooks/telegram/my-secret', 'pending_update_count': 0}
     )
     mock.get_me = AsyncMock(return_value={'id': 123, 'is_bot': True, 'username': 'mybot'})
+    mock.set_my_commands = AsyncMock(return_value=None)
+    mock.delete_my_commands = AsyncMock(return_value=None)
     app = _make_app(telegram_client=mock)
     return fastapi.testclient.TestClient(app), mock
 
@@ -227,3 +229,123 @@ def test_register_webhook_response_includes_scheduler_restart_hint() -> None:
     data = resp.json()
     assert 'scheduler_restart_hint' in data
     assert data['scheduler_restart_hint']  # non-empty string
+
+
+# ---------------------------------------------------------------------------
+# Bot commands ("/" menu) integration
+# ---------------------------------------------------------------------------
+
+
+def test_register_webhook_also_pushes_bot_commands() -> None:
+    """Registering the webhook should also push the canonical command list,
+    so admins don't need a separate step to populate the Telegram "/" menu.
+    """
+    from app.services.telegram_commands import BOT_MENU_COMMANDS
+
+    tc, mock = _client_with_mock()
+    resp = tc.post('/api/admin/telegram/webhook/register')
+
+    assert resp.status_code == 200
+    assert resp.json()['commands_pushed'] is True
+    mock.set_webhook.assert_awaited_once()
+    mock.set_my_commands.assert_awaited_once_with(BOT_MENU_COMMANDS)
+
+
+def test_register_webhook_succeeds_when_command_push_fails() -> None:
+    """A failure in setMyCommands must not bubble up — the webhook is
+    already registered (the more important side-effect).
+    """
+    from app.services.telegram_client import TelegramApiError
+
+    mock = MagicMock()
+    mock.set_webhook = AsyncMock(return_value=None)
+    mock.set_my_commands = AsyncMock(side_effect=TelegramApiError(500, 'boom'))
+    app = _make_app(telegram_client=mock)
+    tc = fastapi.testclient.TestClient(app)
+
+    resp = tc.post('/api/admin/telegram/webhook/register')
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['ok'] is True
+    assert data['commands_pushed'] is False
+    mock.set_webhook.assert_awaited_once()
+    mock.set_my_commands.assert_awaited_once()
+
+
+def test_delete_webhook_clears_bot_commands_first() -> None:
+    """Decommissioning the webhook should also clear the bot menu so
+    clients don't keep showing stale commands.
+    """
+    tc, mock = _client_with_mock()
+    resp = tc.post('/api/admin/telegram/webhook/delete')
+
+    assert resp.status_code == 200
+    assert resp.json()['commands_cleared'] is True
+    mock.delete_my_commands.assert_awaited_once()
+    mock.delete_webhook.assert_awaited_once_with(drop_pending_updates=True)
+
+
+def test_delete_webhook_runs_even_when_command_clear_fails() -> None:
+    """delete_webhook is the primary action and must run even if the
+    best-effort menu clear errors.
+    """
+    from app.services.telegram_client import TelegramApiError
+
+    mock = MagicMock()
+    mock.delete_webhook = AsyncMock(return_value=None)
+    mock.delete_my_commands = AsyncMock(side_effect=TelegramApiError(500, 'boom'))
+    app = _make_app(telegram_client=mock)
+    tc = fastapi.testclient.TestClient(app)
+
+    resp = tc.post('/api/admin/telegram/webhook/delete')
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['ok'] is True
+    assert data['commands_cleared'] is False
+    mock.delete_webhook.assert_awaited_once()
+
+
+def test_refresh_commands_endpoint_pushes_canonical_list() -> None:
+    """POST /commands/refresh pushes the canonical BOT_MENU_COMMANDS."""
+    from app.services.telegram_commands import BOT_MENU_COMMANDS
+
+    tc, mock = _client_with_mock()
+    resp = tc.post('/api/admin/telegram/commands/refresh')
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['ok'] is True
+    assert data['count'] == len(BOT_MENU_COMMANDS)
+    mock.set_my_commands.assert_awaited_once_with(BOT_MENU_COMMANDS)
+
+
+def test_refresh_commands_bot_token_empty_returns_400() -> None:
+    app = _make_app(bot_token='', telegram_client=None)
+    tc = fastapi.testclient.TestClient(app)
+    resp = tc.post('/api/admin/telegram/commands/refresh')
+    assert resp.status_code == 400
+    assert 'bot_token' in resp.json()['detail']
+
+
+def test_bot_menu_commands_constant_matches_dispatcher() -> None:
+    """The menu list must stay in sync with the actual command dispatcher.
+
+    If a command is added to the dispatcher but missing from the menu, users
+    won't discover it. If the menu lists a command the dispatcher doesn't
+    handle, the bot will reply 'unknown command' — both are bad.
+    """
+    from app.services.telegram_commands import _HELP_TEXT, BOT_MENU_COMMANDS
+
+    menu_names = {c['command'] for c in BOT_MENU_COMMANDS}
+    # _HELP_TEXT lists each user-facing command on its own line as ``/<name>``.
+    help_names = {
+        line.split()[0].lstrip('/').rstrip('`')
+        for line in _HELP_TEXT.splitlines()
+        if line.startswith('/')
+    }
+    assert menu_names == help_names, (
+        f'BOT_MENU_COMMANDS and _HELP_TEXT diverged. '
+        f'menu only: {menu_names - help_names}, help only: {help_names - menu_names}'
+    )

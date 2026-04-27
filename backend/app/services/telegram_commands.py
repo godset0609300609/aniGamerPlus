@@ -43,6 +43,20 @@ _HELP_TEXT = (
     '/help — 顯示此說明\n'
 )
 
+# Telegram bot menu — pushed to /setMyCommands so clients show a "/" menu.
+# Keep in sync with _HELP_TEXT and the dispatcher below; descriptions must be
+# 1–256 chars per Telegram spec.
+BOT_MENU_COMMANDS: list[dict[str, str]] = [
+    {'command': 'download', 'description': '立即下載單集 (sn)'},
+    {'command': 'watch', 'description': '加入追番清單'},
+    {'command': 'unwatch', 'description': '從追番清單移除'},
+    {'command': 'list', 'description': '查看你的追番清單'},
+    {'command': 'status', 'description': '查看你的任務狀態'},
+    {'command': 'cancel', 'description': '取消任務'},
+    {'command': 'me', 'description': '查看你的帳號資訊'},
+    {'command': 'help', 'description': '顯示指令說明'},
+]
+
 # Terminal statuses not worth showing in active tasks
 _TERMINAL_STATUSES = frozenset({'下載完成', '任務完成', '下載失敗', '已取消', '任務已取消'})
 
