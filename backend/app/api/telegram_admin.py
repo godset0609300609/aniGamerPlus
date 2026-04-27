@@ -5,15 +5,19 @@ Mounted at ``/api/admin/telegram``. All routes require the ``admin`` role.
 
 from __future__ import annotations
 
+import logging
 import typing as T
 
 import fastapi
 
 from ..models import AppSettings
 from ..persistence.user_repo import UserRow
-from ..services.telegram_client import TelegramClient
+from ..services.telegram_client import TelegramApiError, TelegramClient
 from ..services.telegram_client_cache import resolve_telegram_client
+from ..services.telegram_commands import BOT_MENU_COMMANDS
 from .deps import get_settings, require_admin_user
+
+_log = logging.getLogger(__name__)
 
 router = fastapi.APIRouter(prefix='/api/admin/telegram', tags=['telegram-admin'])
 
@@ -68,12 +72,17 @@ async def register_webhook(
         secret_token=tg.webhook_secret,
         allowed_updates=['message', 'callback_query'],
     )
+    # Push the bot's "/" menu in the same flow so admins don't have to do it
+    # manually. Best-effort: if the menu push fails the webhook is already
+    # registered and is the more important side-effect.
+    commands_pushed = await _push_bot_commands(client)
     # The scheduler process's TelegramNotifier reads its client from the
     # container at startup and is NOT affected by the cache used here.
     # Remind the admin to restart the scheduler after a token rotation.
     return {
         'ok': True,
         'url': url,
+        'commands_pushed': commands_pushed,
         'scheduler_restart_hint': '若剛才變更過 bot token，請重新啟動 scheduler 以讓下載通知使用新 token。',
     }
 
@@ -84,8 +93,12 @@ async def delete_webhook(
     client: T.Annotated[TelegramClient, fastapi.Depends(_require_client)],
 ) -> dict[str, object]:
     """Remove the currently registered webhook from Telegram."""
+    # Clear the "/" menu first so the bot reverts to a no-menu state if the
+    # admin is decommissioning it. Best-effort: delete_webhook is the
+    # primary action and must run even if menu clear fails.
+    commands_cleared = await _clear_bot_commands(client)
     await client.delete_webhook(drop_pending_updates=True)
-    return {'ok': True}
+    return {'ok': True, 'commands_cleared': commands_cleared}
 
 
 @router.get('/webhook/info')
@@ -109,3 +122,47 @@ async def bot_me(
 ) -> dict[str, object]:
     """Return bot identity info — used to verify the bot token is valid."""
     return await client.get_me()
+
+
+# ---------------------------------------------------------------------------
+# Bot commands ("/" menu)
+# ---------------------------------------------------------------------------
+
+
+@router.post('/commands/refresh')
+async def refresh_bot_commands(
+    _user: T.Annotated[UserRow, fastapi.Depends(require_admin_user)],
+    client: T.Annotated[TelegramClient, fastapi.Depends(_require_client)],
+) -> dict[str, object]:
+    """Push the canonical command list to Telegram (populates the "/" menu).
+
+    Idempotent — safe to call any time. Useful when ``BOT_MENU_COMMANDS``
+    changes without the admin needing to re-register the webhook.
+    """
+    await client.set_my_commands(BOT_MENU_COMMANDS)
+    return {'ok': True, 'count': len(BOT_MENU_COMMANDS)}
+
+
+# ---------------------------------------------------------------------------
+# Internal best-effort helpers
+# ---------------------------------------------------------------------------
+
+
+async def _push_bot_commands(client: TelegramClient) -> bool:
+    """Push BOT_MENU_COMMANDS; log on failure but never raise."""
+    try:
+        await client.set_my_commands(BOT_MENU_COMMANDS)
+    except TelegramApiError as exc:
+        _log.warning('setMyCommands failed (best-effort): %s', exc)
+        return False
+    return True
+
+
+async def _clear_bot_commands(client: TelegramClient) -> bool:
+    """Clear the bot's "/" menu; log on failure but never raise."""
+    try:
+        await client.delete_my_commands()
+    except TelegramApiError as exc:
+        _log.warning('deleteMyCommands failed (best-effort): %s', exc)
+        return False
+    return True

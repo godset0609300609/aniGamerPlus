@@ -169,6 +169,49 @@ async def test_set_webhook_posts_correct_payload() -> None:
 
 
 # ---------------------------------------------------------------------------
+# set_my_commands / delete_my_commands
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_set_my_commands_posts_correct_payload() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return _ok_response(True)
+
+    commands = [
+        {'command': 'help', 'description': '說明'},
+        {'command': 'status', 'description': '查看任務狀態'},
+    ]
+    client = _make_client(httpx.MockTransport(handler))
+    await client.set_my_commands(commands)
+    await client.close()
+
+    assert len(captured) == 1
+    assert captured[0].url.path.endswith('/setMyCommands')
+    body = json.loads(captured[0].content)
+    assert body == {'commands': commands}
+
+
+@pytest.mark.anyio
+async def test_delete_my_commands_calls_correct_method() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return _ok_response(True)
+
+    client = _make_client(httpx.MockTransport(handler))
+    await client.delete_my_commands()
+    await client.close()
+
+    assert len(captured) == 1
+    assert captured[0].url.path.endswith('/deleteMyCommands')
+
+
+# ---------------------------------------------------------------------------
 # get_webhook_info
 # ---------------------------------------------------------------------------
 

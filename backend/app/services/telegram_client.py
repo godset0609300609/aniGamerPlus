@@ -133,6 +133,16 @@ class TelegramClient:
         """GET /getMe — used to verify bot token is valid."""
         return await self._call('getMe')
 
+    # --- bot commands (the "/" menu) ---
+
+    async def set_my_commands(self, commands: list[dict[str, str]]) -> None:
+        """POST /setMyCommands — populate the bot's "/" menu."""
+        await self._call('setMyCommands', {'commands': commands})
+
+    async def delete_my_commands(self) -> None:
+        """POST /deleteMyCommands — clear the bot's "/" menu."""
+        await self._call('deleteMyCommands')
+
     # --- internal ---
 
     async def _call(self, method: str, payload: dict[str, object] | None = None) -> dict[str, object]:
