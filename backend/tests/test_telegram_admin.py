@@ -340,11 +340,7 @@ def test_bot_menu_commands_constant_matches_dispatcher() -> None:
 
     menu_names = {c['command'] for c in BOT_MENU_COMMANDS}
     # _HELP_TEXT lists each user-facing command on its own line as ``/<name>``.
-    help_names = {
-        line.split()[0].lstrip('/').rstrip('`')
-        for line in _HELP_TEXT.splitlines()
-        if line.startswith('/')
-    }
+    help_names = {line.split()[0].lstrip('/').rstrip('`') for line in _HELP_TEXT.splitlines() if line.startswith('/')}
     assert menu_names == help_names, (
         f'BOT_MENU_COMMANDS and _HELP_TEXT diverged. '
         f'menu only: {menu_names - help_names}, help only: {help_names - menu_names}'
