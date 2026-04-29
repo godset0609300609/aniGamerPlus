@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import os
 import typing as T
 
 import httpx
+import redis
+import redis.asyncio
 
 from .auth.discord_oauth import DiscordOAuthClient
 from .downloader.anime import Anime
@@ -41,20 +42,23 @@ from .persistence.settings_repo import SettingsRepository
 from .persistence.sn_list_repo import SnListRepository
 from .persistence.task_history_repo import TaskHistoryRepository
 from .persistence.user_repo import UserRepository
+from .redis_state import MessageIdRegistry
 from .scheduler.cd_counter import DownloadCooldown
 from .scheduler.manual_runner import ManualRunner
 from .scheduler.queue_ import TaskQueue
 from .scheduler.signals import SignalHandler
 from .scheduler.update_loop import UpdateLoop
 from .scheduler.worker import DownloadWorker
+from .services.redis_progress_reader import RedisProgressReader
+from .services.telegram_live_menu import LiveMenuRegistry
+from .services.telegram_live_messages import LiveMessageRegistry
 
 if T.TYPE_CHECKING:
-    from .api._scheduler_proxy import SchedulerProxy
     from .models import AppSettings
-    from .scheduler.event_sink import DownloadEventSink
     from .scheduler.watchdog import SchedulerWatchdog
     from .services.telegram_client import TelegramClient
     from .services.telegram_commands import TelegramCommandDispatcher
+    from .services.telegram_menu import MenuRenderer
     from .services.telegram_rate_limiter import TelegramRateLimiter
 
 
@@ -91,15 +95,24 @@ class Container:
     manual_runner: ManualRunner
     my_anime_exporter: MyAnimeExporter
     signals: SignalHandler
-    # None = scheduler process (no proxy needed); API process populates this.
-    scheduler_proxy: SchedulerProxy | None = None
+    # Sync client used by RedisProgressMirror (must stay sync — called from
+    # sync ProgressBus callbacks on the downloader thread).
+    redis_client_sync: redis.Redis[bytes] | None = None
+    # Async client used by RedisProgressReader + MessageIdRegistry.
+    redis_client_async: redis.asyncio.Redis | None = None
+    redis_progress_reader: RedisProgressReader | None = None
+    message_id_registry: MessageIdRegistry | None = None
+    # Per-(sn, chat_id) live progress message tracker (Redis-backed).
+    live_messages: LiveMessageRegistry | None = None
     # None when bot_token is empty; instantiated by the API process only.
     telegram_client: TelegramClient | None = None
-    # None when bot_token is empty; used by the scheduler process to fire DMs.
-    event_sink: DownloadEventSink | None = None
     # None when bot_token is empty; rate limiter + dispatcher for webhook commands.
     telegram_rate_limiter: TelegramRateLimiter | None = None
     telegram_command_dispatcher: TelegramCommandDispatcher | None = None
+    # Per-user menu message-id tracker (Redis-backed); None when Redis unavailable.
+    live_menu: LiveMenuRegistry | None = None
+    # Menu page renderer for /menu control panel; None when bot_token is empty.
+    menu_renderer: MenuRenderer | None = None
 
     def anime_factory(self, sn: int) -> Anime:
         """Build an :class:`Anime` orchestrator wired with this container's collaborators."""
@@ -123,6 +136,9 @@ class Container:
 
     def build_worker(self) -> DownloadWorker:
         """Build a :class:`DownloadWorker` using the container's collaborators."""
+        from .tasks.telegram import notify_event_actor
+
+        notify_event_send = notify_event_actor.send_with_options if self.telegram_client is not None else None
         return DownloadWorker(
             queue=self.task_queue,
             anime_factory=self.anime_factory,
@@ -130,7 +146,7 @@ class Container:
             progress=self.progress_bus,
             settings_provider=self.settings_repo.load,
             logger=self.logger,
-            event_sink=self.event_sink,
+            notify_event_send=notify_event_send,
             anime_list_repo=self.anime_list_entry_repo,
         )
 
@@ -149,6 +165,9 @@ class Container:
         if watchdog is None:
             watchdog = SchedulerWatchdog(self.logger)
             watchdog.start()
+        from .tasks.telegram import notify_event_actor
+
+        notify_event_send = notify_event_actor.send_with_options if self.telegram_client is not None else None
         return UpdateLoop(
             settings_repo=self.settings_repo,
             sn_list_repo=self.sn_list_repo,
@@ -162,6 +181,7 @@ class Container:
             progress_bus=self.progress_bus,
             watchdog=watchdog,
             parse_cooldown=self.parse_cooldown,
+            notify_event_send=notify_event_send,
         )
 
 
@@ -213,7 +233,43 @@ def build_container() -> Container:
     _oauth_http = httpx.AsyncClient()
     oauth_client = DiscordOAuthClient(settings.auth, _oauth_http)
 
-    progress_bus = ProgressBus(history_repo=task_history_repo)
+    from .dramatiq_setup import get_redis_url
+
+    redis_client_sync: redis.Redis[bytes] | None = None
+    redis_client_async: redis.asyncio.Redis | None = None
+    redis_progress_mirror = None
+    redis_progress_reader = None
+    message_id_registry = None
+    live_messages = None
+    live_menu = None
+    try:
+        redis_url = get_redis_url()
+        redis_client_sync = redis.Redis.from_url(redis_url)
+        # Eagerly ping so a misconfigured Redis fails fast instead of silently
+        # losing every mirror publish.  In tests / single-process CLI without
+        # Redis available, fall through to None and operate without the mirror.
+        redis_client_sync.ping()
+        redis_client_async = redis.asyncio.Redis.from_url(redis_url)
+        # No async ping here — pinging in async context at module-import time
+        # would require an event loop; the FastAPI lifespan can ping if needed.
+        from .downloader.redis_progress_mirror import RedisProgressMirror
+
+        redis_progress_mirror = RedisProgressMirror(redis_client_sync)
+        redis_progress_reader = RedisProgressReader(redis_client_async)
+        message_id_registry = MessageIdRegistry(redis_client_async)
+        live_messages = LiveMessageRegistry(redis_client_async)
+        live_menu = LiveMenuRegistry(redis_client_async)
+    except Exception as exc:  # noqa: BLE001 — connection refused etc.
+        logger.info(
+            None,
+            'Bootstrap',
+            f'Redis 不可用，progress mirror 與 cancel registry 將停用: {exc}',
+            display=False,
+        )
+        redis_client_sync = None
+        redis_client_async = None
+
+    progress_bus = ProgressBus(history_repo=task_history_repo, mirror=redis_progress_mirror)
 
     http_client = AniGamerHttpClient(settings, cookie_repo, logger)
     metadata_extractor = MetadataExtractor(http_client, settings, logger)
@@ -263,44 +319,24 @@ def build_container() -> Container:
     my_anime_exporter = MyAnimeExporter(http_client, logger)
     signals = SignalHandler(logger)
 
-    # Build the scheduler proxy used by the API process.
-    # The scheduler process itself leaves this as None.
-    scheduler_url = os.environ.get('ANIGAMERPLUS_SCHEDULER_URL', 'http://127.0.0.1:5001')
-    scheduler_secret = os.environ.get('ANIGAMERPLUS_INTERNAL_SECRET', '')
-    from .api._scheduler_proxy import SchedulerProxy
-
-    scheduler_proxy = SchedulerProxy(
-        base_url=scheduler_url,
-        secret=scheduler_secret,
-        logger=None,  # uses module-level stdlib logger
-    )
-
-    # Build TelegramClient and TelegramNotifier / DownloadEventSink for all
-    # processes that have a bot_token configured.  The API process uses the
-    # client for webhook/send-message; the scheduler process uses the sink to
-    # fire download-event DMs from the sync worker thread.
+    # Build TelegramClient and related services for all processes that have a
+    # bot_token configured.  The API process uses the client for
+    # webhook/send-message; the scheduler process wires notify_event_actor
+    # into the worker and update-loop for download-event DMs.
     telegram_client = None
-    event_sink = None
     telegram_rate_limiter = None
     telegram_command_dispatcher = None
+    menu_renderer = None
     if settings.telegram.bot_token:
-        from .scheduler.event_sink import DownloadEventSink as _DownloadEventSink
         from .services.animelist_service import AnimeListService as _AnimeListService
         from .services.progress_service import ProgressService as _ProgressService
         from .services.task_service import TaskService as _TaskService
         from .services.telegram_client import TelegramClient as _TelegramClient
         from .services.telegram_commands import TelegramCommandDispatcher as _TelegramCommandDispatcher
-        from .services.telegram_notifier import TelegramNotifier as _TelegramNotifier
+        from .services.telegram_menu import MenuRenderer as _MenuRenderer
         from .services.telegram_rate_limiter import TelegramRateLimiter as _TelegramRateLimiter
 
         telegram_client = _TelegramClient(settings.telegram.bot_token)
-        _notifier = _TelegramNotifier(
-            client=telegram_client,
-            user_repo=user_repo,
-            settings=settings.telegram,
-            logger=logger,
-        )
-        event_sink = _DownloadEventSink(_notifier)
 
         def _rate_limit_provider() -> int:
             return settings_repo.load().telegram.rate_limit_per_minute
@@ -313,8 +349,25 @@ def build_container() -> Container:
             return _resolve_client(settings_repo.load().telegram.bot_token)
 
         _animelist_svc = _AnimeListService(sn_list_repo, anime_repo, anime_list_entry_repo, user_repo)
-        _progress_svc = _ProgressService(progress_bus, user_repo, scheduler_proxy)
-        _task_svc = _TaskService(settings_repo, manual_runner, scheduler_proxy, _progress_svc)
+        _progress_svc = _ProgressService(progress_bus, user_repo, None, redis_progress_reader)
+        _task_svc = _TaskService(
+            settings_repo,
+            manual_runner,
+            progress_bus=progress_bus,
+            progress_service=_progress_svc,
+            message_id_registry=message_id_registry,
+        )
+
+        menu_renderer = _MenuRenderer(
+            user_repo=user_repo,
+            animelist_service=_animelist_svc,
+            task_service=_task_svc,
+            progress_service=_progress_svc,
+            task_history_repo=task_history_repo,
+            settings_provider=settings_repo.load,
+            telegram_settings_provider=lambda: settings_repo.load().telegram,
+            public_url=settings.telegram.public_url,
+        )
 
         telegram_command_dispatcher = _TelegramCommandDispatcher(
             client_provider=_client_provider,
@@ -325,6 +378,8 @@ def build_container() -> Container:
             rate_limiter=telegram_rate_limiter,
             logger=logger,
             metadata_extractor=metadata_extractor,
+            menu_renderer=menu_renderer,
+            live_menu=live_menu,
         )
 
     container = Container(
@@ -340,6 +395,11 @@ def build_container() -> Container:
         task_history_repo=task_history_repo,
         oauth_client=oauth_client,
         progress_bus=progress_bus,
+        redis_client_sync=redis_client_sync,
+        redis_client_async=redis_client_async,
+        redis_progress_reader=redis_progress_reader,
+        message_id_registry=message_id_registry,
+        live_messages=live_messages,
         http_client=http_client,
         metadata_extractor=metadata_extractor,
         m3u8_client=m3u8_client,
@@ -355,11 +415,11 @@ def build_container() -> Container:
         manual_runner=manual_runner,
         my_anime_exporter=my_anime_exporter,
         signals=signals,
-        scheduler_proxy=scheduler_proxy,
         telegram_client=telegram_client,
-        event_sink=event_sink,
         telegram_rate_limiter=telegram_rate_limiter,
         telegram_command_dispatcher=telegram_command_dispatcher,
+        live_menu=live_menu,
+        menu_renderer=menu_renderer,
     )
     return container
 

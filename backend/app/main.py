@@ -205,18 +205,17 @@ class DashboardApp:
         tailer = LogFileTailer(self._container.paths.logs_dir, ring_handler)
         tailer.start()
 
+        # Legacy: wire scheduler_proxy on app.state when it's present on the
+        # container (e.g. old single-process deployment or tests that still
+        # inject it).  The proxy WS subscription is still started when wired
+        # so health.py can surface aggregate scheduler status.
         proxy = getattr(self._container, 'scheduler_proxy', None)
-
-        # Always start the proxy WS subscription if a proxy is wired.
-        # The proxy subscription is independent of the scheduler env-var:
-        # the env-var only controls whether to spawn the in-process UpdateLoop.
         proxy_task: asyncio.Task[None] | None = None
         if proxy is not None:
             proxy_task = asyncio.create_task(
                 proxy.run_progress_subscription(),
                 name='scheduler-proxy-ws',
             )
-            # Expose the proxy on app.state so health.py can fetch scheduler health.
             app.state.scheduler_proxy = proxy
             logger.info(
                 None,

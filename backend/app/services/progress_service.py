@@ -34,6 +34,7 @@ import anyio.to_thread
 from ..models import TaskProgressEntry, TaskProgressSnapshot
 from ..persistence.user_repo import UserRow
 from ._factory import container_bound
+from .redis_progress_reader import RedisProgressReader
 
 if T.TYPE_CHECKING:
     from ..api._scheduler_proxy import SchedulerProxy
@@ -49,17 +50,22 @@ class ProgressService:
         progress_bus: ProgressBus,
         user_repo: UserRepository | None = None,
         scheduler_proxy: SchedulerProxy | None = None,
+        redis_reader: RedisProgressReader | None = None,
     ) -> None:
         self._bus = progress_bus
         self._user_repo = user_repo
         self._proxy = scheduler_proxy
+        self._redis_reader = redis_reader
 
     async def snapshot(self, user: UserRow) -> TaskProgressSnapshot:
         """Return a progress snapshot filtered by the caller's role.
 
         Data source priority:
-        1. ``scheduler_proxy.latest_snapshot()`` — multi-process mode.
-        2. ``progress_bus.snapshot()`` — in-process fallback (CLI / scheduler
+        1. ``redis_reader.snapshot()`` — API process, post-migration (Redis
+           mirror available).
+        2. ``scheduler_proxy.latest_snapshot()`` — API process, pre-migration
+           (proxy wired but no Redis reader).
+        3. ``progress_bus.snapshot()`` — in-process fallback (CLI / scheduler
            process / proxy not wired).
 
         If the proxy is wired but the scheduler is down, returns an empty
@@ -69,10 +75,12 @@ class ProgressService:
           each entry whose ``owner_id`` is known.
         * downloader: only tasks whose ``owner_id`` matches ``user.id``.
         """
-        # Both ProgressBus.snapshot() and SchedulerProxy.latest_snapshot()
-        # are sync-fast in-memory reads — wrap in run_sync for consistency.
-        if self._proxy is not None:
-            raw: dict[int, TaskProgress] = await anyio.to_thread.run_sync(self._proxy.latest_snapshot)
+        # redis_reader.snapshot() is native async; the legacy proxy and bus
+        # paths are still sync and need the thread bridge.
+        if self._redis_reader is not None:
+            raw: dict[int, TaskProgress] = await self._redis_reader.snapshot()
+        elif self._proxy is not None:
+            raw = await anyio.to_thread.run_sync(self._proxy.latest_snapshot)
         else:
             raw = await anyio.to_thread.run_sync(self._bus.snapshot)
 
@@ -134,5 +142,12 @@ class ProgressService:
         return TaskProgressSnapshot(tasks=tasks)
 
 
-get_progress_service = container_bound(lambda c: ProgressService(c.progress_bus, c.user_repo, c.scheduler_proxy))
+get_progress_service = container_bound(
+    lambda c: ProgressService(
+        c.progress_bus,
+        c.user_repo,
+        getattr(c, 'scheduler_proxy', None),
+        getattr(c, 'redis_progress_reader', None),
+    )
+)
 """FastAPI dependency resolver for :class:`ProgressService`."""

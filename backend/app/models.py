@@ -54,11 +54,12 @@ class TelegramSettings(pydantic.BaseModel):
     webhook_secret: str = ''  # path segment + X-Telegram-Bot-Api-Secret-Token
     public_url: str = ''  # e.g. "https://example.com" — used to build webhook URL
     notify_on: list[str] = pydantic.Field(
-        default_factory=lambda: ['completed', 'failed', 'cancelled'],
+        default_factory=lambda: ['started', 'completed', 'failed', 'cancelled', 'auto_enqueue'],
         min_length=1,
     )
     admin_broadcast: bool = True  # also DM every admin user who is bound + opted-in
     rate_limit_per_minute: int = pydantic.Field(default=30, ge=1, le=300)
+    health_alerts: bool = True  # admin disk-low / cookie-expired DMs
 
 
 # ---------------------------------------------------------------------------

@@ -111,6 +111,11 @@ class User(Base):
     telegram_link_token_expires_at: sqlalchemy.orm.Mapped[datetime.datetime | None] = sqlalchemy.orm.mapped_column(
         sqlalchemy.DateTime, nullable=True
     )
+    # Added by revision 0011 — /silence feature mute deadline
+    telegram_mute_until: sqlalchemy.orm.Mapped[datetime.datetime | None] = sqlalchemy.orm.mapped_column(
+        sqlalchemy.DateTime(timezone=True),
+        nullable=True,
+    )
 
 
 class AnimeListEntryRow(Base):

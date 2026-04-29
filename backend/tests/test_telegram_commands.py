@@ -101,7 +101,7 @@ async def test_cmd_help_happy_path() -> None:
     msg = _last_message(client)
     assert '/download' in msg
     assert '/watch' in msg
-    assert '/status' in msg
+    assert '/menu' in msg
 
 
 # ---------------------------------------------------------------------------
@@ -111,12 +111,12 @@ async def test_cmd_help_happy_path() -> None:
 
 @pytest.mark.anyio
 async def test_cmd_me_happy_path() -> None:
+    """Simplified: /me now redirects to /menu."""
     dispatcher, client = _make_dispatcher()
     user = _make_user(role='admin')
     await dispatcher.dispatch(chat_id=111, user=user, text='/me')
     msg = _last_message(client)
-    assert 'Alice' in msg
-    assert 'admin' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 # ---------------------------------------------------------------------------
@@ -183,39 +183,33 @@ async def test_cmd_download_generic_exception_returns_error() -> None:
 
 
 @pytest.mark.anyio
-async def test_cmd_cancel_happy_path() -> None:
-    """The /cancel command now shows a confirmation keyboard (not immediate cancel)."""
+async def test_cmd_cancel_redirects_to_menu() -> None:
+    """Simplified: /cancel now redirects users to /menu."""
     dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/cancel 48430')
     msg = _last_message(client)
-    # New behaviour: reply asks for confirmation
-    assert '確定' in msg or '取消' in msg or '48430' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 @pytest.mark.anyio
-async def test_cmd_cancel_not_found_returns_warning() -> None:
-    """The /cancel command shows a confirmation keyboard; the 404 is surfaced
-    only when the user confirms via the callback query flow.
-    This test verifies the confirmation prompt is shown for any valid SN."""
+async def test_cmd_cancel_not_found_redirects_to_menu() -> None:
+    """Simplified: /cancel with any SN now redirects to /menu."""
     dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/cancel 999')
     msg = _last_message(client)
-    # Confirmation prompt should be shown
-    assert '確定' in msg or '取消' in msg or '999' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 @pytest.mark.anyio
-async def test_cmd_cancel_other_user_task_forbidden() -> None:
-    """The /cancel command shows a confirmation keyboard regardless of ownership;
-    the 403 is surfaced only in the callback-confirm path."""
+async def test_cmd_cancel_other_user_redirects_to_menu() -> None:
+    """Simplified: /cancel now redirects regardless of ownership."""
     dispatcher, client = _make_dispatcher()
     user = _make_user(role='downloader')
     await dispatcher.dispatch(chat_id=111, user=user, text='/cancel 48430')
     msg = _last_message(client)
-    # Confirmation prompt should appear
-    assert '確定' in msg or '取消' in msg or '48430' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 # ---------------------------------------------------------------------------
@@ -283,44 +277,31 @@ async def test_cmd_watch_already_watching() -> None:
 
 
 @pytest.mark.anyio
-async def test_cmd_unwatch_happy_path() -> None:
-    animelist_service = MagicMock()
-    existing = AnimeListEntry(sn=48430, enabled=True, owner_id='user-1')
-    animelist_service.list_entries = AsyncMock(return_value=[existing])
-    animelist_service.replace_entries = AsyncMock(return_value=None)
-
-    dispatcher, client = _make_dispatcher(animelist_service=animelist_service)
+async def test_cmd_unwatch_redirects_to_menu() -> None:
+    """Simplified: /unwatch now redirects to /menu."""
+    dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/unwatch 48430')
     msg = _last_message(client)
-    assert '🗑️' in msg or '移除' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 @pytest.mark.anyio
-async def test_cmd_unwatch_not_found() -> None:
-    animelist_service = MagicMock()
-    animelist_service.list_entries = AsyncMock(return_value=[])
-    animelist_service.replace_entries = AsyncMock(return_value=None)
-
-    dispatcher, client = _make_dispatcher(animelist_service=animelist_service)
+async def test_cmd_unwatch_not_found_redirects_to_menu() -> None:
+    dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/unwatch 999')
     msg = _last_message(client)
-    assert '⚠️' in msg or '沒有' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 @pytest.mark.anyio
-async def test_cmd_unwatch_error_path() -> None:
-    animelist_service = MagicMock()
-    existing = AnimeListEntry(sn=48430, enabled=True, owner_id='user-1')
-    animelist_service.list_entries = AsyncMock(return_value=[existing])
-    animelist_service.replace_entries = AsyncMock(side_effect=RuntimeError('db error'))
-
-    dispatcher, client = _make_dispatcher(animelist_service=animelist_service)
+async def test_cmd_unwatch_error_path_redirects_to_menu() -> None:
+    dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/unwatch 48430')
     msg = _last_message(client)
-    assert '❌' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 # ---------------------------------------------------------------------------
@@ -329,43 +310,32 @@ async def test_cmd_unwatch_error_path() -> None:
 
 
 @pytest.mark.anyio
-async def test_cmd_list_happy_path() -> None:
-    animelist_service = MagicMock()
-    entries = [AnimeListEntry(sn=100 + i, enabled=True, owner_id='user-1', anime_name=f'Anime {i}') for i in range(3)]
-    animelist_service.list_entries = AsyncMock(return_value=entries)
-
-    dispatcher, client = _make_dispatcher(animelist_service=animelist_service)
+async def test_cmd_list_redirects_to_menu() -> None:
+    """Simplified: /list now redirects to /menu."""
+    dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/list')
     msg = _last_message(client)
-    assert '追番清單' in msg
-    assert 'Anime' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 @pytest.mark.anyio
-async def test_cmd_list_empty() -> None:
-    animelist_service = MagicMock()
-    animelist_service.list_entries = AsyncMock(return_value=[])
-
-    dispatcher, client = _make_dispatcher(animelist_service=animelist_service)
+async def test_cmd_list_empty_redirects_to_menu() -> None:
+    dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/list')
     msg = _last_message(client)
-    assert '空' in msg or 'empty' in msg.lower() or '清單' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 @pytest.mark.anyio
-async def test_cmd_list_pagination() -> None:
-    """More than 20 entries → '還有 N 項' suffix."""
-    animelist_service = MagicMock()
-    entries = [AnimeListEntry(sn=100 + i, enabled=True, owner_id='user-1', anime_name=f'Anime {i}') for i in range(25)]
-    animelist_service.list_entries = AsyncMock(return_value=entries)
-
-    dispatcher, client = _make_dispatcher(animelist_service=animelist_service)
+async def test_cmd_list_pagination_redirects_to_menu() -> None:
+    """Simplified: /list redirects regardless of entry count."""
+    dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/list')
     msg = _last_message(client)
-    assert '還有' in msg and '5' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 # ---------------------------------------------------------------------------
@@ -374,44 +344,31 @@ async def test_cmd_list_pagination() -> None:
 
 
 @pytest.mark.anyio
-async def test_cmd_status_no_tasks() -> None:
+async def test_cmd_status_redirects_to_menu() -> None:
+    """Simplified: /status now redirects to /menu."""
     dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/status')
     msg = _last_message(client)
-    assert '💤' in msg or '沒有' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 @pytest.mark.anyio
-async def test_cmd_status_with_tasks() -> None:
-    progress_service = MagicMock()
-    entry = TaskProgressEntry(
-        sn=48430,
-        rate=0.63,
-        status='下載中',
-        filename='test.mp4',
-        bangumi_name='Test Anime',
-        episode='01',
-    )
-    progress_service.snapshot = AsyncMock(return_value=TaskProgressSnapshot(tasks={'48430': entry}))
-
-    dispatcher, client = _make_dispatcher(progress_service=progress_service)
+async def test_cmd_status_with_tasks_redirects_to_menu() -> None:
+    dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/status')
     msg = _last_message(client)
-    assert '下載中' in msg or '任務' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 @pytest.mark.anyio
-async def test_cmd_status_error_path() -> None:
-    progress_service = MagicMock()
-    progress_service.snapshot = AsyncMock(side_effect=RuntimeError('connection lost'))
-
-    dispatcher, client = _make_dispatcher(progress_service=progress_service)
+async def test_cmd_status_error_path_redirects_to_menu() -> None:
+    dispatcher, client = _make_dispatcher()
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/status')
     msg = _last_message(client)
-    assert '❌' in msg
+    assert '/menu' in msg or '控制台' in msg
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +382,7 @@ async def test_unknown_command_returns_help() -> None:
     user = _make_user()
     await dispatcher.dispatch(chat_id=111, user=user, text='/unknown_cmd_xyz')
     msg = _last_message(client)
-    assert '/download' in msg or '/help' in msg or '指令' in msg
+    assert '/download' in msg or '/help' in msg or '/menu' in msg or '指令' in msg
 
 
 # ---------------------------------------------------------------------------
@@ -715,3 +672,168 @@ async def test_cmd_help_includes_watch_kwargs() -> None:
     msg = _last_message(client)
     assert 'tag' in msg
     assert 'season' in msg
+
+
+# ---------------------------------------------------------------------------
+# /menu command
+# ---------------------------------------------------------------------------
+
+
+def _make_dispatcher_with_menu(
+    menu_renderer: object,
+    live_menu: object,
+    *,
+    client: MagicMock | None = None,
+) -> tuple[TelegramCommandDispatcher, MagicMock]:
+    """Build a dispatcher pre-wired with a menu_renderer and live_menu."""
+    if client is None:
+        client = MagicMock()
+        client.send_message = AsyncMock(return_value={'message_id': 42})
+        client.delete_message = AsyncMock(return_value=None)
+
+    animelist_service = MagicMock()
+    animelist_service.list_entries = AsyncMock(return_value=[])
+    task_service = MagicMock()
+    task_service.enqueue = AsyncMock(return_value=None)
+    task_service.cancel_task = AsyncMock(return_value=None)
+    progress_service = MagicMock()
+    progress_service.snapshot = AsyncMock(return_value=TaskProgressSnapshot(tasks={}))
+
+    dispatcher = TelegramCommandDispatcher(
+        client_provider=lambda: client,
+        user_repo=MagicMock(),
+        animelist_service=animelist_service,
+        task_service=task_service,
+        progress_service=progress_service,
+        rate_limiter=TelegramRateLimiter(max_provider=lambda: 100),
+        logger=logging.getLogger('test_menu'),  # type: ignore[arg-type]
+        menu_renderer=menu_renderer,  # type: ignore[arg-type]
+        live_menu=live_menu,  # type: ignore[arg-type]
+    )
+    return dispatcher, client
+
+
+@pytest.mark.anyio
+async def test_cmd_menu_without_renderer_sends_disabled_message() -> None:
+    dispatcher, client = _make_dispatcher()
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text='/menu')
+    msg = _last_message(client)
+    assert '未啟用' in msg or '❌' in msg or '控制台' in msg
+
+
+@pytest.mark.anyio
+async def test_cmd_menu_deletes_previous_and_sends_new() -> None:
+    """With menu_renderer + live_menu, /menu deletes previous + sends new + stores message_id."""
+    menu_renderer = MagicMock()
+    menu_renderer.render_root = AsyncMock(return_value=('Menu Text', {'inline_keyboard': []}))
+
+    live_menu = MagicMock()
+    live_menu.get = AsyncMock(return_value=99)  # previous message_id = 99
+    live_menu.set = AsyncMock(return_value=None)
+
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value={'message_id': 42})
+    client.delete_message = AsyncMock(return_value=None)
+
+    dispatcher, _ = _make_dispatcher_with_menu(menu_renderer, live_menu, client=client)
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text='/menu')
+
+    # Previous message (id=99) should have been deleted
+    client.delete_message.assert_awaited_once_with(111, 99)
+    # New message should have been sent
+    client.send_message.assert_awaited_once()
+    # New message_id (42) should be stored
+    live_menu.set.assert_awaited_once_with('user-1', 42)
+
+
+@pytest.mark.anyio
+async def test_cmd_menu_no_previous_message() -> None:
+    """When no previous menu message exists, /menu should not try to delete."""
+    menu_renderer = MagicMock()
+    menu_renderer.render_root = AsyncMock(return_value=('Menu Text', {'inline_keyboard': []}))
+
+    live_menu = MagicMock()
+    live_menu.get = AsyncMock(return_value=None)  # no previous message
+    live_menu.set = AsyncMock(return_value=None)
+
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value={'message_id': 55})
+    client.delete_message = AsyncMock(return_value=None)
+
+    dispatcher, _ = _make_dispatcher_with_menu(menu_renderer, live_menu, client=client)
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text='/menu')
+
+    client.delete_message.assert_not_awaited()
+    live_menu.set.assert_awaited_once_with('user-1', 55)
+
+
+# ---------------------------------------------------------------------------
+# m:* callback dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_callback_m_root_calls_menu_renderer() -> None:
+    """m:root callback should call menu_renderer.render and editMessageText."""
+    menu_renderer = MagicMock()
+    menu_renderer.render = AsyncMock(return_value=('Root Page', {'inline_keyboard': []}))
+
+    live_menu = MagicMock()
+    live_menu.get = AsyncMock(return_value=None)
+    live_menu.set = AsyncMock(return_value=None)
+
+    client = MagicMock()
+    client.answer_callback_query = AsyncMock(return_value=None)
+    client.edit_message_text = AsyncMock(return_value={})
+
+    dispatcher, _ = _make_dispatcher_with_menu(menu_renderer, live_menu, client=client)
+    user = _make_user()
+
+    # Build a minimal callback_query mock
+    cq = MagicMock()
+    cq.id = 'cq-1'
+    cq.data = 'm:root'
+    msg = MagicMock()
+    msg.chat = MagicMock()
+    msg.chat.id = 111
+    msg.message_id = 42
+    cq.message = msg
+
+    await dispatcher.handle_callback_query(user=user, callback_query=cq)
+
+    menu_renderer.render.assert_awaited_once_with(user, 'm:root')
+    client.edit_message_text.assert_awaited_once_with(111, 42, 'Root Page', reply_markup={'inline_keyboard': []})
+
+
+@pytest.mark.anyio
+async def test_callback_m_without_renderer_answers_quietly() -> None:
+    """m:* callbacks when menu_renderer is None should answer without error."""
+    dispatcher, client = _make_dispatcher()
+    client.answer_callback_query = AsyncMock(return_value=None)
+    user = _make_user()
+
+    cq = MagicMock()
+    cq.id = 'cq-2'
+    cq.data = 'm:tasks'
+    cq.message = None
+
+    await dispatcher.handle_callback_query(user=user, callback_query=cq)
+    client.answer_callback_query.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Verify simplified command handlers respond with /menu hint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('cmd', ['/status', '/list', '/unwatch 1', '/me', '/cancel 1'])
+@pytest.mark.anyio
+async def test_simplified_commands_respond_with_menu_hint(cmd: str) -> None:
+    dispatcher, client = _make_dispatcher()
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text=cmd)
+    msg = _last_message(client)
+    assert '/menu' in msg or '控制台' in msg

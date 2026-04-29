@@ -33,6 +33,16 @@ if T.TYPE_CHECKING:
 
 _COMPLETION_TTL_SECONDS = 7 * 86400  # 7 days
 
+
+class _ProgressMirror(T.Protocol):
+    """Write-through hook called after every mutation.  Implementations
+    must serialise the given entry to a cross-process store (Redis hash
+    in production)."""
+
+    def publish(self, sn: int, entry: 'TaskProgress') -> None: ...
+    def publish_finish(self, sn: int, entry: 'TaskProgress') -> None: ...
+
+
 # Statuses that represent a genuine terminal outcome — the task reached one of
 # these states intentionally before finish() was called.
 TERMINAL_STATUSES: frozenset[str] = frozenset({'下載完成', '任務完成'})
@@ -83,10 +93,13 @@ class ProgressBus:
     def __init__(
         self,
         history_repo: TaskHistoryRepository | None = None,
+        *,
+        mirror: _ProgressMirror | None = None,
     ) -> None:
         self._entries: dict[int, TaskProgress] = {}
         self._lock = threading.RLock()
         self._history_repo = history_repo
+        self._mirror = mirror
         # Maps sn -> DB row id (populated by record_start; consumed by record_finish).
         self._row_ids: dict[int, int] = {}
 
@@ -137,6 +150,7 @@ class ProgressBus:
         cancel_event = threading.Event()
         started_at = datetime.datetime.now(datetime.UTC)
         already_has_db_row: bool
+        _branch: int = 0  # 1=has-db-row, 2=active-no-db-row, 3=fresh
         with self._lock:
             already_has_db_row = sn in self._row_ids
             existing = self._entries.get(sn)
@@ -163,9 +177,9 @@ class ProgressBus:
                         existing.episode = episode
                     if resolution is not None:
                         existing.resolution = resolution
-                return
+                _branch = 1
 
-            if existing is not None and existing.finished_at is None:
+            elif existing is not None and existing.finished_at is None:
                 # An active in-memory entry exists but has no open DB row (either
                 # no history_repo is wired, or the row was already closed by a
                 # previous finish()).  Update in-memory only so that fields written
@@ -184,25 +198,35 @@ class ProgressBus:
                     existing.episode = episode
                 if resolution is not None:
                     existing.resolution = resolution
-                return
+                _branch = 2
 
-            # No active entry (either first call, or entry was finished).
-            # Create a fresh TaskProgress and a new DB row so that genuine
-            # re-submissions (user manually queues the same sn again after it
-            # finished) produce a proper history entry.
-            entry = TaskProgress(
-                sn=sn,
-                rate=0.0,
-                status=status,
-                filename=filename,
-                bangumi_name=bangumi_name,
-                episode=episode,
-                resolution=resolution,
-                started_at=started_at,
-                owner_id=owner_id,
-            )
-            entry._cancel_event = cancel_event
-            self._entries[sn] = entry
+            else:
+                # No active entry (either first call, or entry was finished).
+                # Create a fresh TaskProgress and a new DB row so that genuine
+                # re-submissions (user manually queues the same sn again after it
+                # finished) produce a proper history entry.
+                entry = TaskProgress(
+                    sn=sn,
+                    rate=0.0,
+                    status=status,
+                    filename=filename,
+                    bangumi_name=bangumi_name,
+                    episode=episode,
+                    resolution=resolution,
+                    started_at=started_at,
+                    owner_id=owner_id,
+                )
+                entry._cancel_event = cancel_event
+                self._entries[sn] = entry
+                _branch = 3
+
+        if _branch == 1:
+            self._mirror_publish(sn)
+            return
+
+        if _branch == 2:
+            self._mirror_publish(sn)
+            return
 
         # Persist outside the lock to avoid holding it during DB I/O.
         if self._history_repo is not None:
@@ -218,6 +242,10 @@ class ProgressBus:
             with self._lock:
                 self._row_ids[sn] = row_id
 
+        # Branch 3: fresh entry created — publish after optional DB write so
+        # _row_id is already populated in the mirror snapshot.
+        self._mirror_publish(sn)
+
     def update_rate(self, sn: int, rate: float) -> None:
         """Mutate ``rate`` on an existing entry; silent no-op if missing."""
         with self._lock:
@@ -225,6 +253,7 @@ class ProgressBus:
             if entry is None:
                 return
             entry.rate = rate
+        self._mirror_publish(sn)
 
     def update_status(self, sn: int, status: str) -> None:
         """Mutate ``status`` on an existing entry; silent no-op if missing."""
@@ -233,6 +262,7 @@ class ProgressBus:
             if entry is None:
                 return
             entry.status = status
+        self._mirror_publish(sn)
 
     def update_stats(
         self,
@@ -258,6 +288,7 @@ class ProgressBus:
                 entry.eta_seconds = eta_seconds
             if rate is not None:
                 entry.rate = rate
+        self._mirror_publish(sn)
 
     def update_metadata(
         self,
@@ -289,6 +320,7 @@ class ProgressBus:
                 entry.resolution = resolution
             if filename is not None:
                 entry.filename = filename
+        self._mirror_publish(sn)
 
     def update_resolution(self, sn: int, resolution: str) -> None:
         """Set the ``resolution`` field on an existing entry; silent no-op if missing."""
@@ -297,6 +329,7 @@ class ProgressBus:
             if entry is None:
                 return
             entry.resolution = resolution
+        self._mirror_publish(sn)
 
     def mark_retry(self, sn: int) -> None:
         """Increment ``retries`` counter and set status to '失敗! 重啓中'."""
@@ -306,6 +339,7 @@ class ProgressBus:
                 return
             entry.retries += 1
             entry.status = '失敗! 重啓中'
+        self._mirror_publish(sn)
 
     def finish(self, sn: int) -> None:
         """Mark a task as finished.
@@ -362,6 +396,8 @@ class ProgressBus:
                 filename=_filename,
             )
 
+        self._mirror_publish_finish(sn)
+
     def cancel(self, sn: int) -> bool:
         """Signal the running task for ``sn`` to cancel.
 
@@ -378,6 +414,8 @@ class ProgressBus:
             entry.status = '已取消'
             if entry._cancel_event is not None:
                 entry._cancel_event.set()
+
+        self._mirror_publish(sn)
 
         # Schedule finish after 1 second so the UI notices the cancelled state.
         timer = threading.Timer(1.0, self.finish, args=(sn,))
@@ -401,6 +439,7 @@ class ProgressBus:
             if entry is None:
                 return
             entry.cooldown_until = datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=seconds)
+        self._mirror_publish(sn)
 
     def clear_cooldown(self, sn: int) -> None:
         """Remove the cooldown deadline for ``sn``.
@@ -412,6 +451,33 @@ class ProgressBus:
             if entry is None:
                 return
             entry.cooldown_until = None
+        self._mirror_publish(sn)
+
+    def _mirror_publish(self, sn: int) -> None:
+        if self._mirror is None:
+            return
+        with self._lock:
+            entry = self._entries.get(sn)
+            if entry is None:
+                return
+            snap = dataclasses.replace(entry, _cancel_event=None)
+        try:
+            self._mirror.publish(sn, snap)
+        except Exception:  # noqa: BLE001 — never let the mirror kill a download
+            pass
+
+    def _mirror_publish_finish(self, sn: int) -> None:
+        if self._mirror is None:
+            return
+        with self._lock:
+            entry = self._entries.get(sn)
+            if entry is None:
+                return
+            snap = dataclasses.replace(entry, _cancel_event=None)
+        try:
+            self._mirror.publish_finish(sn, snap)
+        except Exception:  # noqa: BLE001
+            pass
 
     def get_cancel_event(self, sn: int) -> threading.Event | None:
         """Return the cancel ``threading.Event`` for ``sn``, or ``None`` if unknown."""

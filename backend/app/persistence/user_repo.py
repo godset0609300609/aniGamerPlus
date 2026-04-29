@@ -32,6 +32,7 @@ class UserRow:
     telegram_link_token: str | None = None
     telegram_notify_enabled: bool = True
     telegram_link_token_expires_at: datetime.datetime | None = None
+    telegram_mute_until: datetime.datetime | None = None
 
 
 def _to_row(orm: User) -> UserRow:
@@ -46,6 +47,7 @@ def _to_row(orm: User) -> UserRow:
         telegram_link_token=orm.telegram_link_token,
         telegram_notify_enabled=orm.telegram_notify_enabled,
         telegram_link_token_expires_at=orm.telegram_link_token_expires_at,
+        telegram_mute_until=orm.telegram_mute_until,
     )
 
 
@@ -203,3 +205,14 @@ class UserRepository:
         with self._db.session() as session:
             stmt = sqlalchemy.update(User).where(User.id == user_id).values(telegram_notify_enabled=enabled)
             session.execute(stmt)
+
+    def set_telegram_mute_until(self, user_id: str, until: datetime.datetime | None) -> None:
+        """Set or clear the user's mute deadline.  ``None`` removes the mute.
+
+        The deadline is timezone-aware; callers that compute it from a duration
+        must use ``datetime.datetime.now(datetime.UTC) + timedelta(...)``.
+        """
+        with self._db.session() as sess:
+            stmt = sqlalchemy.update(User).where(User.id == user_id).values(telegram_mute_until=until)
+            sess.execute(stmt)
+            sess.commit()

@@ -1,0 +1,8 @@
+[cosmic-ray]
+module-path = "app/services/telegram_live_messages.py"
+timeout = 60.0
+excluded-modules = []
+test-command = "uv run pytest tests/test_telegram_live_messages.py tests/test_telegram_progress_publisher.py -W error --no-cov -p no:cacheprovider -x"
+
+[cosmic-ray.distributor]
+name = "local"

@@ -359,3 +359,53 @@ def test_set_telegram_notify_enabled(tmp_path: pathlib.Path) -> None:
         assert row2.telegram_notify_enabled is True
     finally:
         db.dispose()
+
+
+# ---------------------------------------------------------------------------
+# set_telegram_mute_until
+# ---------------------------------------------------------------------------
+
+
+def test_set_telegram_mute_until_persists(tmp_path: pathlib.Path) -> None:
+    import datetime
+
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id='tg9', username='Ivan', avatar_url=None)
+        # Confirm default is None.
+        row = repo.get('tg9')
+        assert row is not None
+        assert row.telegram_mute_until is None
+        # Set a future deadline.
+        deadline = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+        repo.set_telegram_mute_until('tg9', deadline)
+        row2 = repo.get('tg9')
+        assert row2 is not None
+        assert row2.telegram_mute_until is not None
+        # Compare at-second granularity to avoid sub-second drift from DB storage.
+        assert abs((row2.telegram_mute_until.replace(tzinfo=datetime.timezone.utc) - deadline).total_seconds()) < 2
+    finally:
+        db.dispose()
+
+
+def test_set_telegram_mute_until_to_none_clears(tmp_path: pathlib.Path) -> None:
+    import datetime
+
+    db = _make_db(tmp_path)
+    try:
+        repo = UserRepository(db)
+        repo.upsert(id='tg10', username='Judy', avatar_url=None)
+        deadline = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=2)
+        repo.set_telegram_mute_until('tg10', deadline)
+        # Verify it was set.
+        row = repo.get('tg10')
+        assert row is not None
+        assert row.telegram_mute_until is not None
+        # Clear it.
+        repo.set_telegram_mute_until('tg10', None)
+        row2 = repo.get('tg10')
+        assert row2 is not None
+        assert row2.telegram_mute_until is None
+    finally:
+        db.dispose()

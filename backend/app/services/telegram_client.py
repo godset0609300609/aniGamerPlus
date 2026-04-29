@@ -125,6 +125,10 @@ class TelegramClient:
         """POST /deleteWebhook."""
         await self._call('deleteWebhook', {'drop_pending_updates': drop_pending_updates})
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        """POST /deleteMessage."""
+        await self._call('deleteMessage', {'chat_id': chat_id, 'message_id': message_id})
+
     async def get_webhook_info(self) -> dict[str, object]:
         """POST /getWebhookInfo."""
         return await self._call('getWebhookInfo')

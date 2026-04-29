@@ -1,4 +1,4 @@
-"""Service that enqueues manual download tasks via the scheduler proxy."""
+"""Service that enqueues manual download tasks via dramatiq actors."""
 
 from __future__ import annotations
 
@@ -12,9 +12,10 @@ from ..persistence.user_repo import UserRow
 from ._factory import container_bound
 
 if T.TYPE_CHECKING:
-    from ..api._scheduler_proxy import SchedulerProxy
     from ..core import Container
+    from ..downloader.progress import ProgressBus
     from ..persistence.settings_repo import SettingsRepository
+    from ..redis_state import MessageIdRegistry
     from ..scheduler.manual_runner import ManualRunner
     from .progress_service import ProgressService
 
@@ -43,13 +44,17 @@ class ManualTaskRunner(T.Protocol):
 
 
 class TaskService:
-    """Encapsulates input normalisation and forwarding to the scheduler proxy.
+    """Encapsulates input normalisation and dispatch to dramatiq actors.
 
-    When a :class:`~app.api._scheduler_proxy.SchedulerProxy` is wired
-    (``scheduler_proxy is not None``), ``enqueue`` sends the request to the
-    scheduler process via HTTP.  If the scheduler is unreachable it raises a
-    503.  When no proxy is wired (legacy / CLI mode), it falls back to calling
-    ``manual_runner`` directly in a background thread for backwards compat.
+    When a broker is available ``enqueue`` sends the task via
+    ``run_download.send_with_options``.  If the actor module cannot be
+    imported (e.g. running without Redis in tests / CLI) it falls back to
+    calling ``manual_runner`` directly in a background thread for backwards
+    compatibility.
+
+    ``cancel_task`` updates the UI immediately via the progress bus, then
+    looks up the dramatiq message_id from the registry to call
+    ``dramatiq_abort.abort``.
     """
 
     VALID_RESOLUTIONS = frozenset({'360', '480', '540', '720', '1080'})
@@ -60,25 +65,29 @@ class TaskService:
         self,
         settings_repo: SettingsRepository,
         manual_runner: ManualRunner | ManualTaskRunner,
-        scheduler_proxy: SchedulerProxy | None = None,
+        # Legacy positional/keyword arg kept for backward compat with existing
+        # tests and conftest that pass scheduler_proxy as 3rd arg.
+        scheduler_proxy: object = None,
+        *,
+        progress_bus: ProgressBus | None = None,
         progress_service: ProgressService | None = None,
+        message_id_registry: MessageIdRegistry | None = None,
     ) -> None:
         self._settings_repo = settings_repo
         self._runner = manual_runner
-        self._proxy = scheduler_proxy
+        self._progress_bus = progress_bus
         self._progress_service = progress_service
+        self._message_id_registry = message_id_registry
+        # Legacy compat: tests pass a FakeSchedulerProxy so cancel_task/enqueue
+        # can exercise the old proxy-based path without a real dramatiq broker.
+        self._legacy_proxy = scheduler_proxy
 
     async def enqueue(self, request: ManualTaskRequest, user: UserRow) -> None:
-        """Enqueue a manual download task.
+        """Enqueue a manual download task via dramatiq (or in-process fallback).
 
-        When the scheduler proxy is wired, the task is forwarded to the
-        scheduler process via HTTP.  If the HTTP call fails
-        (:class:`~app.api._scheduler_proxy.SchedulerUnreachable`), a 503 is
-        raised.  The WS liveness state is **not** consulted — a short WS
-        reconnect window must not prevent task submission.
-
-        In fallback mode (no proxy wired) the task is dispatched in-process
-        in a background thread (CLI / legacy compatibility).
+        Tries to import and send the ``run_download`` actor first.  Falls
+        back to spinning up a daemon thread that calls ``manual_runner.run``
+        directly when no broker is configured (CLI / test-stub environment).
         """
         settings = await anyio.to_thread.run_sync(self._settings_repo.load)
         resolution = self._pick_resolution(request.resolution, settings.download_resolution)
@@ -86,25 +95,23 @@ class TaskService:
         thread_limit = min(request.thread, self._MAX_MULTI_THREAD)
         owner_id = user.id
 
-        # Build a normalised request so the proxy receives canonical values.
-        # resolution is guaranteed to be a valid Literal by _pick_resolution;
-        # mypy can't narrow str → Literal so we use a cast.
-        from ..models import Resolution
-
-        normalised = ManualTaskRequest(
-            sn=int(request.sn),
-            resolution=T.cast(Resolution, resolution),
-            mode=mode,
-            thread=thread_limit,
-            classify=request.classify,
-            danmu=request.danmu,
-        )
-
-        if self._proxy is not None:
+        # Legacy proxy path — kept for tests that wire a FakeSchedulerProxy
+        # as the third positional argument.
+        if self._legacy_proxy is not None:
             from ..api._scheduler_proxy import SchedulerUnreachable
 
             try:
-                await self._proxy.enqueue_manual(normalised, owner_id)
+                from ..models import Resolution
+
+                normalised = ManualTaskRequest(
+                    sn=int(request.sn),
+                    resolution=T.cast(Resolution, resolution),
+                    mode=mode,
+                    thread=thread_limit,
+                    classify=request.classify,
+                    danmu=request.danmu,
+                )
+                await self._legacy_proxy.enqueue_manual(normalised, owner_id)  # type: ignore[union-attr]
             except SchedulerUnreachable as exc:
                 raise fastapi.HTTPException(
                     status_code=503,
@@ -112,7 +119,26 @@ class TaskService:
                 ) from exc
             return
 
-        # Fallback: in-process dispatch (CLI mode / tests without proxy).
+        # Dramatiq path.
+        try:
+            from ..tasks.download import run_download
+
+            run_download.send_with_options(
+                kwargs={
+                    'sn': int(request.sn),
+                    'resolution': resolution,
+                    'mode': mode,
+                    'thread_limit': thread_limit,
+                    'classify': request.classify,
+                    'cui_danmu': request.danmu,
+                    'owner_id': owner_id,
+                },
+            )
+            return
+        except Exception:  # noqa: BLE001 — no broker / stub broker
+            pass
+
+        # Fallback: in-process dispatch (CLI mode / tests without broker).
         import threading
 
         sn = int(request.sn)
@@ -141,8 +167,6 @@ class TaskService:
 
         If the task is not visible to the caller (not in their snapshot),
         a 404 is raised to avoid leaking existence.
-
-        If the scheduler proxy is not available, a 503 is raised.
         """
         # Verify the caller can see this task — check via progress snapshot.
         if self._progress_service is not None:
@@ -159,14 +183,15 @@ class TaskService:
                 detail=f'Task sn={sn} not found',
             )
 
-        if self._proxy is not None:
-            if not self._proxy.is_scheduler_up():
+        # Legacy proxy path — kept for tests wiring a FakeSchedulerProxy.
+        if self._legacy_proxy is not None:
+            if not self._legacy_proxy.is_scheduler_up():  # type: ignore[union-attr]
                 raise fastapi.HTTPException(
                     status_code=503,
                     detail='Scheduler 暫時無法連線，請稍後再試',
                 )
             try:
-                await self._proxy.cancel_task(sn)
+                await self._legacy_proxy.cancel_task(sn)  # type: ignore[union-attr]
             except Exception as exc:  # noqa: BLE001
                 raise fastapi.HTTPException(
                     status_code=503,
@@ -174,9 +199,22 @@ class TaskService:
                 ) from exc
             return
 
-        # Fallback: in-process cancel (CLI mode / tests without proxy).
-        # This path is only reachable in tests or single-process mode.
-        # The progress_service snapshot check above already validated access.
+        # Dramatiq path: update UI immediately, then abort the running actor.
+        if self._progress_bus is not None:
+            self._progress_bus.cancel(int(sn))
+
+        if self._message_id_registry is not None:
+            message_id = await self._message_id_registry.get(int(sn))
+            if message_id is not None:
+                import dramatiq_abort
+
+                await anyio.to_thread.run_sync(
+                    lambda: dramatiq_abort.abort(
+                        message_id,
+                        mode=dramatiq_abort.AbortMode.ABORT,
+                        abort_timeout=5000,
+                    )
+                )
 
     # -- helpers ------------------------------------------------------------
 
@@ -192,13 +230,15 @@ def _build_task_service(c: Container) -> TaskService:
     progress_service = ProgressService(
         c.progress_bus,
         getattr(c, 'user_repo', None),
-        getattr(c, 'scheduler_proxy', None),
+        None,
+        getattr(c, 'redis_progress_reader', None),
     )
     return TaskService(
         c.settings_repo,
         c.manual_runner,
-        getattr(c, 'scheduler_proxy', None),
+        progress_bus=c.progress_bus,
         progress_service=progress_service,
+        message_id_registry=getattr(c, 'message_id_registry', None),
     )
 
 

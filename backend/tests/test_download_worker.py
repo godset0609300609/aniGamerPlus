@@ -604,36 +604,28 @@ def test_worker_passes_none_custom_name_when_not_set(tmp_path: pathlib.Path) -> 
 
 
 # ---------------------------------------------------------------------------
-# Event sink integration tests
+# notify_event_send integration tests
 # ---------------------------------------------------------------------------
 
 
-class FakeEventSink:
-    """Captures fire_* calls without touching Telegram."""
+class FakeNotifyEventSend:
+    """Captures send_with_options(kwargs={...}) calls without touching Telegram."""
 
     def __init__(self) -> None:
-        self.completed: list[dict[str, Any]] = []
-        self.failed: list[dict[str, Any]] = []
-        self.cancelled: list[dict[str, Any]] = []
+        self.calls: list[dict[str, Any]] = []
 
-    def fire_completed(self, **kwargs: Any) -> None:
-        self.completed.append(kwargs)
+    def __call__(self, *, kwargs: dict[str, Any]) -> None:
+        self.calls.append(kwargs)
 
-    def fire_failed(self, **kwargs: Any) -> None:
-        self.failed.append(kwargs)
-
-    def fire_cancelled(self, **kwargs: Any) -> None:
-        self.cancelled.append(kwargs)
-
-    def close(self) -> None:
-        pass
+    def events_by_type(self, event: str) -> list[dict[str, Any]]:
+        return [c for c in self.calls if c.get('event') == event]
 
 
-def _build_with_sink(
+def _build_with_notify(
     tmp_path: pathlib.Path,
     *,
     fake_anime: FakeAnime,
-    sink: FakeEventSink,
+    notify_send: FakeNotifyEventSend,
     settings_overrides: dict[str, Any] | None = None,
 ) -> Harness:
     logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
@@ -655,7 +647,7 @@ def _build_with_sink(
         progress=progress,
         settings_provider=lambda: settings,
         logger=logger,
-        event_sink=sink,  # type: ignore[arg-type]
+        notify_event_send=notify_send,
     )
     return Harness(
         worker=worker,
@@ -667,7 +659,8 @@ def _build_with_sink(
     )
 
 
-def test_event_sink_fire_completed_on_success(tmp_path: pathlib.Path) -> None:
+def test_notify_event_send_started_and_completed_on_success(tmp_path: pathlib.Path) -> None:
+    """Happy path fires 'started' (after load) then 'completed'."""
     fake_anime = FakeAnime(
         sn=200,
         download_result=DownloadResult(
@@ -678,24 +671,25 @@ def test_event_sink_fire_completed_on_success(tmp_path: pathlib.Path) -> None:
         bangumi_name='某番',
         episode='05',
     )
-    sink = FakeEventSink()
-    h = _build_with_sink(tmp_path, fake_anime=fake_anime, sink=sink)
+    notify = FakeNotifyEventSend()
+    h = _build_with_notify(tmp_path, fake_anime=fake_anime, notify_send=notify)
     h.queue.add(200, TaskInfo(sn=200, tag='', mode='single', owner_id='user1'))
     h.queue.mark_processing(200)
 
     h.worker.run(200)
 
-    assert len(sink.completed) == 1
-    call = sink.completed[0]
+    started = notify.events_by_type('started')
+    completed = notify.events_by_type('completed')
+    assert len(started) == 1
+    assert len(completed) == 1
+    call = completed[0]
     assert call['owner_id'] == 'user1'
     assert call['bangumi_name'] == '某番'
     assert call['episode'] == '05'
     assert call['file_size_mb'] == 500
-    assert sink.failed == []
-    assert sink.cancelled == []
 
 
-def test_event_sink_fire_failed_on_no_available_stream_during_download(
+def test_notify_event_send_failed_on_no_available_stream_during_download(
     tmp_path: pathlib.Path,
 ) -> None:
     fake_anime = FakeAnime(
@@ -704,20 +698,21 @@ def test_event_sink_fire_failed_on_no_available_stream_during_download(
         bangumi_name='某番2',
         episode='01',
     )
-    sink = FakeEventSink()
-    h = _build_with_sink(tmp_path, fake_anime=fake_anime, sink=sink)
+    notify = FakeNotifyEventSend()
+    h = _build_with_notify(tmp_path, fake_anime=fake_anime, notify_send=notify)
     h.queue.add(201, TaskInfo(sn=201, tag='', mode='single', owner_id='user2'))
     h.queue.mark_processing(201)
 
     h.worker.run(201)
 
-    assert len(sink.failed) == 1
-    assert sink.failed[0]['owner_id'] == 'user2'
-    assert sink.completed == []
-    assert sink.cancelled == []
+    failed = notify.events_by_type('failed')
+    assert len(failed) == 1
+    assert failed[0]['owner_id'] == 'user2'
+    assert notify.events_by_type('completed') == []
+    assert notify.events_by_type('cancelled') == []
 
 
-def test_event_sink_fire_failed_on_no_available_stream_during_load(
+def test_notify_event_send_failed_on_no_available_stream_during_load(
     tmp_path: pathlib.Path,
 ) -> None:
     class _BrokenLoad(FakeAnime):
@@ -725,44 +720,48 @@ def test_event_sink_fire_failed_on_no_available_stream_during_load(
             raise exceptions.NoAvailableStreamError('load fail')
 
     fake_anime = _BrokenLoad(sn=202)
-    sink = FakeEventSink()
-    h = _build_with_sink(tmp_path, fake_anime=fake_anime, sink=sink)
+    notify = FakeNotifyEventSend()
+    h = _build_with_notify(tmp_path, fake_anime=fake_anime, notify_send=notify)
     h.queue.add(202, TaskInfo(sn=202, tag='', mode='single', owner_id='user3'))
     h.queue.mark_processing(202)
 
     h.worker.run(202)
 
-    assert len(sink.failed) == 1
-    # Load failure uses sn as bangumi_name placeholder.
-    assert sink.failed[0]['sn'] == 202
-    assert sink.failed[0]['owner_id'] == 'user3'
-    assert sink.completed == []
+    failed = notify.events_by_type('failed')
+    assert len(failed) == 1
+    # Load failure: sn is used as bangumi_name placeholder.
+    assert failed[0]['sn'] == 202
+    assert failed[0]['owner_id'] == 'user3'
+    assert notify.events_by_type('completed') == []
+    # No 'started' — load failed before we could fire it.
+    assert notify.events_by_type('started') == []
 
 
-def test_event_sink_fire_cancelled_on_task_cancelled(tmp_path: pathlib.Path) -> None:
+def test_notify_event_send_cancelled_on_task_cancelled(tmp_path: pathlib.Path) -> None:
     fake_anime = FakeAnime(
         sn=203,
         download_raises=exceptions.TaskCancelledError('user cancel'),
         bangumi_name='某番3',
         episode='02',
     )
-    sink = FakeEventSink()
-    h = _build_with_sink(tmp_path, fake_anime=fake_anime, sink=sink)
+    notify = FakeNotifyEventSend()
+    h = _build_with_notify(tmp_path, fake_anime=fake_anime, notify_send=notify)
     h.queue.add(203, TaskInfo(sn=203, tag='', mode='single', owner_id='user4'))
     h.queue.mark_processing(203)
     h.progress.start(203, 'pending', status='正在下載')
 
     h.worker.run(203)
 
-    assert len(sink.cancelled) == 1
-    assert sink.cancelled[0]['owner_id'] == 'user4'
-    assert sink.cancelled[0]['bangumi_name'] == '某番3'
-    assert sink.completed == []
-    assert sink.failed == []
+    cancelled = notify.events_by_type('cancelled')
+    assert len(cancelled) == 1
+    assert cancelled[0]['owner_id'] == 'user4'
+    assert cancelled[0]['bangumi_name'] == '某番3'
+    assert notify.events_by_type('completed') == []
+    assert notify.events_by_type('failed') == []
 
 
-def test_event_sink_owner_id_none_passed_through(tmp_path: pathlib.Path) -> None:
-    """TaskInfo with no owner_id → fire_* receives owner_id=None."""
+def test_notify_event_send_owner_id_none_passed_through(tmp_path: pathlib.Path) -> None:
+    """TaskInfo with no owner_id → event kwargs receive owner_id=None."""
     fake_anime = FakeAnime(
         sn=204,
         download_result=DownloadResult(
@@ -771,15 +770,16 @@ def test_event_sink_owner_id_none_passed_through(tmp_path: pathlib.Path) -> None
             size_mb=200,
         ),
     )
-    sink = FakeEventSink()
-    h = _build_with_sink(tmp_path, fake_anime=fake_anime, sink=sink)
+    notify = FakeNotifyEventSend()
+    h = _build_with_notify(tmp_path, fake_anime=fake_anime, notify_send=notify)
     h.queue.add(204, TaskInfo(sn=204, tag='', mode='single', owner_id=None))
     h.queue.mark_processing(204)
 
     h.worker.run(204)
 
-    assert len(sink.completed) == 1
-    assert sink.completed[0]['owner_id'] is None
+    completed = notify.events_by_type('completed')
+    assert len(completed) == 1
+    assert completed[0]['owner_id'] is None
 
 
 # ---------------------------------------------------------------------------
@@ -798,11 +798,11 @@ class FakeAnimeListRepo:
         return self._entries.get((user_id, sn))
 
 
-def _build_with_sink_and_list_repo(
+def _build_with_notify_and_list_repo(
     tmp_path: pathlib.Path,
     *,
     fake_anime: FakeAnime,
-    sink: FakeEventSink,
+    notify_send: FakeNotifyEventSend,
     list_repo: FakeAnimeListRepo,
     settings_overrides: dict[str, Any] | None = None,
 ) -> Harness:
@@ -825,7 +825,7 @@ def _build_with_sink_and_list_repo(
         progress=progress,
         settings_provider=lambda: settings,
         logger=logger,
-        event_sink=sink,  # type: ignore[arg-type]
+        notify_event_send=notify_send,
         anime_list_repo=list_repo,  # type: ignore[arg-type]
     )
     return Harness(
@@ -844,8 +844,8 @@ class FakeAnimeListEntry:
     season: int
 
 
-def test_event_sink_fire_completed_with_list_entry(tmp_path: pathlib.Path) -> None:
-    """Entry exists with custom_name + season → passed through to fire_completed."""
+def test_notify_event_send_completed_with_list_entry(tmp_path: pathlib.Path) -> None:
+    """Entry exists with custom_name + season → passed through to 'completed' event."""
     fake_anime = FakeAnime(
         sn=300,
         download_result=DownloadResult(
@@ -858,21 +858,22 @@ def test_event_sink_fire_completed_with_list_entry(tmp_path: pathlib.Path) -> No
     )
     entry = FakeAnimeListEntry(custom_name='我的名字', season=2)
     list_repo = FakeAnimeListRepo({('user1', 300): entry})
-    sink = FakeEventSink()
-    h = _build_with_sink_and_list_repo(tmp_path, fake_anime=fake_anime, sink=sink, list_repo=list_repo)
+    notify = FakeNotifyEventSend()
+    h = _build_with_notify_and_list_repo(tmp_path, fake_anime=fake_anime, notify_send=notify, list_repo=list_repo)
     h.queue.add(300, TaskInfo(sn=300, tag='', mode='single', owner_id='user1'))
     h.queue.mark_processing(300)
 
     h.worker.run(300)
 
-    assert len(sink.completed) == 1
-    call = sink.completed[0]
+    completed = notify.events_by_type('completed')
+    assert len(completed) == 1
+    call = completed[0]
     assert call['custom_name'] == '我的名字'
     assert call['season'] == 2
     assert call['episode_number'] == 5
 
 
-def test_event_sink_fire_completed_no_entry_manual_task(tmp_path: pathlib.Path) -> None:
+def test_notify_event_send_completed_no_entry_manual_task(tmp_path: pathlib.Path) -> None:
     """No matching entry (manual task, owner_id=None) → custom_name=None, season=1."""
     fake_anime = FakeAnime(
         sn=301,
@@ -885,22 +886,23 @@ def test_event_sink_fire_completed_no_entry_manual_task(tmp_path: pathlib.Path) 
         episode='03',
     )
     list_repo = FakeAnimeListRepo({})
-    sink = FakeEventSink()
-    h = _build_with_sink_and_list_repo(tmp_path, fake_anime=fake_anime, sink=sink, list_repo=list_repo)
+    notify = FakeNotifyEventSend()
+    h = _build_with_notify_and_list_repo(tmp_path, fake_anime=fake_anime, notify_send=notify, list_repo=list_repo)
     h.queue.add(301, TaskInfo(sn=301, tag='', mode='single', owner_id=None))
     h.queue.mark_processing(301)
 
     h.worker.run(301)
 
-    assert len(sink.completed) == 1
-    call = sink.completed[0]
+    completed = notify.events_by_type('completed')
+    assert len(completed) == 1
+    call = completed[0]
     assert call['custom_name'] is None
     assert call['season'] == 1
     assert call['episode_number'] == 3
 
 
-def test_event_sink_fire_completed_non_numeric_episode(tmp_path: pathlib.Path) -> None:
-    """Non-numeric episode string → episode_number=None passed to fire_completed."""
+def test_notify_event_send_completed_non_numeric_episode(tmp_path: pathlib.Path) -> None:
+    """Non-numeric episode string with digit → episode_number is parsed from digit."""
     fake_anime = FakeAnime(
         sn=302,
         download_result=DownloadResult(
@@ -912,21 +914,21 @@ def test_event_sink_fire_completed_non_numeric_episode(tmp_path: pathlib.Path) -
         episode='SP1',
     )
     list_repo = FakeAnimeListRepo({})
-    sink = FakeEventSink()
-    h = _build_with_sink_and_list_repo(tmp_path, fake_anime=fake_anime, sink=sink, list_repo=list_repo)
+    notify = FakeNotifyEventSend()
+    h = _build_with_notify_and_list_repo(tmp_path, fake_anime=fake_anime, notify_send=notify, list_repo=list_repo)
     h.queue.add(302, TaskInfo(sn=302, tag='', mode='single', owner_id='user1'))
     h.queue.mark_processing(302)
 
     h.worker.run(302)
 
-    assert len(sink.completed) == 1
-    call = sink.completed[0]
-    # SP1 contains digit '1', so episode_number should be 1 (regex finds first digit group)
-    # The SP case: regex finds '1' in 'SP1', so episode_number=1 is expected.
-    assert call['episode_number'] == 1  # re.search(r'\d+', 'SP1') finds '1'
+    completed = notify.events_by_type('completed')
+    assert len(completed) == 1
+    call = completed[0]
+    # re.search(r'\d+', 'SP1') finds '1'.
+    assert call['episode_number'] == 1
 
 
-def test_event_sink_fire_completed_pure_non_numeric_episode(tmp_path: pathlib.Path) -> None:
+def test_notify_event_send_completed_pure_non_numeric_episode(tmp_path: pathlib.Path) -> None:
     """Episode with no digits at all → episode_number=None."""
     fake_anime = FakeAnime(
         sn=303,
@@ -939,13 +941,14 @@ def test_event_sink_fire_completed_pure_non_numeric_episode(tmp_path: pathlib.Pa
         episode='OVA',
     )
     list_repo = FakeAnimeListRepo({})
-    sink = FakeEventSink()
-    h = _build_with_sink_and_list_repo(tmp_path, fake_anime=fake_anime, sink=sink, list_repo=list_repo)
+    notify = FakeNotifyEventSend()
+    h = _build_with_notify_and_list_repo(tmp_path, fake_anime=fake_anime, notify_send=notify, list_repo=list_repo)
     h.queue.add(303, TaskInfo(sn=303, tag='', mode='single', owner_id='user1'))
     h.queue.mark_processing(303)
 
     h.worker.run(303)
 
-    assert len(sink.completed) == 1
-    call = sink.completed[0]
+    completed = notify.events_by_type('completed')
+    assert len(completed) == 1
+    call = completed[0]
     assert call['episode_number'] is None

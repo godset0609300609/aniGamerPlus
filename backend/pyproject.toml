@@ -23,6 +23,10 @@ dependencies = [
     "itsdangerous>=2.2",
     "typer>=0.15",
     "rich>=13.0",
+    "dramatiq[redis,watch]>=1.17",
+    "dramatiq-abort>=1.2",
+    "redis>=5.0",
+    "apscheduler>=3.10",
 ]
 
 [project.scripts]
@@ -56,6 +60,7 @@ dev = [
     "coverage[toml]>=7.0",
     "ruff>=0.15.11",
     "mutmut>=2.5",
+    "fakeredis>=2.27",
 ]
 
 [tool.pytest.ini_options]
