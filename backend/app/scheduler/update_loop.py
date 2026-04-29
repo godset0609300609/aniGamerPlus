@@ -12,6 +12,7 @@ injected at construction time. Workers run in daemon threads so a
 
 from __future__ import annotations
 
+import collections.abc
 import threading
 import time
 import typing as T
@@ -54,6 +55,7 @@ class UpdateLoop:
         progress_bus: ProgressBus | None = None,
         watchdog: SchedulerWatchdog | None = None,
         parse_cooldown: DownloadCooldown | None = None,
+        notify_event_send: collections.abc.Callable[..., None] | None = None,
     ) -> None:
         self._settings_repo = settings_repo
         self._sn_list_repo = sn_list_repo
@@ -73,6 +75,7 @@ class UpdateLoop:
         # Optional: pool-wide gap between successive sn fetches, matching the
         # legacy ``parse_cd`` behaviour.  No cooldown when None.
         self._parse_cooldown = parse_cooldown
+        self._notify_event_send = notify_event_send
         self._stop_event = threading.Event()
         self._sleep = time.sleep  # injectable for tests
         # Guard so the legacy-file warning fires only once per scheduler boot.
@@ -191,10 +194,8 @@ class UpdateLoop:
                 if self._queue.contains(target_sn):
                     continue
 
-                self._queue.add(
-                    target_sn,
-                    self._make_task_info(target_sn, info, mode),
-                )
+                task_info = self._make_task_info(target_sn, info, mode)
+                self._queue.add(target_sn, task_info)
                 newly_added += 1
                 self._logger.info(
                     target_sn,
@@ -207,6 +208,14 @@ class UpdateLoop:
                     bangumi_name=metadata.bangumi_name,
                     episode=target_episode,
                     owner_id=owner_id,
+                )
+                self._fire_auto_enqueue(
+                    sn=target_sn,
+                    owner_id=owner_id,
+                    bangumi_name=metadata.bangumi_name,
+                    episode=target_episode,
+                    season=task_info.season,
+                    custom_name=task_info.custom_name,
                 )
                 self._spawn_worker(target_sn)
 
@@ -228,23 +237,26 @@ class UpdateLoop:
             display=False,
         )
 
+    def run_one_iteration(self) -> None:
+        """One full pass — load DB list, scan, enqueue.  Swallows top-level
+        exceptions so the next iteration is unaffected.  Used both by the
+        legacy ``run_forever`` loop and by the dramatiq ``auto_scan_tick``
+        actor (called periodically by APScheduler in the worker process).
+        """
+        if self._watchdog is not None:
+            self._watchdog.beat()
+        try:
+            settings = self._settings_repo.load()
+            sn_dict = self._load_sn_dict_from_db(settings.default_download_mode)
+            self.check_tasks(sn_dict)
+        except Exception as exc:  # noqa: BLE001 — never propagate
+            self._logger.error(None, '更新循環', f'一輪更新失敗: {exc}', display=False)
+
     def run_forever(self) -> None:
         """Main loop. Returns only if :meth:`stop` is called."""
         while not self._stop_event.is_set():
-            if self._watchdog is not None:
-                self._watchdog.beat()
-            try:
-                settings = self._settings_repo.load()
-                sn_dict = self._load_sn_dict_from_db(settings.default_download_mode)
-                self.check_tasks(sn_dict)
-            except Exception as exc:  # noqa: BLE001 — loop must never die
-                self._logger.error(
-                    None,
-                    '更新循環',
-                    f'一輪更新失敗: {exc}',
-                    display=False,
-                )
-
+            self.run_one_iteration()
+            settings = self._settings_repo.load()
             sleep_seconds = int(settings.check_frequency) * 60
             # Poll in 1-second ticks so stop() is responsive, and beat the
             # watchdog every tick so the health endpoint doesn't report the
@@ -385,6 +397,32 @@ class UpdateLoop:
             daemon=True,
         )
         thread.start()
+
+    def _fire_auto_enqueue(
+        self,
+        *,
+        sn: int,
+        owner_id: str | None,
+        bangumi_name: str,
+        episode: str | None,
+        season: int,
+        custom_name: str | None,
+    ) -> None:
+        """Emit an 'auto_enqueue' Telegram notification when a new episode is queued."""
+        if self._notify_event_send is None or owner_id is None:
+            return
+        self._notify_event_send(
+            kwargs=dict(
+                event='auto_enqueue',
+                owner_id=owner_id,
+                sn=sn,
+                bangumi_name=bangumi_name,
+                episode=episode,
+                resolution=None,
+                season=season,
+                custom_name=custom_name,
+            )
+        )
 
     # ---- test hooks ---------------------------------------------------
 

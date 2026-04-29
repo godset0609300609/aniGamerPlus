@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import hashlib
+import hmac
+import json
+import urllib.parse
 
 import fastapi
 import fastapi.testclient
@@ -18,12 +22,13 @@ import starlette.middleware.sessions
 from app.api.auth_api import (
     get_oauth_client,
     get_settings,
+    get_settings_repo,
     get_user_repo,
 )
 from app.api.auth_api import (
     router as auth_router,
 )
-from app.models import AppSettings, DiscordAuthSettings
+from app.models import AppSettings, DiscordAuthSettings, TelegramSettings
 from app.persistence.user_repo import UserRow
 
 # ---------------------------------------------------------------------------
@@ -85,6 +90,22 @@ class FakeUserRepo:
     def get(self, id: str) -> UserRow | None:  # noqa: A002
         return self._store.get(id)
 
+    def find_by_telegram_chat_id(self, chat_id: int) -> UserRow | None:
+        for row in self._store.values():
+            if row.telegram_chat_id == chat_id:
+                return row
+        return None
+
+
+class FakeSettingsRepo:
+    """In-memory SettingsRepository stand-in that returns a fixed AppSettings."""
+
+    def __init__(self, settings: AppSettings) -> None:
+        self._settings = settings
+
+    def load(self) -> AppSettings:
+        return self._settings
+
 
 class FakeOAuthClient:
     """Fake DiscordOAuthClient for testing."""
@@ -120,6 +141,7 @@ def _build_client(
     settings: AppSettings,
     user_repo: FakeUserRepo | None = None,
     oauth_client: FakeOAuthClient | None = None,
+    settings_repo: FakeSettingsRepo | None = None,
 ) -> fastapi.testclient.TestClient:
     """Build a TestClient for the auth router with overridden dependencies."""
     app = fastapi.FastAPI()
@@ -133,10 +155,13 @@ def _build_client(
         user_repo = FakeUserRepo()
     if oauth_client is None:
         oauth_client = FakeOAuthClient()
+    if settings_repo is None:
+        settings_repo = FakeSettingsRepo(settings)
 
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_user_repo] = lambda: user_repo
     app.dependency_overrides[get_oauth_client] = lambda: oauth_client
+    app.dependency_overrides[get_settings_repo] = lambda: settings_repo
 
     return fastapi.testclient.TestClient(app, follow_redirects=False)
 
@@ -330,3 +355,89 @@ def test_me_returns_user_info_with_session() -> None:
     assert data['id'] == '77'
     assert data['username'] == 'carol'
     assert data['role'] == 'admin'
+
+
+# ---------------------------------------------------------------------------
+# /telegram-webapp
+# ---------------------------------------------------------------------------
+
+_TG_BOT_TOKEN = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'
+
+
+def _make_tg_initdata(*, bot_token: str, auth_date: int, user_id: int = 999) -> str:
+    """Build a valid Telegram Mini App initData string signed with *bot_token*."""
+    user_json = json.dumps({'id': user_id, 'first_name': 'Test'}, separators=(',', ':'))
+    fields = {
+        'auth_date': str(auth_date),
+        'query_id': 'AAH...',
+        'user': user_json,
+    }
+    data_check_string = '\n'.join(f'{k}={v}' for k, v in sorted(fields.items()))
+    secret_key = hmac.new(b'WebAppData', bot_token.encode(), hashlib.sha256).digest()
+    h = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+    fields['hash'] = h
+    return urllib.parse.urlencode(fields)
+
+
+def _make_tg_settings(*, bot_token: str = _TG_BOT_TOKEN) -> AppSettings:
+    tg = TelegramSettings(bot_token=bot_token, enabled=True)
+    return AppSettings(telegram=tg)
+
+
+def test_telegram_webapp_login_succeeds_for_bound_user() -> None:
+    now = int(datetime.datetime.now(datetime.UTC).timestamp())
+    settings = _make_tg_settings()
+    user_repo = FakeUserRepo()
+    # Insert a user already bound to chat_id 999.
+    bound_row = dataclasses.replace(
+        user_repo.upsert(id='discord-1', username='alice', avatar_url=None, role='downloader'),
+        telegram_chat_id=999,
+    )
+    user_repo._store['discord-1'] = bound_row
+
+    init_data = _make_tg_initdata(bot_token=_TG_BOT_TOKEN, auth_date=now, user_id=999)
+    client = _build_client(settings, user_repo=user_repo)
+    resp = client.post('/api/auth/telegram-webapp', json={'initData': init_data})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['user_id'] == 'discord-1'
+    assert body['username'] == 'alice'
+    assert body['role'] == 'downloader'
+
+
+def test_telegram_webapp_login_401_when_not_bound() -> None:
+    now = int(datetime.datetime.now(datetime.UTC).timestamp())
+    settings = _make_tg_settings()
+    user_repo = FakeUserRepo()
+    # No user bound to chat_id 999.
+
+    init_data = _make_tg_initdata(bot_token=_TG_BOT_TOKEN, auth_date=now, user_id=999)
+    client = _build_client(settings, user_repo=user_repo)
+    resp = client.post('/api/auth/telegram-webapp', json={'initData': init_data})
+
+    assert resp.status_code == 401
+
+
+def test_telegram_webapp_login_401_when_signature_invalid() -> None:
+    now = int(datetime.datetime.now(datetime.UTC).timestamp())
+    settings = _make_tg_settings()
+    user_repo = FakeUserRepo()
+
+    # Build initData with the correct token but then tamper with a field.
+    init_data = _make_tg_initdata(bot_token=_TG_BOT_TOKEN, auth_date=now, user_id=999)
+    tampered = init_data + '&extra=injected'
+    client = _build_client(settings, user_repo=user_repo)
+    resp = client.post('/api/auth/telegram-webapp', json={'initData': tampered})
+
+    assert resp.status_code == 401
+
+
+def test_telegram_webapp_login_503_when_bot_token_unset() -> None:
+    settings = _make_tg_settings(bot_token='')
+    user_repo = FakeUserRepo()
+
+    client = _build_client(settings, user_repo=user_repo)
+    resp = client.post('/api/auth/telegram-webapp', json={'initData': 'anything'})
+
+    assert resp.status_code == 503

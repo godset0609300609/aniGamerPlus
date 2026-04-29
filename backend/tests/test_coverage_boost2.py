@@ -19,7 +19,6 @@ import codecs
 import datetime
 import json
 import pathlib
-import threading
 import types
 from typing import Any
 from unittest.mock import patch
@@ -445,34 +444,16 @@ def _fake_container_with_history(secret: str, tmp_path: pathlib.Path) -> Any:
         def normalize_legacy_statuses(self) -> int:
             return 3
 
-    class _FakeProgressBusWrap:
-        def snapshot(self) -> dict:
-            return {}
-
-        def cancel(self, sn: int) -> bool:
-            return False
-
-        def finish(self, sn: int) -> None:
-            pass
-
-    class _NullLoop:
-        def __init__(self) -> None:
-            self._stop = threading.Event()
-
-        def run_forever(self) -> None:
-            self._stop.wait(timeout=30)
-
-        def stop(self) -> None:
-            self._stop.set()
+    class _FakeSettingsRepo:
+        def load(self) -> Any:
+            return types.SimpleNamespace(check_frequency=5)
 
     logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
     container = types.SimpleNamespace(
         paths=types.SimpleNamespace(logs_dir=tmp_path / 'logs'),
         logger=logger,
-        progress_bus=_FakeProgressBusWrap(),
-        manual_runner=types.SimpleNamespace(run=lambda *a, **kw: None),
+        settings_repo=_FakeSettingsRepo(),
         task_history_repo=_FakeHistoryRepo(),
-        build_update_loop=lambda **kw: _NullLoop(),
     )
     return container
 
@@ -490,10 +471,25 @@ def test_scheduler_server_lifespan_logs_bootstrap_and_history(
 
     container = _fake_container_with_history('stest', tmp_path)
 
+    # Patch ApsScheduler so no real BackgroundScheduler is started.
+    from app.scheduler.aps_scheduler import ApsScheduler as _RealAps
+
+    class _FakeAps:
+        _scheduler = types.SimpleNamespace(running=True)
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
     # Patch ring-buffer bootstrap to return >0
     from app.log_config import RingBufferHandler
 
-    with patch.object(RingBufferHandler, 'bootstrap_from_file', return_value=5):
+    with (
+        patch.object(RingBufferHandler, 'bootstrap_from_file', return_value=5),
+        patch('app.scheduler.aps_scheduler.ApsScheduler', lambda settings_repo: _FakeAps()),
+    ):
         app = ss_mod.build_scheduler_app(container)  # type: ignore[arg-type]
         with fastapi.testclient.TestClient(app):
             pass  # lifespan runs, logs bootstrap + history
@@ -509,16 +505,27 @@ def test_scheduler_server_lifespan_logs_secret_not_set(tmp_path: pathlib.Path, m
     monkeypatch.setattr(ss_mod, '_RESOLVED_SECRET', None)
 
     container = _fake_container_with_history('', tmp_path)
-    app = ss_mod.build_scheduler_app(container)  # type: ignore[arg-type]
-    # Just verify it runs without error (the log statement is the branch target)
-    with fastapi.testclient.TestClient(app):
-        pass
+
+    class _FakeAps:
+        _scheduler = types.SimpleNamespace(running=True)
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    with patch('app.scheduler.aps_scheduler.ApsScheduler', lambda settings_repo: _FakeAps()):
+        app = ss_mod.build_scheduler_app(container)  # type: ignore[arg-type]
+        # Just verify it runs without error (the log statement is the branch target)
+        with fastapi.testclient.TestClient(app):
+            pass
 
 
-def test_scheduler_server_health_includes_heartbeat_age(
+def test_scheduler_server_health_includes_aps_running(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When watchdog is live, health response includes last_heartbeat_age_seconds."""
+    """Health response includes aps_running field and status is ok when running."""
     import fastapi.testclient
 
     import app.scheduler_server as ss_mod
@@ -526,51 +533,43 @@ def test_scheduler_server_health_includes_heartbeat_age(
     monkeypatch.setenv('ANIGAMERPLUS_INTERNAL_SECRET', 'shb')
     monkeypatch.setattr(ss_mod, '_RESOLVED_SECRET', None)
 
-    class _NullLoop:
-        def run_forever(self) -> None:
-            threading.Event().wait(30)
-
-        def stop(self) -> None:
-            pass
-
-    class _FakePBus:
-        def snapshot(self) -> dict:
-            return {}
-
-        def cancel(self, sn: int) -> bool:
-            return False
-
-        def finish(self, sn: int) -> None:
-            pass
+    class _FakeSettingsRepo:
+        def load(self) -> Any:
+            return types.SimpleNamespace(check_frequency=5)
 
     logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
     container = types.SimpleNamespace(
         paths=types.SimpleNamespace(logs_dir=tmp_path / 'logs'),
         logger=logger,
-        progress_bus=_FakePBus(),
-        manual_runner=types.SimpleNamespace(run=lambda *a, **kw: None),
+        settings_repo=_FakeSettingsRepo(),
         task_history_repo=None,
-        build_update_loop=lambda **kw: _NullLoop(),
     )
 
-    app = ss_mod.build_scheduler_app(container)  # type: ignore[arg-type]
+    class _FakeAps:
+        _scheduler = types.SimpleNamespace(running=True)
 
-    with fastapi.testclient.TestClient(app) as client:
-        # Give the watchdog a beat so heartbeat_age is available
+        def start(self) -> None:
+            pass
 
-        watchdog = app.state.watchdog
-        if watchdog is not None:
-            watchdog.beat()
-        resp = client.get('/internal/health', headers={'X-Internal-Secret': 'shb'})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert 'last_heartbeat_age_seconds' in data
+        def stop(self) -> None:
+            pass
+
+    with patch('app.scheduler.aps_scheduler.ApsScheduler', lambda settings_repo: _FakeAps()):
+        app = ss_mod.build_scheduler_app(container)  # type: ignore[arg-type]
+
+        with fastapi.testclient.TestClient(app) as client:
+            resp = client.get('/internal/health', headers={'X-Internal-Secret': 'shb'})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert 'aps_running' in data
+            assert data['aps_running'] is True
+            assert data['status'] == 'ok'
 
 
-def test_scheduler_server_ws_progress_bad_secret_closes(
+def test_scheduler_server_health_returns_no_ws_or_task_routes(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """WS /internal/progress with wrong secret gets close code 4401."""
+    """The slimmed scheduler app does NOT expose /internal/tasks or /internal/progress."""
     import fastapi.testclient
 
     import app.scheduler_server as ss_mod
@@ -578,44 +577,34 @@ def test_scheduler_server_ws_progress_bad_secret_closes(
     monkeypatch.setenv('ANIGAMERPLUS_INTERNAL_SECRET', 'sws')
     monkeypatch.setattr(ss_mod, '_RESOLVED_SECRET', None)
 
-    class _NullLoop:
-        def run_forever(self) -> None:
-            threading.Event().wait(30)
-
-        def stop(self) -> None:
-            pass
-
-    class _FakePBus:
-        def snapshot(self) -> dict:
-            return {}
-
-        def cancel(self, sn: int) -> bool:
-            return False
-
-        def finish(self, sn: int) -> None:
-            pass
+    class _FakeSettingsRepo:
+        def load(self) -> Any:
+            return types.SimpleNamespace(check_frequency=5)
 
     logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
     container = types.SimpleNamespace(
         paths=types.SimpleNamespace(logs_dir=tmp_path / 'logs'),
         logger=logger,
-        progress_bus=_FakePBus(),
-        manual_runner=types.SimpleNamespace(run=lambda *a, **kw: None),
+        settings_repo=_FakeSettingsRepo(),
         task_history_repo=None,
-        build_update_loop=lambda **kw: _NullLoop(),
     )
 
-    app = ss_mod.build_scheduler_app(container)  # type: ignore[arg-type]
+    class _FakeAps:
+        _scheduler = types.SimpleNamespace(running=True)
 
-    from starlette.websockets import WebSocketDisconnect
+        def start(self) -> None:
+            pass
 
-    with fastapi.testclient.TestClient(app) as client:
-        try:
-            with client.websocket_connect('/internal/progress', headers={'X-Internal-Secret': 'wrong'}):
-                pass
-        except WebSocketDisconnect as exc:
-            # Expected — server sends close code 4401
-            assert exc.code == 4401
+        def stop(self) -> None:
+            pass
+
+    with patch('app.scheduler.aps_scheduler.ApsScheduler', lambda settings_repo: _FakeAps()):
+        app = ss_mod.build_scheduler_app(container)  # type: ignore[arg-type]
+
+        with fastapi.testclient.TestClient(app) as client:
+            # These routes were removed — must return 404 / 405.
+            assert client.post('/internal/tasks/manual', json={}).status_code in {404, 405, 422}
+            assert client.delete('/internal/tasks/1').status_code in {404, 405}
 
 
 # ---------------------------------------------------------------------------

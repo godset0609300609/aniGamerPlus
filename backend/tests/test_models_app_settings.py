@@ -94,7 +94,7 @@ def test_telegram_section_defaults() -> None:
     assert settings.telegram.bot_token == ''
     assert settings.telegram.webhook_secret == ''
     assert settings.telegram.public_url == ''
-    assert settings.telegram.notify_on == ['completed', 'failed', 'cancelled']
+    assert settings.telegram.notify_on == ['started', 'completed', 'failed', 'cancelled', 'auto_enqueue']
     assert settings.telegram.rate_limit_per_minute == 30
 
 

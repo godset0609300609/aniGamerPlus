@@ -1,11 +1,12 @@
-"""Discord OAuth2 authentication endpoints.
+"""Discord OAuth2 + Telegram Mini App authentication endpoints.
 
-Four routes::
+Five routes::
 
-    GET  /api/auth/login     — redirect to Discord authorize page
-    GET  /api/auth/callback  — handle Discord redirect, set session
-    POST /api/auth/logout    — clear session
-    GET  /api/auth/me        — return current user info (requires session)
+    GET  /api/auth/login            — redirect to Discord authorize page
+    GET  /api/auth/callback         — handle Discord redirect, set session
+    POST /api/auth/logout           — clear session
+    GET  /api/auth/me               — return current user info (requires session)
+    POST /api/auth/telegram-webapp  — verify Telegram initData, issue session
 
 All handlers are ``async def`` (memory: FastAPI routes are async).
 """
@@ -19,12 +20,18 @@ import typing as T
 import anyio.to_thread
 import fastapi
 import httpx
+import pydantic
 
 from ..auth.deps import get_user_repo
 from ..auth.discord_oauth import DiscordOAuthClient
 from ..models import AppSettings
+from ..persistence.settings_repo import SettingsRepository
 from ..persistence.user_repo import UserRepository
 from ..services._factory import container_bound
+from ..services.telegram_webapp_auth import (
+    InitDataVerificationError,
+    verify_telegram_webapp_initdata,
+)
 
 router = fastapi.APIRouter(prefix='/api/auth', tags=['auth'])
 
@@ -52,6 +59,9 @@ get_settings = _build_get_settings()
 
 get_oauth_client = container_bound(lambda c: c.oauth_client)
 """FastAPI dependency resolver for :class:`DiscordOAuthClient`."""
+
+get_settings_repo = container_bound(lambda c: c.settings_repo)
+"""FastAPI dependency resolver for :class:`SettingsRepository`."""
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +172,14 @@ async def logout(request: fastapi.Request) -> dict:
     return {'ok': True}
 
 
+class TelegramWebAppLoginRequest(pydantic.BaseModel):
+    """Request body for POST /api/auth/telegram-webapp."""
+
+    init_data: str = pydantic.Field(..., min_length=1, alias='initData')
+
+    model_config = pydantic.ConfigDict(populate_by_name=True)
+
+
 @router.get('/me')
 async def me(
     request: fastapi.Request,
@@ -209,3 +227,40 @@ async def me(
         'telegram_bound': user.telegram_chat_id is not None,
         'telegram_notify_enabled': user.telegram_notify_enabled,
     }
+
+
+@router.post('/telegram-webapp')
+async def telegram_webapp_login(
+    request: fastapi.Request,
+    payload: TelegramWebAppLoginRequest,
+    settings_repo: T.Annotated[SettingsRepository, fastapi.Depends(get_settings_repo)],
+    user_repo: T.Annotated[UserRepository, fastapi.Depends(get_user_repo)],
+) -> dict[str, object]:
+    """Verify Telegram Mini App initData and issue a server session.
+
+    Replaces Discord OAuth for users who launch the dashboard via the
+    Telegram bot's "🌐 開啟網頁版" button.  The user must already be
+    bound (have a row with matching ``telegram_chat_id``); we never
+    auto-create accounts here — pre-binding via /start is required.
+    """
+    settings = await anyio.to_thread.run_sync(settings_repo.load)
+    bot_token = settings.telegram.bot_token
+    if not bot_token:
+        raise fastapi.HTTPException(status_code=503, detail='Telegram 未設定')
+
+    try:
+        verified = verify_telegram_webapp_initdata(payload.init_data, bot_token)
+    except InitDataVerificationError as exc:
+        raise fastapi.HTTPException(status_code=401, detail='initData 驗證失敗') from exc
+
+    tg_user = verified.get('user')
+    if not isinstance(tg_user, dict) or 'id' not in tg_user:
+        raise fastapi.HTTPException(status_code=401, detail='缺少 user 欄位')
+    chat_id = int(tg_user['id'])
+
+    user = await anyio.to_thread.run_sync(user_repo.find_by_telegram_chat_id, chat_id)
+    if user is None:
+        raise fastapi.HTTPException(status_code=401, detail='請先在 bot 完成 /start 綁定')
+
+    request.session['user_id'] = user.id
+    return {'user_id': user.id, 'username': user.username, 'role': user.role}

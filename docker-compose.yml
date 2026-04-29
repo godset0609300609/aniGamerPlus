@@ -1,6 +1,20 @@
 name: ani-gamer-plus
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: anigamerplus-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks: [ internal ]
+
   scheduler:
     build:
       context: .
@@ -8,10 +22,14 @@ services:
     image: anigamerplus-backend:latest
     container_name: anigamerplus-scheduler
     command: ["scheduler"]
+    depends_on:
+      redis:
+        condition: service_healthy
     environment:
       - ANIGAMERPLUS_SCHEDULER_HOST=0.0.0.0
       - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET
         must be set in .env}
+      - ANIGAMERPLUS_REDIS_URL=redis://redis:6379/0
     volumes:
       - ./downloads:/app/bangumi
       - ./config.json:/app/config.json
@@ -23,12 +41,17 @@ services:
   api:
     image: anigamerplus-backend:latest
     container_name: anigamerplus-api
-    depends_on: [ scheduler ]
     command: ["api"]
+    depends_on:
+      scheduler:
+        condition: service_started
+      redis:
+        condition: service_healthy
     environment:
       - ANIGAMERPLUS_SCHEDULER_URL=http://scheduler:5001
       - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET
         must be set in .env}
+      - ANIGAMERPLUS_REDIS_URL=redis://redis:6379/0
     volumes:
       - ./downloads:/app/bangumi
       - ./config.json:/app/config.json

@@ -19,7 +19,6 @@ if T.TYPE_CHECKING:
     from ..models import AppSettings
     from ..persistence.anime_list_repo import AnimeListEntryRepository
     from ..persistence.repositories import AnimeRepository
-    from .event_sink import DownloadEventSink
     from .queue_ import TaskQueue
 
 
@@ -35,8 +34,11 @@ class DownloadWorker:
         progress: ProgressBus,
         settings_provider: collections.abc.Callable[[], AppSettings],
         logger: Logger,
-        event_sink: DownloadEventSink | None = None,
+        notify_event_send: collections.abc.Callable[..., None] | None = None,
         anime_list_repo: AnimeListEntryRepository | None = None,
+        # Legacy compat — kept so existing call sites that pass event_sink= don't
+        # crash until they are updated; the value is ignored.
+        event_sink: object | None = None,
     ) -> None:
         self._queue = queue
         self._anime_factory = anime_factory
@@ -44,7 +46,7 @@ class DownloadWorker:
         self._progress = progress
         self._settings_provider = settings_provider
         self._logger = logger
-        self._event_sink = event_sink
+        self._notify_event_send = notify_event_send
         self._anime_list_repo = anime_list_repo
 
     # ------------------------------------------------------------------ entry
@@ -146,18 +148,21 @@ class DownloadWorker:
             self._progress.update_status(sn, '失敗')
             self._queue.pop(sn)
             self._queue.unmark_processing(sn)
-            if self._event_sink is not None:
+            if self._notify_event_send is not None:
                 _custom_name, _season, _ep_num = self._lookup_notifier_meta(info.owner_id, sn, None)
-                self._event_sink.fire_failed(
-                    owner_id=info.owner_id,
-                    bangumi_name=str(sn),
-                    episode=None,
-                    resolution=None,
-                    sn=sn,
-                    error_message=f'無可用影片源: {exc}'[:200],
-                    custom_name=_custom_name,
-                    season=_season,
-                    episode_number=_ep_num,
+                self._notify_event_send(
+                    kwargs=dict(
+                        event='failed',
+                        owner_id=info.owner_id,
+                        bangumi_name=str(sn),
+                        episode=None,
+                        resolution=None,
+                        sn=sn,
+                        error_message=f'無可用影片源: {exc}'[:200],
+                        custom_name=_custom_name,
+                        season=_season,
+                        episode_number=_ep_num,
+                    )
                 )
             return True
         except exceptions.TryTooManyTimeError as exc:
@@ -170,6 +175,23 @@ class DownloadWorker:
             self._progress.mark_retry(sn)
             self._queue.unmark_processing(sn)
             return False
+
+        # Fire 'started' event now that load() succeeded and we know the bangumi name.
+        if self._notify_event_send is not None:
+            _custom_name_s, _season_s, _ep_num_s = self._lookup_notifier_meta(info.owner_id, sn, anime.get_episode())
+            self._notify_event_send(
+                kwargs=dict(
+                    event='started',
+                    owner_id=info.owner_id,
+                    bangumi_name=anime.get_bangumi_name(),
+                    episode=anime.get_episode(),
+                    resolution=str(anime.get_resolution()),
+                    sn=sn,
+                    custom_name=_custom_name_s,
+                    season=_season_s,
+                    episode_number=_ep_num_s,
+                )
+            )
 
         # Download
         try:
@@ -194,18 +216,21 @@ class DownloadWorker:
             )
             self._queue.pop(sn)
             self._queue.unmark_processing(sn)
-            if self._event_sink is not None:
+            if self._notify_event_send is not None:
                 _ep = anime.get_episode()
                 _custom_name, _season, _ep_num = self._lookup_notifier_meta(info.owner_id, sn, _ep)
-                self._event_sink.fire_cancelled(
-                    owner_id=info.owner_id,
-                    bangumi_name=anime.get_bangumi_name(),
-                    episode=_ep,
-                    resolution=str(anime.get_resolution()),
-                    sn=sn,
-                    custom_name=_custom_name,
-                    season=_season,
-                    episode_number=_ep_num,
+                self._notify_event_send(
+                    kwargs=dict(
+                        event='cancelled',
+                        owner_id=info.owner_id,
+                        bangumi_name=anime.get_bangumi_name(),
+                        episode=_ep,
+                        resolution=str(anime.get_resolution()),
+                        sn=sn,
+                        custom_name=_custom_name,
+                        season=_season,
+                        episode_number=_ep_num,
+                    )
                 )
             return False  # do NOT call finish() — cancel() already scheduled it
         except exceptions.NoAvailableStreamError as exc:
@@ -220,19 +245,22 @@ class DownloadWorker:
             self._progress.update_status(sn, '失敗')
             self._queue.pop(sn)
             self._queue.unmark_processing(sn)
-            if self._event_sink is not None:
+            if self._notify_event_send is not None:
                 _ep = anime.get_episode()
                 _custom_name, _season, _ep_num = self._lookup_notifier_meta(info.owner_id, sn, _ep)
-                self._event_sink.fire_failed(
-                    owner_id=info.owner_id,
-                    bangumi_name=anime.get_bangumi_name(),
-                    episode=_ep,
-                    resolution=str(anime.get_resolution()),
-                    sn=sn,
-                    error_message=f'無可用影片源: {exc}'[:200],
-                    custom_name=_custom_name,
-                    season=_season,
-                    episode_number=_ep_num,
+                self._notify_event_send(
+                    kwargs=dict(
+                        event='failed',
+                        owner_id=info.owner_id,
+                        bangumi_name=anime.get_bangumi_name(),
+                        episode=_ep,
+                        resolution=str(anime.get_resolution()),
+                        sn=sn,
+                        error_message=f'無可用影片源: {exc}'[:200],
+                        custom_name=_custom_name,
+                        season=_season,
+                        episode_number=_ep_num,
+                    )
                 )
             return True
         except exceptions.TryTooManyTimeError as exc:
@@ -265,19 +293,22 @@ class DownloadWorker:
             self._run_upload(sn, anime=anime, info=info)
 
         # Notify on success.
-        if self._event_sink is not None:
+        if self._notify_event_send is not None:
             _ep = anime.get_episode()
             _custom_name, _season, _ep_num = self._lookup_notifier_meta(info.owner_id, sn, _ep)
-            self._event_sink.fire_completed(
-                owner_id=info.owner_id,
-                bangumi_name=anime.get_bangumi_name(),
-                episode=_ep,
-                resolution=str(anime.get_resolution()),
-                sn=sn,
-                file_size_mb=int(result.size_mb),
-                custom_name=_custom_name,
-                season=_season,
-                episode_number=_ep_num,
+            self._notify_event_send(
+                kwargs=dict(
+                    event='completed',
+                    owner_id=info.owner_id,
+                    bangumi_name=anime.get_bangumi_name(),
+                    episode=_ep,
+                    resolution=str(anime.get_resolution()),
+                    sn=sn,
+                    file_size_mb=int(result.size_mb),
+                    custom_name=_custom_name,
+                    season=_season,
+                    episode_number=_ep_num,
+                )
             )
 
         # Terminal success: caller's ``finally`` finishes the progress entry.

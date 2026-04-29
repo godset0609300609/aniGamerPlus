@@ -237,25 +237,18 @@ async def test_callback_unknown_data_shows_alert() -> None:
 
 
 # ---------------------------------------------------------------------------
-# /cancel command — confirmation keyboard flow
+# /cancel command — now redirects to /menu
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
 async def test_cmd_cancel_shows_confirm_keyboard() -> None:
-    """The /cancel command should show a confirmation keyboard, not cancel immediately."""
+    """Simplified: /cancel now redirects to /menu (cancellation is via /menu ▶ Tasks)."""
     dispatcher, client = _make_dispatcher()
     user = _make_user()
 
     await dispatcher.dispatch(chat_id=111, user=user, text='/cancel 48430')
 
     assert client.send_message.called
-    kwargs = client.send_message.call_args[1]
-    markup = kwargs.get('reply_markup')
-    assert markup is not None, 'Expected inline keyboard on /cancel'
-
-    rows = markup['inline_keyboard']  # type: ignore[index]
-    all_buttons = [btn for row in rows for btn in row]
-    cb_data = {btn['callback_data'] for btn in all_buttons}
-    assert 'confirm_cancel:48430' in cb_data
-    assert 'cancel_prompt' in cb_data
+    msg = client.send_message.call_args[0][1]
+    assert '/menu' in msg or '控制台' in msg

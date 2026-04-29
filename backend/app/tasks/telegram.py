@@ -1,0 +1,155 @@
+"""Async Telegram outbound actors with built-in 429 retry.
+
+Every outbound Telegram API call (send / edit / delete a message) goes
+through one of these actors so dramatiq's retry middleware handles 429
+``Too Many Requests`` automatically with exponential backoff.
+
+Bot-blocked / chat-not-found errors are NOT retried — those are
+permanent and trigger binding cleanup in the Notifier-side handler.
+"""
+
+from __future__ import annotations
+
+import typing as T
+
+import dramatiq
+
+from .. import dramatiq_setup as _setup
+from ..services.telegram_client import (
+    TelegramApiError,
+    TelegramBotBlockedError,
+    TelegramChatNotFoundError,
+)
+from ..services.telegram_client_cache import resolve_telegram_client
+
+_setup.init_broker()
+
+
+def _retry_when_429(retries_so_far: int, exc: Exception) -> bool:
+    """dramatiq retry predicate: retry on 429, give up on permanent errors."""
+    if isinstance(exc, (TelegramBotBlockedError, TelegramChatNotFoundError)):
+        return False
+    if isinstance(exc, TelegramApiError):
+        return exc.status_code == 429
+    return False
+
+
+@dramatiq.actor(
+    queue_name='telegram',
+    max_retries=5,
+    min_backoff=1_000,
+    max_backoff=60_000,
+    retry_when=_retry_when_429,
+)
+async def send_message_actor(
+    chat_id: int,
+    text: str,
+    *,
+    bot_token: str,
+    reply_markup: dict[str, object] | None = None,
+    disable_web_page_preview: bool = True,
+) -> dict[str, object] | None:
+    """Send a single message; returns the raw API result (incl. message_id)."""
+    client = resolve_telegram_client(bot_token)
+    if client is None:
+        return None
+    return await client.send_message(
+        chat_id,
+        text,
+        reply_markup=reply_markup,
+        disable_web_page_preview=disable_web_page_preview,
+    )
+
+
+@dramatiq.actor(
+    queue_name='telegram',
+    max_retries=5,
+    min_backoff=1_000,
+    max_backoff=60_000,
+    retry_when=_retry_when_429,
+)
+async def edit_message_actor(
+    chat_id: int,
+    message_id: int,
+    text: str,
+    *,
+    bot_token: str,
+    reply_markup: dict[str, object] | None = None,
+) -> None:
+    """Edit a message; idempotent on 'message is not modified' (treated as success)."""
+    client = resolve_telegram_client(bot_token)
+    if client is None:
+        return
+    try:
+        await client.edit_message_text(chat_id, message_id, text, reply_markup=reply_markup)
+    except TelegramApiError as exc:
+        if 'message is not modified' in str(exc).lower():
+            return  # treat as success — no need to retry
+        raise
+
+
+@dramatiq.actor(
+    queue_name='telegram',
+    max_retries=2,
+    min_backoff=500,
+    retry_when=_retry_when_429,
+)
+async def delete_message_actor(
+    chat_id: int,
+    message_id: int,
+    *,
+    bot_token: str,
+) -> None:
+    """Best-effort delete; missing messages return success."""
+    client = resolve_telegram_client(bot_token)
+    if client is None:
+        return
+    try:
+        await client.delete_message(chat_id, message_id)
+    except TelegramApiError as exc:
+        # 'message to delete not found' / 'message can't be deleted' → drop
+        msg = str(exc).lower()
+        if 'not found' in msg or "can't be deleted" in msg or 'cant be deleted' in msg:
+            return
+        raise
+
+
+@dramatiq.actor(queue_name='telegram', max_retries=0)
+async def notify_event_actor(**kwargs: T.Any) -> None:
+    """Dispatch a download lifecycle event through TelegramNotifier.
+
+    Decouples the sync worker thread from the async notifier — the worker
+    calls ``notify_event_actor.send_with_options(kwargs={...})`` and returns
+    immediately; this actor runs in the dramatiq worker process where an
+    asyncio event loop is already running via the AsyncIO middleware.
+    """
+    from ..core import build_container
+
+    container = build_container()
+    notifier = _build_notifier(container)
+    if notifier is None:
+        return
+    await notifier.notify_download_event(**kwargs)
+
+
+def _build_notifier(container: object) -> object | None:
+    """Construct a TelegramNotifier from the given container, or None when disabled."""
+    from ..services.telegram_live_messages import LiveMessageRegistry
+    from ..services.telegram_notifier import TelegramNotifier
+
+    tg_client = getattr(container, 'telegram_client', None)
+    if tg_client is None:
+        return None
+
+    def _settings_provider() -> object:
+        return container.settings_repo.load().telegram  # type: ignore[union-attr]
+
+    live_messages: LiveMessageRegistry | None = getattr(container, 'live_messages', None)
+
+    return TelegramNotifier(
+        client=tg_client,  # type: ignore[arg-type]
+        user_repo=container.user_repo,  # type: ignore[union-attr]
+        settings_provider=_settings_provider,  # type: ignore[arg-type]
+        live_messages=live_messages,
+        logger=container.logger,  # type: ignore[union-attr]
+    )
