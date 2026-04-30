@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import fastapi.testclient
@@ -12,94 +13,26 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-class _SchedulerProxyUp:
-    """Fake proxy that reports the scheduler as healthy."""
+class _FakeRedisOk:
+    """Async Redis stub whose ping() returns True immediately."""
 
-    def is_scheduler_up(self) -> bool:
+    async def ping(self) -> bool:
         return True
 
-    async def fetch_health(self) -> dict[str, Any]:
-        return {
-            'status': 'ok',
-            'uptime_seconds': 300,
-            'active_downloads': 2,
-            'update_loop_running': True,
-            'last_heartbeat_age_seconds': 5.0,
-        }
 
-    def latest_snapshot(self) -> dict[int, Any]:
-        return {}
+class _FakeRedisDown:
+    """Async Redis stub whose ping() raises ConnectionError."""
 
-    async def run_progress_subscription(self) -> None:
-        import asyncio
+    async def ping(self) -> bool:
+        raise ConnectionError('redis unreachable')
 
+
+class _FakeRedisSlow:
+    """Async Redis stub whose ping() sleeps forever (tests the timeout path)."""
+
+    async def ping(self) -> bool:
         await asyncio.sleep(9999)
-
-    async def close(self) -> None:
-        pass
-
-    async def enqueue_manual(self, request: Any, owner_id: str) -> None:
-        pass
-
-    async def cancel_task(self, sn: int) -> None:
-        pass
-
-
-class _SchedulerProxyDegraded:
-    """Fake proxy reporting the scheduler as degraded."""
-
-    def is_scheduler_up(self) -> bool:
-        return True
-
-    async def fetch_health(self) -> dict[str, Any]:
-        return {
-            'status': 'degraded',
-            'uptime_seconds': 300,
-            'active_downloads': 0,
-            'update_loop_running': True,
-            'last_heartbeat_age_seconds': 90.0,
-        }
-
-    def latest_snapshot(self) -> dict[int, Any]:
-        return {}
-
-    async def run_progress_subscription(self) -> None:
-        import asyncio
-
-        await asyncio.sleep(9999)
-
-    async def close(self) -> None:
-        pass
-
-    async def enqueue_manual(self, request: Any, owner_id: str) -> None:
-        pass
-
-    async def cancel_task(self, sn: int) -> None:
-        pass
-
-
-class _SchedulerProxyDown:
-    """Fake proxy that says the scheduler is unreachable."""
-
-    def is_scheduler_up(self) -> bool:
-        return False
-
-    def latest_snapshot(self) -> dict[int, Any]:
-        return {}
-
-    async def run_progress_subscription(self) -> None:
-        import asyncio
-
-        await asyncio.sleep(9999)
-
-    async def close(self) -> None:
-        pass
-
-    async def enqueue_manual(self, request: Any, owner_id: str) -> None:
-        pass
-
-    async def cancel_task(self, sn: int) -> None:
-        pass
+        return True  # never reached
 
 
 # ---------------------------------------------------------------------------
@@ -107,99 +40,107 @@ class _SchedulerProxyDown:
 # ---------------------------------------------------------------------------
 
 
-def test_health_ok_when_scheduler_healthy(
+def test_health_ok_when_redis_pingable(
     client: fastapi.testclient.TestClient,
-    fake_container: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Overall status is 'ok' when api and scheduler are both healthy."""
-
-    # Wire a healthy proxy into app state.
-    proxy = _SchedulerProxyUp()
-    # Inject proxy via app.state on the underlying FastAPI app.
-    starlette_app = client.app
-    starlette_app.state.scheduler_proxy = proxy  # type: ignore[attr-defined]
+    """Overall status is 'ok' when Redis responds to ping."""
+    monkeypatch.setattr('app.api.health._get_redis_client', lambda: _FakeRedisOk())
 
     r = client.get('/api/health')
     assert r.status_code == 200
     data = r.json()
     assert data['status'] == 'ok'
-    assert data['scheduler']['status'] == 'ok'
+    assert data['redis']['status'] == 'ok'
+    assert data['scheduler']['status'] == 'ok'  # back-compat alias
     assert data['api']['status'] == 'ok'
     assert 'checked_at' in data
 
 
-def test_health_degraded_when_scheduler_degraded(
+def test_health_degraded_when_redis_down(
     client: fastapi.testclient.TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Overall status is 'degraded' when scheduler reports degraded."""
-    proxy = _SchedulerProxyDegraded()
-    client.app.state.scheduler_proxy = proxy  # type: ignore[attr-defined]
+    """Overall status is 'degraded' when Redis ping raises."""
+    monkeypatch.setattr('app.api.health._get_redis_client', lambda: _FakeRedisDown())
 
     r = client.get('/api/health')
     assert r.status_code == 200
     data = r.json()
     assert data['status'] == 'degraded'
-    assert data['scheduler']['status'] == 'degraded'
+    assert data['redis']['status'] == 'offline'
 
 
-def test_health_degraded_when_scheduler_offline(
+def test_health_degraded_when_redis_unreachable_timeout(
     client: fastapi.testclient.TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Overall status is 'degraded' when scheduler is offline."""
-    proxy = _SchedulerProxyDown()
-    client.app.state.scheduler_proxy = proxy  # type: ignore[attr-defined]
+    """Overall status is 'degraded' when Redis ping times out."""
+    import app.api.health as health_module
+
+    monkeypatch.setattr('app.api.health._get_redis_client', lambda: _FakeRedisSlow())
+
+    # Override wait_for in the health module to use a very short timeout so
+    # the test completes quickly without waiting the full 2 s.
+    _real_wait_for = asyncio.wait_for
+
+    async def _fast_wait_for(coro: Any, timeout: float) -> Any:
+        return await _real_wait_for(coro, timeout=0.05)
+
+    monkeypatch.setattr(health_module.asyncio, 'wait_for', _fast_wait_for)
 
     r = client.get('/api/health')
     assert r.status_code == 200
     data = r.json()
     assert data['status'] == 'degraded'
-    assert data['scheduler']['status'] == 'offline'
+    assert data['redis']['status'] == 'offline'
 
 
-def test_health_degraded_when_no_proxy(
+def test_health_degraded_when_no_redis_client(
     client: fastapi.testclient.TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When no proxy is configured, scheduler status is 'offline'."""
-    # Remove proxy from state if it exists.
-    if hasattr(client.app.state, 'scheduler_proxy'):
-        del client.app.state.scheduler_proxy
+    """Overall status is 'degraded' when no Redis client is configured."""
+    monkeypatch.setattr('app.api.health._get_redis_client', lambda: None)
 
     r = client.get('/api/health')
     assert r.status_code == 200
     data = r.json()
-    assert data['scheduler']['status'] == 'offline'
     assert data['status'] == 'degraded'
+    assert data['redis']['status'] == 'offline'
 
 
 def test_health_response_structure(
     client: fastapi.testclient.TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Response contains all expected top-level fields."""
+    monkeypatch.setattr('app.api.health._get_redis_client', lambda: _FakeRedisOk())
+
     r = client.get('/api/health')
     assert r.status_code == 200
     data = r.json()
 
     assert 'status' in data
     assert 'api' in data
+    assert 'redis' in data
     assert 'scheduler' in data
     assert 'checked_at' in data
     assert 'version' in data['api']
 
 
-def test_health_fetch_timeout_is_3_seconds(
+def test_health_fetch_timeout_is_2_seconds(
     client: fastapi.testclient.TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The scheduler health fetch uses a 3 s timeout to avoid false-positive
-    degraded reports when the scheduler is momentarily busy.
+    """The Redis ping uses a 2 s timeout.
 
-    The timeout value is verified by patching asyncio.wait_for inside the
-    health module and recording what timeout value the handler passes.
+    Verified by patching asyncio.wait_for inside the health module and
+    recording the timeout= argument the handler passes.
     """
-    import asyncio
-
     import app.api.health as health_module
+
+    monkeypatch.setattr('app.api.health._get_redis_client', lambda: _FakeRedisOk())
 
     captured: list[float] = []
     _original_wait_for = asyncio.wait_for
@@ -210,11 +151,8 @@ def test_health_fetch_timeout_is_3_seconds(
 
     monkeypatch.setattr(health_module.asyncio, 'wait_for', spy_wait_for)
 
-    proxy = _SchedulerProxyUp()
-    client.app.state.scheduler_proxy = proxy  # type: ignore[attr-defined]
-
     r = client.get('/api/health')
     assert r.status_code == 200
 
-    assert captured, 'asyncio.wait_for was never called — proxy may be unreachable'
-    assert captured[0] == 3.0, f'Expected scheduler health timeout=3.0 s, got {captured[0]}'
+    assert captured, 'asyncio.wait_for was never called'
+    assert captured[0] == 2.0, f'Expected Redis ping timeout=2.0 s, got {captured[0]}'
