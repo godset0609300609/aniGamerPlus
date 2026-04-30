@@ -253,8 +253,20 @@ class TelegramCommandDispatcher:
         chat_id: int | None = getattr(message, 'chat', None) and getattr(message.chat, 'id', None)  # type: ignore[union-attr]
         message_id: int | None = getattr(message, 'message_id', None)
 
-        # Answer immediately so Telegram stops spinner
-        await self._client.answer_callback_query(cq_id)
+        # Answer immediately so Telegram stops spinner.  This call may fail with
+        # ``query is too old`` (HTTP 400) when Telegram retries an older webhook
+        # delivery — ignoring it lets the webhook still return 200 OK and breaks
+        # the retry storm that would otherwise re-deliver the same update_id
+        # forever.  Re-raising would put the API back into an infinite 500 loop.
+        from .telegram_client import TelegramApiError
+
+        try:
+            await self._client.answer_callback_query(cq_id)
+        except TelegramApiError as exc:
+            if exc.status_code == 400 and ('too old' in str(exc).lower() or 'query id is invalid' in str(exc).lower()):
+                self._log.info('answer_callback_query stale: %s — dropping update', exc)
+                return
+            raise
 
         if data == 'cancel_prompt':
             if chat_id is not None and message_id is not None:
