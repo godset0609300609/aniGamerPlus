@@ -780,7 +780,9 @@ def test_format_progress_body_zero_rate_all_empty_cells() -> None:
     entry = TaskProgress(sn=1, rate=0.0, status='ok', filename='f.mp4')
     body = format_progress_body(entry)
     # 0% → 0 filled, 10 empty cells
-    assert '░░░░░░░░░░' in body
+    assert '▱▱▱▱▱▱▱▱▱▱' in body
+    # Confirm total bar width is 10 cells
+    assert body.count('▰') + body.count('▱') == 10
 
 
 def test_format_progress_body_100_rate_all_filled_cells() -> None:
@@ -789,9 +791,10 @@ def test_format_progress_body_100_rate_all_filled_cells() -> None:
 
     entry = TaskProgress(sn=1, rate=1.0, status='ok', filename='f.mp4')
     body = format_progress_body(entry)
-    # 100% → 10 filled cells (▓ or █ depending on implementation)
-    assert '░' not in body
+    # 100% → 10 filled cells
+    assert '▱' not in body
     assert '100%' in body
+    assert body.count('▰') == 10
 
 
 def test_format_progress_body_50_rate_speed_eta() -> None:
@@ -827,7 +830,7 @@ def test_format_progress_body_cooldown_future_overrides_bar() -> None:
     body = format_progress_body(entry)
     assert '冷卻' in body
     # No progress bar when cooling down
-    assert '░' not in body and '%' not in body
+    assert '▰' not in body and '▱' not in body and '%' not in body
 
 
 def test_format_progress_body_cooldown_past_is_ignored() -> None:
@@ -852,7 +855,7 @@ def test_format_progress_body_clamps_rate_above_one() -> None:
     assert '73%' in body
     assert '7387%' not in body
     # Bar must have exactly 10 cells (filled + empty)
-    bar_chars = sum(body.count(c) for c in ('▓', '░'))
+    bar_chars = sum(body.count(c) for c in ('▰', '▱'))
     assert bar_chars == 10
 
 
@@ -864,7 +867,7 @@ def test_format_progress_body_clamps_rate_above_100() -> None:
     entry = TaskProgress(sn=1, rate=7387.0, status='下載中', filename='ep.mp4', bangumi_name='X', episode='1')
     body = format_progress_body(entry)
     assert '100%' in body
-    bar_chars = sum(body.count(c) for c in ('▓', '░'))
+    bar_chars = sum(body.count(c) for c in ('▰', '▱'))
     assert bar_chars == 10
 
 
@@ -876,8 +879,32 @@ def test_format_progress_body_negative_rate_clamps_to_zero() -> None:
     entry = TaskProgress(sn=1, rate=-0.5, status='下載中', filename='ep.mp4', bangumi_name='X', episode='1')
     body = format_progress_body(entry)
     assert '0%' in body
-    bar_chars = sum(body.count(c) for c in ('▓', '░'))
+    bar_chars = sum(body.count(c) for c in ('▰', '▱'))
     assert bar_chars == 10
+
+
+def test_format_resolution_appends_p_suffix() -> None:
+    from app.services.telegram_notifier import _format_resolution
+
+    assert _format_resolution('1080') == '1080p'
+    assert _format_resolution(720) == '720p'
+    assert _format_resolution('540p') == '540p'  # idempotent
+    assert _format_resolution(None) == ''
+    assert _format_resolution('') == ''
+
+
+def test_format_completed_resolution_has_p_suffix() -> None:
+    msg = _format_message(
+        event='completed',
+        bangumi_name='某番',
+        episode='01',
+        resolution='1080',
+        file_size_mb=None,
+        error_message=None,
+        episode_number=1,
+    )
+    assert '1080p' in msg
+    assert '解析度' in msg
 
 
 def test_started_other_exception_is_swallowed(tmp_path: pathlib.Path) -> None:
