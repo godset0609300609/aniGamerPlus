@@ -88,14 +88,29 @@ def _should_edit(now: float, last_edit_at: float, rate: float, last_rate: float)
 
 def _render_progress_message(entry: TaskProgress) -> str:
     """Build the MarkdownV2 progress message for an in-flight task."""
+    import re
+
     from .telegram_notifier import build_name_line, format_progress_body
+
+    # Parse the integer episode number from the raw episode string so the
+    # name line can render the canonical "第 N 集" form.  Falls back to None
+    # for non-numeric labels (SP / OVA / etc.); build_name_line then emits
+    # the raw label without the wrapper.
+    episode_number: int | None = None
+    if entry.episode:
+        match = re.search(r'\d+', entry.episode)
+        if match:
+            try:
+                episode_number = int(match.group())
+            except ValueError:
+                episode_number = None
 
     name_line = build_name_line(
         bangumi_name=entry.bangumi_name or '',
         episode=entry.episode,
         custom_name=None,
         season=1,
-        episode_number=None,
+        episode_number=episode_number,
     )
     body = format_progress_body(entry)
     return f'⏬ *下載中*\n\n{name_line}\n{body}'

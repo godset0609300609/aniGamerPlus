@@ -320,6 +320,37 @@ def test_render_progress_message_contains_bangumi_name() -> None:
     assert '某番' in text
 
 
+def test_render_progress_message_uses_canonical_episode_form() -> None:
+    """Numeric episode label like '29' should render as '第 29 集' (matches the
+    completed/started DM format), not the bare '29' fallback."""
+    entry = TaskProgress(
+        sn=1,
+        rate=0.4,
+        status='正在下載',
+        filename='ep.mp4',
+        bangumi_name='Dr.STONE 新石紀',
+        episode='29',
+    )
+    text = _render_progress_message(entry)
+    assert '第 29 集' in text
+
+
+def test_render_progress_message_non_numeric_episode_uses_raw_label() -> None:
+    """Labels like 'OVA' have no integer to extract — fall back to the
+    raw episode string (no '第 N 集' wrapper)."""
+    entry = TaskProgress(
+        sn=1,
+        rate=0.4,
+        status='正在下載',
+        filename='ep.mp4',
+        bangumi_name='Some Anime',
+        episode='OVA',
+    )
+    text = _render_progress_message(entry)
+    assert 'OVA' in text
+    assert '第 OVA 集' not in text  # raw label, not the canonical wrapper
+
+
 def test_render_progress_message_speed_and_eta() -> None:
     entry = TaskProgress(
         sn=1,
