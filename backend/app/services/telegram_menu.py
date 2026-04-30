@@ -119,14 +119,14 @@ class MenuRenderer:
         if data == 'm:tasks':
             return await self.render_tasks(user)
         if data.startswith('m:cancel_yes:'):
-            sn_str = data[len('m:cancel_yes:'):]
+            sn_str = data[len('m:cancel_yes:') :]
             try:
                 sn = int(sn_str)
             except ValueError:
                 return escape_markdown_v2('❌ 無效 SN'), _kb([_back_button()])
             return await self.execute_cancel(user, sn)
         if data.startswith('m:cancel:'):
-            sn_str = data[len('m:cancel:'):]
+            sn_str = data[len('m:cancel:') :]
             try:
                 sn = int(sn_str)
             except ValueError:
@@ -135,14 +135,14 @@ class MenuRenderer:
         if data == 'm:list':
             return await self.render_list(user, 1)
         if data.startswith('m:list:'):
-            page_str = data[len('m:list:'):]
+            page_str = data[len('m:list:') :]
             try:
                 page = max(1, int(page_str))
             except ValueError:
                 page = 1
             return await self.render_list(user, page)
         if data.startswith('m:unwatch:'):
-            sn_str = data[len('m:unwatch:'):]
+            sn_str = data[len('m:unwatch:') :]
             try:
                 sn = int(sn_str)
             except ValueError:
@@ -153,17 +153,17 @@ class MenuRenderer:
         if data == 'm:notify_toggle':
             return await self.toggle_notify(user)
         if data.startswith('m:event_toggle:'):
-            event = data[len('m:event_toggle:'):]
+            event = data[len('m:event_toggle:') :]
             return await self.toggle_event(user, event)
         if data == 'm:silence':
             return await self.render_silence(user)
         if data.startswith('m:silence_set:'):
-            code = data[len('m:silence_set:'):]
+            code = data[len('m:silence_set:') :]
             return await self.execute_silence(user, code)
         if data == 'm:history':
             return await self.render_history(user, 7)
         if data.startswith('m:history:'):
-            days_str = data[len('m:history:'):]
+            days_str = data[len('m:history:') :]
             try:
                 days = int(days_str)
             except ValueError:
@@ -176,7 +176,7 @@ class MenuRenderer:
         if data == 'm:admin_users':
             return await self.render_admin_users(user, 1)
         if data.startswith('m:admin_users:'):
-            page_str = data[len('m:admin_users:'):]
+            page_str = data[len('m:admin_users:') :]
             try:
                 page = max(1, int(page_str))
             except ValueError:
@@ -367,9 +367,7 @@ class MenuRenderer:
         import anyio.to_thread
 
         new_value = not user.telegram_notify_enabled
-        await anyio.to_thread.run_sync(
-            lambda: self._user_repo.set_telegram_notify_enabled(user.id, new_value)
-        )
+        await anyio.to_thread.run_sync(lambda: self._user_repo.set_telegram_notify_enabled(user.id, new_value))
         # Build updated user row for re-render
         import dataclasses
 
@@ -484,9 +482,7 @@ class MenuRenderer:
 
         # Admin sees all; others see only own
         user_id_filter = None if user.role == 'admin' else user.id
-        rows_data = await anyio.to_thread.run_sync(
-            lambda: self._task_history_repo.list_recent(days, user_id_filter)
-        )
+        rows_data = await anyio.to_thread.run_sync(lambda: self._task_history_repo.list_recent(days, user_id_filter))
 
         shown = rows_data[:PAGE_SIZE_HISTORY]
         lines = [escape_markdown_v2(f'📜 近 {days} 天歷史（顯示前 {len(shown)} 筆）'), '']
@@ -585,9 +581,7 @@ class MenuRenderer:
             notify_mark = '啟用' if u.telegram_notify_enabled else '停用'
             n_entries = entry_counts.get(u.id, 0)
             lines.append(
-                escape_markdown_v2(
-                    f'{u.username} ({u.role}) — 綁定:{bound_mark} 通知:{notify_mark} 追番:{n_entries}'
-                )
+                escape_markdown_v2(f'{u.username} ({u.role}) — 綁定:{bound_mark} 通知:{notify_mark} 追番:{n_entries}')
             )
 
         pager: list[dict[str, object]] = []

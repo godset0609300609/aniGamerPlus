@@ -64,11 +64,7 @@ async def _check_disk_low(container: Container, settings: object, tg_settings: o
     if usage.free >= _DISK_LOW_THRESHOLD_BYTES:
         return
     free_gib = usage.free / (1024**3)
-    text = (
-        '⚠️ *磁碟空間不足*\n\n'
-        f'`{_md_escape(bangumi_dir)}`\n'
-        f'剩餘: {free_gib:.1f} GiB \\(< 10 GiB\\)'
-    )
+    text = f'⚠️ *磁碟空間不足*\n\n`{_md_escape(bangumi_dir)}`\n剩餘: {free_gib:.1f} GiB \\(< 10 GiB\\)'
     await _broadcast_to_admins(container, tg_settings, text)
     await _set_cooldown(redis_client, 'disk_low')
 

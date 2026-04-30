@@ -159,7 +159,7 @@ def _make_container(
             return settings
 
     user_repo = FakeUserRepo()
-    for u in (users or []):
+    for u in users or []:
         user_repo._users.append(u)
 
     return types.SimpleNamespace(
@@ -202,9 +202,11 @@ def _patch_disk_free(monkeypatch: pytest.MonkeyPatch, *, free_bytes: int) -> Non
 
     Wrapped so the test bodies stay under the 120-char ruff line limit.
     """
+
     def _stub(_path: object) -> object:
         total = 100 * _10GIB
         return shutil._ntuple_diskusage(total=total, used=total - free_bytes, free=free_bytes)
+
     monkeypatch.setattr(shutil, 'disk_usage', _stub)
 
 

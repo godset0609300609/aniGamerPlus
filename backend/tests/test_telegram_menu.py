@@ -139,15 +139,8 @@ def _all_callback_datas(kb: dict[str, object]) -> list[str]:
 def _has_back_button(kb: dict[str, object]) -> bool:
     """Check that keyboard includes at least one back/root button."""
     callbacks = _all_callback_datas(kb)
-    texts = [
-        str(btn.get('text', ''))
-        for row in kb.get('inline_keyboard', [])
-        for btn in row
-        if isinstance(btn, dict)
-    ]
-    return any('返回' in t for t in texts) or 'm:root' in callbacks or any(
-        c.startswith('m:') for c in callbacks
-    )
+    texts = [str(btn.get('text', '')) for row in kb.get('inline_keyboard', []) for btn in row if isinstance(btn, dict)]
+    return any('返回' in t for t in texts) or 'm:root' in callbacks or any(c.startswith('m:') for c in callbacks)
 
 
 # ---------------------------------------------------------------------------
@@ -211,12 +204,7 @@ async def test_render_root_non_admin_no_admin_button() -> None:
     # No admin button
     assert 'm:admin' not in callbacks
     # No web_app (empty public_url)
-    texts = [
-        str(btn.get('text', ''))
-        for row in kb.get('inline_keyboard', [])
-        for btn in row
-        if isinstance(btn, dict)
-    ]
+    texts = [str(btn.get('text', '')) for row in kb.get('inline_keyboard', []) for btn in row if isinstance(btn, dict)]
     assert not any('🌐' in t for t in texts)
 
 
@@ -236,12 +224,7 @@ async def test_render_root_with_public_url_includes_webapp_button() -> None:
     user = _make_user(role='downloader')
     text, kb = await renderer.render_root(user)
 
-    texts = [
-        str(btn.get('text', ''))
-        for row in kb.get('inline_keyboard', [])
-        for btn in row
-        if isinstance(btn, dict)
-    ]
+    texts = [str(btn.get('text', '')) for row in kb.get('inline_keyboard', []) for btn in row if isinstance(btn, dict)]
     assert any('🌐' in t for t in texts)
 
 
@@ -253,12 +236,7 @@ async def test_render_root_counts_active_tasks() -> None:
     user = _make_user()
     text, kb = await renderer.render_root(user)
 
-    texts = [
-        str(btn.get('text', ''))
-        for row in kb.get('inline_keyboard', [])
-        for btn in row
-        if isinstance(btn, dict)
-    ]
+    texts = [str(btn.get('text', '')) for row in kb.get('inline_keyboard', []) for btn in row if isinstance(btn, dict)]
     # Should show (1) in the tasks button
     assert any('(1)' in t for t in texts)
 
