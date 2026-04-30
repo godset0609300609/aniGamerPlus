@@ -19,18 +19,33 @@ class _FakeAnime:
         sn: int,
         *,
         episode_list: dict[str, int] | None = None,
+        bangumi_name: str | None = None,
+        episode: str | None = None,
+        resolution: int = 1080,
     ) -> None:
         self.sn = int(sn)
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self._episode_list = episode_list or {'01': sn}
         self._info_shown = False
         self._danmu_enabled = False
+        self._bangumi_name = bangumi_name or f'番劇_{sn}'
+        self._episode = episode or '01'
+        self._resolution = resolution
 
     def load(self) -> None:
         self.calls.append(('load', {}))
 
     def get_episode_list(self) -> dict[str, int]:
         return dict(self._episode_list)
+
+    def get_bangumi_name(self) -> str:
+        return self._bangumi_name
+
+    def get_episode(self) -> str:
+        return self._episode
+
+    def get_resolution(self) -> int:
+        return self._resolution
 
     def enable_danmu(self) -> None:
         self.calls.append(('enable_danmu', {}))
@@ -59,6 +74,8 @@ def _runner(
     anime_map: dict[int, _FakeAnime],
     *,
     progress_bus: ProgressBus | None = None,
+    notify_event_send: Any = None,
+    anime_list_repo: Any = None,
 ) -> ManualRunner:
     logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
     settings = AppSettings(download_resolution='1080')
@@ -68,6 +85,8 @@ def _runner(
         settings=settings,
         logger=logger,
         progress_bus=progress_bus,
+        notify_event_send=notify_event_send,
+        anime_list_repo=anime_list_repo,
     )
 
 
@@ -754,3 +773,147 @@ def test_parse_cooldown_wait_called_before_metadata_fetch(
     wait_idx = fetch_order.index('wait')
     fetch_idx = fetch_order.index(f'fetch:{sn}')
     assert wait_idx < fetch_idx, f'wait() came after fetch(); order={fetch_order}'
+
+
+# ---------------------------------------------------------------------------
+# Telegram lifecycle events wired through ManualRunner._download_one
+# ---------------------------------------------------------------------------
+
+
+def _fake_send_capture() -> tuple[list[dict[str, object]], Any]:
+    """Return (event_log, send_fn) for capturing notify_event_send calls."""
+    events: list[dict[str, object]] = []
+
+    def _send(*, kwargs: dict[str, object]) -> None:
+        events.append(dict(kwargs))
+
+    return events, _send
+
+
+def test_notify_event_send_happy_path_fires_started_then_completed(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Happy-path download fires 'started' then 'completed' with correct keys."""
+    events, send = _fake_send_capture()
+    fa = _FakeAnime(1001, bangumi_name='テストアニメ', episode='02', resolution=1080)
+    r = _runner(tmp_path, {1001: fa}, notify_event_send=send)
+    r.run(1001, mode='single', resolution='1080', owner_id='user_A')
+
+    event_names = [e['event'] for e in events]
+    assert event_names == ['started', 'completed'], f'unexpected events: {event_names}'
+
+    started = events[0]
+    assert started['sn'] == 1001
+    assert started['bangumi_name'] == 'テストアニメ'
+    assert started['episode'] == '02'
+    assert started['owner_id'] == 'user_A'
+
+    completed = events[1]
+    assert completed['sn'] == 1001
+    assert completed['event'] == 'completed'
+    assert completed['file_size_mb'] == 500  # matches _FakeAnime.download size_mb
+
+
+def test_notify_event_send_no_stream_error_on_load_fires_failed(
+    tmp_path: pathlib.Path,
+) -> None:
+    """NoAvailableStreamError from load() fires 'failed' with error_message substring."""
+    from app.downloader import exceptions as exc_mod
+
+    class _NoStreamAnime(_FakeAnime):
+        def load(self) -> None:
+            raise exc_mod.NoAvailableStreamError('stream gone')
+
+    events, send = _fake_send_capture()
+    fa = _NoStreamAnime(1002)
+    r = _runner(tmp_path, {1002: fa}, notify_event_send=send)
+    r.run(1002, mode='single')
+
+    assert len(events) == 1
+    assert events[0]['event'] == 'failed'
+    assert 'stream gone' in str(events[0].get('error_message', ''))
+
+
+def test_notify_event_send_no_stream_error_on_download_fires_failed(
+    tmp_path: pathlib.Path,
+) -> None:
+    """NoAvailableStreamError from download() fires 'failed' with error_message."""
+    from app.downloader import exceptions as exc_mod
+
+    class _NoStreamDownloadAnime(_FakeAnime):
+        def download(self, **kwargs: Any) -> DownloadResult:
+            raise exc_mod.NoAvailableStreamError('no playable stream')
+
+    events, send = _fake_send_capture()
+    fa = _NoStreamDownloadAnime(1003, bangumi_name='番劇X', episode='05')
+    r = _runner(tmp_path, {1003: fa}, notify_event_send=send)
+    r.run(1003, mode='single')
+
+    event_names = [e['event'] for e in events]
+    assert 'started' in event_names, f'started missing from {event_names}'
+    assert 'failed' in event_names, f'failed missing from {event_names}'
+    failed_ev = next(e for e in events if e['event'] == 'failed')
+    assert 'no playable stream' in str(failed_ev.get('error_message', ''))
+
+
+def test_notify_event_send_task_cancelled_fires_cancelled(
+    tmp_path: pathlib.Path,
+) -> None:
+    """TaskCancelledError from download() fires 'cancelled'."""
+    from app.downloader import exceptions as exc_mod
+
+    class _CancelledAnime(_FakeAnime):
+        def download(self, **kwargs: Any) -> DownloadResult:
+            raise exc_mod.TaskCancelledError('user cancelled')
+
+    events, send = _fake_send_capture()
+    fa = _CancelledAnime(1004, bangumi_name='キャンセル番劇', episode='03')
+    r = _runner(tmp_path, {1004: fa}, notify_event_send=send)
+    r.run(1004, mode='single')
+
+    event_names = [e['event'] for e in events]
+    assert 'started' in event_names, f'started missing from {event_names}'
+    assert 'cancelled' in event_names, f'cancelled missing from {event_names}'
+    assert 'completed' not in event_names, 'completed should not be fired on cancel'
+
+
+def test_notify_event_send_none_no_errors_raised(
+    tmp_path: pathlib.Path,
+) -> None:
+    """When notify_event_send=None (default), no errors are raised on any path."""
+    from app.downloader import exceptions as exc_mod
+
+    # Happy path
+    fa_ok = _FakeAnime(1010)
+    r_ok = _runner(tmp_path, {1010: fa_ok})  # notify_event_send defaults to None
+    r_ok.run(1010, mode='single')  # must not raise
+
+    # Failure path
+    class _FailAnime(_FakeAnime):
+        def download(self, **kwargs: Any) -> DownloadResult:
+            raise exc_mod.NoAvailableStreamError('deleted')
+
+    fa_fail = _FailAnime(1011)
+    r_fail = _runner(tmp_path, {1011: fa_fail})
+    r_fail.run(1011, mode='single')  # must not raise
+
+    # Cancel path
+    class _CancelAnime(_FakeAnime):
+        def download(self, **kwargs: Any) -> DownloadResult:
+            raise exc_mod.TaskCancelledError('cancelled')
+
+    fa_cancel = _CancelAnime(1012)
+    r_cancel = _runner(tmp_path, {1012: fa_cancel})
+    r_cancel.run(1012, mode='single')  # must not raise
+
+
+def test_notify_event_send_get_info_mode_does_not_fire_events(
+    tmp_path: pathlib.Path,
+) -> None:
+    """get_info=True path must NOT fire any Telegram lifecycle events."""
+    events, send = _fake_send_capture()
+    fa = _FakeAnime(1020)
+    r = _runner(tmp_path, {1020: fa}, notify_event_send=send)
+    r.run(1020, mode='single', get_info=True)
+
+    assert events == [], f'expected no events for get_info=True, got {events}'
