@@ -566,6 +566,15 @@ def format_progress_body(entry: object) -> str:
             remaining_n = escape_markdown_v2(f'{int(remaining)}')
             return f'⏸ 冷卻中 \\(還 {remaining_n}s\\)'
 
+    # Normalise the rate to a 0.0-1.0 fraction.  segment_downloader writes it
+    # as 0-100 (done/total*100); ffmpeg_downloader writes it as 0-1.  Detect
+    # which by magnitude — values > 1.0 are clearly percentages.  Clamp
+    # to [0, 1] so a bug upstream can't blow Telegram's 4096-byte limit
+    # with thousands of bar characters.
+    if rate > 1.0:
+        rate = rate / 100.0
+    rate = max(0.0, min(1.0, rate))
+
     # Progress bar: 10 cells.
     filled = round(rate * 10)
     bar_raw = '▓' * filled + '░' * (10 - filled)

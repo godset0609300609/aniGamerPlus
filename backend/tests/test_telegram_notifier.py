@@ -842,6 +842,44 @@ def test_format_progress_body_cooldown_past_is_ignored() -> None:
     assert '冷卻' not in body
 
 
+def test_format_progress_body_clamps_rate_above_one() -> None:
+    """rate=73.87 (segment_downloader's 0-100 convention) renders as 73%, not 7387%."""
+    from app.downloader.progress import TaskProgress
+    from app.services.telegram_notifier import format_progress_body
+
+    entry = TaskProgress(sn=1, rate=73.87, status='下載中', filename='ep.mp4', bangumi_name='X', episode='1')
+    body = format_progress_body(entry)
+    assert '73%' in body
+    assert '7387%' not in body
+    # Bar must have exactly 10 cells (filled + empty)
+    bar_chars = sum(body.count(c) for c in ('▓', '░'))
+    assert bar_chars == 10
+
+
+def test_format_progress_body_clamps_rate_above_100() -> None:
+    """Even crazier rate=7387.0 still renders as 100% and a full bar."""
+    from app.downloader.progress import TaskProgress
+    from app.services.telegram_notifier import format_progress_body
+
+    entry = TaskProgress(sn=1, rate=7387.0, status='下載中', filename='ep.mp4', bangumi_name='X', episode='1')
+    body = format_progress_body(entry)
+    assert '100%' in body
+    bar_chars = sum(body.count(c) for c in ('▓', '░'))
+    assert bar_chars == 10
+
+
+def test_format_progress_body_negative_rate_clamps_to_zero() -> None:
+    """Defensive: negative rate doesn't crash or render gibberish."""
+    from app.downloader.progress import TaskProgress
+    from app.services.telegram_notifier import format_progress_body
+
+    entry = TaskProgress(sn=1, rate=-0.5, status='下載中', filename='ep.mp4', bangumi_name='X', episode='1')
+    body = format_progress_body(entry)
+    assert '0%' in body
+    bar_chars = sum(body.count(c) for c in ('▓', '░'))
+    assert bar_chars == 10
+
+
 def test_started_other_exception_is_swallowed(tmp_path: pathlib.Path) -> None:
     """Non-permanent errors during 'started' should be swallowed."""
 
