@@ -11,6 +11,7 @@ or by overriding FastAPI dependency resolvers.
 
 from __future__ import annotations
 
+import collections.abc
 import dataclasses
 import functools
 import typing as T
@@ -303,7 +304,29 @@ def build_container() -> Container:
     cooldown = DownloadCooldown(_download_cd_seconds, logger)
     parse_cooldown = DownloadCooldown(_parse_cd_seconds, logger, label='解析冷卻')
 
-    manual_runner_container: list[ManualRunner] = []
+    my_anime_exporter = MyAnimeExporter(http_client, logger)
+    signals = SignalHandler(logger)
+
+    # Build TelegramClient and related services for all processes that have a
+    # bot_token configured.  The API process uses the client for
+    # webhook/send-message; the scheduler process wires notify_event_actor
+    # into the worker and update-loop for download-event DMs.
+    telegram_client = None
+    telegram_rate_limiter = None
+    telegram_command_dispatcher = None
+    menu_renderer = None
+
+    # Build the optional notify_event_send closure first so ManualRunner can be
+    # wired with it regardless of where the telegram block lives.  Set to None
+    # when no bot_token is configured so the runner stays a no-op in CLI mode.
+    _notify_event_send_for_manual: collections.abc.Callable[..., None] | None = None
+    if settings.telegram.bot_token:
+        from .tasks.telegram import notify_event_actor as _notify_event_actor_manual
+
+        def _manual_notify_event_send(*, kwargs: dict[str, object]) -> None:
+            _notify_event_actor_manual.send_with_options(kwargs=kwargs)
+
+        _notify_event_send_for_manual = _manual_notify_event_send
 
     def _anime_factory(sn: int) -> Anime:
         # Defer to the container's factory once it's been built; this closure
@@ -319,20 +342,10 @@ def build_container() -> Container:
         progress_bus=progress_bus,
         metadata_extractor=metadata_extractor,
         parse_cooldown=parse_cooldown,
+        notify_event_send=_notify_event_send_for_manual,
+        anime_list_repo=anime_list_entry_repo,
     )
-    manual_runner_container.append(manual_runner)
 
-    my_anime_exporter = MyAnimeExporter(http_client, logger)
-    signals = SignalHandler(logger)
-
-    # Build TelegramClient and related services for all processes that have a
-    # bot_token configured.  The API process uses the client for
-    # webhook/send-message; the scheduler process wires notify_event_actor
-    # into the worker and update-loop for download-event DMs.
-    telegram_client = None
-    telegram_rate_limiter = None
-    telegram_command_dispatcher = None
-    menu_renderer = None
     if settings.telegram.bot_token:
         from .services.animelist_service import AnimeListService as _AnimeListService
         from .services.progress_service import ProgressService as _ProgressService
