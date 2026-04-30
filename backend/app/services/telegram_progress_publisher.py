@@ -26,6 +26,10 @@ _setup.init_broker()
 _MIN_EDIT_INTERVAL_SECONDS = 15.0
 _MIN_RATE_DELTA = 0.05  # 5%
 
+# Statuses that indicate the byte transfer is already done — cancel is no longer
+# meaningful at this point so the button is hidden to avoid confusing the user.
+_POST_DOWNLOAD_STATUSES = frozenset({'解密合并', '正在合并', '正在解密', '移動檔案', '正在上傳'})
+
 if T.TYPE_CHECKING:
     from ..downloader.progress import TaskProgress
 
@@ -58,13 +62,14 @@ async def progress_publish_tick() -> None:
             if not _should_edit(now, last_edit_at, entry.rate, last_rate):
                 continue
             text = _render_progress_message(entry)
+            reply_markup = _cancel_keyboard(sn) if _should_show_cancel(entry) else None
             edit_message_actor.send_with_options(
                 kwargs={
                     'chat_id': chat_id,
                     'message_id': message_id,
                     'text': text,
                     'bot_token': settings.bot_token,
-                    'reply_markup': _cancel_keyboard(sn),
+                    'reply_markup': reply_markup,
                 },
             )
             await container.live_messages.set(
@@ -94,6 +99,15 @@ def _render_progress_message(entry: TaskProgress) -> str:
     )
     body = format_progress_body(entry)
     return f'⏬ *下載中*\n\n{name_line}\n{body}'
+
+
+def _should_show_cancel(entry: TaskProgress) -> bool:
+    """Return False once the byte transfer is done — cancelling is no longer useful."""
+    if entry.rate >= 100.0:  # 0-100 percent scale used by some downloaders
+        return False
+    if entry.rate >= 1.0:  # 0-1 fraction scale: 1.0 means 100%
+        return False
+    return entry.status not in _POST_DOWNLOAD_STATUSES
 
 
 def _cancel_keyboard(sn: int) -> dict[str, object]:
