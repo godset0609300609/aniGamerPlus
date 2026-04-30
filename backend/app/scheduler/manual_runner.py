@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import collections.abc
 import concurrent.futures
+import contextlib
 import pathlib
+import re
 import typing as T
 
 from ..downloader import exceptions
@@ -22,6 +24,7 @@ if T.TYPE_CHECKING:
     from ..downloader.progress import ProgressBus
     from ..logging_ import Logger
     from ..models import AppSettings
+    from ..persistence.anime_list_repo import AnimeListEntryRepository
     from ..persistence.repositories import AnimeRepository
     from ..scheduler.cd_counter import DownloadCooldown
 
@@ -42,6 +45,8 @@ class ManualRunner:
         progress_bus: ProgressBus | None = None,
         metadata_extractor: MetadataExtractor | None = None,
         parse_cooldown: DownloadCooldown | None = None,
+        notify_event_send: collections.abc.Callable[..., None] | None = None,
+        anime_list_repo: AnimeListEntryRepository | None = None,
     ) -> None:
         self._anime_factory = anime_factory
         self._anime_repo = anime_repo
@@ -50,6 +55,8 @@ class ManualRunner:
         self._progress_bus = progress_bus
         self._metadata_extractor = metadata_extractor
         self._parse_cooldown = parse_cooldown
+        self._notify_event_send = notify_event_send
+        self._anime_list_repo = anime_list_repo
 
     # ------------------------------------------------------------------ entry
 
@@ -216,6 +223,71 @@ class ManualRunner:
             owner_id=owner_id,
         )
 
+    def _emit_telegram_event(
+        self,
+        *,
+        event: str,
+        sn: int,
+        anime: Anime | None,
+        owner_id: str | None,
+        file_size_mb: int | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Fire a download lifecycle event to Telegram (best-effort).
+
+        Mirrors DownloadWorker's notification path so API-triggered downloads
+        going through ManualRunner produce DMs identical to scheduled ones.
+        Silent no-op when notify_event_send is not wired (e.g. CLI mode).
+        """
+        if self._notify_event_send is None:
+            return
+        bangumi_name = anime.get_bangumi_name() if anime is not None else str(sn)
+        episode = anime.get_episode() if anime is not None else None
+        resolution = str(anime.get_resolution()) if anime is not None else None
+        custom_name, season, episode_number = self._lookup_notifier_meta(owner_id, sn, episode)
+        payload: dict[str, object] = {
+            'event': event,
+            'owner_id': owner_id,
+            'sn': sn,
+            'bangumi_name': bangumi_name,
+            'episode': episode,
+            'resolution': resolution,
+            'custom_name': custom_name,
+            'season': season,
+            'episode_number': episode_number,
+        }
+        if file_size_mb is not None:
+            payload['file_size_mb'] = file_size_mb
+        if error_message is not None:
+            payload['error_message'] = error_message[:200]
+        with contextlib.suppress(Exception):
+            self._notify_event_send(kwargs=payload)
+
+    def _lookup_notifier_meta(
+        self,
+        owner_id: str | None,
+        sn: int,
+        episode: str | None,
+    ) -> tuple[str | None, int, int | None]:
+        """Same shape as DownloadWorker._lookup_notifier_meta; never raises."""
+        custom_name: str | None = None
+        season: int = 1
+        if owner_id is not None and self._anime_list_repo is not None:
+            try:
+                entry = self._anime_list_repo.get_by_user_sn(owner_id, sn)
+                if entry is not None:
+                    custom_name = entry.custom_name
+                    season = entry.season
+            except Exception:  # noqa: BLE001
+                pass
+        episode_number: int | None = None
+        if episode is not None:
+            m = re.search(r'\d+', episode)
+            if m:
+                with contextlib.suppress(ValueError):
+                    episode_number = int(m.group())
+        return custom_name, season, episode_number
+
     def _download_one(
         self,
         sn: int,
@@ -250,19 +322,45 @@ class ManualRunner:
             if self._progress_bus is not None:
                 self._progress_bus.update_status(sn, '失敗')
                 self._progress_bus.finish(sn)
+            self._emit_telegram_event(
+                event='failed',
+                sn=sn,
+                anime=None,
+                owner_id=owner_id,
+                error_message=f'無可用影片源: {exc}',
+            )
             return
         except exceptions.TryTooManyTimeError as exc:
             self._logger.error(sn, '任務失敗', f'抓取失敗: {exc}', display=False)
             if self._progress_bus is not None:
                 self._progress_bus.update_status(sn, '失敗')
                 self._progress_bus.finish(sn)
+            self._emit_telegram_event(
+                event='failed',
+                sn=sn,
+                anime=None,
+                owner_id=owner_id,
+                error_message=f'抓取失敗: {exc}',
+            )
             return
         except Exception as exc:  # noqa: BLE001
             self._logger.error(sn, '任務失敗', f'初始化失敗: {exc}', display=False)
             if self._progress_bus is not None:
                 self._progress_bus.update_status(sn, '失敗')
                 self._progress_bus.finish(sn)
+            self._emit_telegram_event(
+                event='failed',
+                sn=sn,
+                anime=None,
+                owner_id=owner_id,
+                error_message=f'初始化失敗: {exc}',
+            )
             return
+
+        # load() succeeded — fire 'started' now that we know the bangumi name.
+        # Skip for get_info=True: info-only calls are not download lifecycle events.
+        if not get_info:
+            self._emit_telegram_event(event='started', sn=sn, anime=anime, owner_id=owner_id)
 
         if cui_danmu:
             anime.enable_danmu()
@@ -275,7 +373,7 @@ class ManualRunner:
             return
 
         try:
-            anime.download(
+            result = anime.download(
                 resolution=resolution or str(self._settings.download_resolution),
                 save_dir=save_dir,
                 classify=classify,
@@ -285,14 +383,21 @@ class ManualRunner:
             self._logger.info(sn, '任務取消', '使用者取消了下載任務', display=False)
             # cancel() already scheduled finish() via Timer — the finally below is
             # a no-op because finish() is idempotent.
+            self._emit_telegram_event(event='cancelled', sn=sn, anime=anime, owner_id=owner_id)
         except exceptions.TryTooManyTimeError as exc:
             self._logger.error(sn, '下載失敗', f'重試已耗盡: {exc}', display=False)
             if self._progress_bus is not None:
                 self._progress_bus.update_status(sn, '失敗')
+            self._emit_telegram_event(
+                event='failed', sn=sn, anime=anime, owner_id=owner_id, error_message=f'重試已耗盡: {exc}'
+            )
         except exceptions.NoAvailableStreamError as exc:
             self._logger.error(sn, '下載失敗', f'無可用影片源: {exc}', display=False)
             if self._progress_bus is not None:
                 self._progress_bus.update_status(sn, '失敗')
+            self._emit_telegram_event(
+                event='failed', sn=sn, anime=anime, owner_id=owner_id, error_message=f'無可用影片源: {exc}'
+            )
         except Exception as exc:  # noqa: BLE001
             # Catch-all: unexpected errors should never silently leak without
             # closing the progress entry.  Log and continue so the thread pool
@@ -300,6 +405,18 @@ class ManualRunner:
             self._logger.error(sn, '下載失敗', f'未預期的錯誤: {exc}', display=False)
             if self._progress_bus is not None:
                 self._progress_bus.update_status(sn, '失敗')
+            self._emit_telegram_event(
+                event='failed', sn=sn, anime=anime, owner_id=owner_id, error_message=f'未預期的錯誤: {exc}'
+            )
+        else:
+            # Download succeeded — fire 'completed' with the actual file size.
+            self._emit_telegram_event(
+                event='completed',
+                sn=sn,
+                anime=anime,
+                owner_id=owner_id,
+                file_size_mb=int(result.size_mb) if result.success else None,
+            )
         finally:
             # Safety net: ensure finish() is always called so the DB row is
             # closed and the UI card transitions out of the active state.
