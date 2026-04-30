@@ -16,6 +16,7 @@ from app.downloader.progress import TaskProgress
 from app.services.telegram_progress_publisher import (
     _cancel_keyboard,
     _render_progress_message,
+    _should_show_cancel,
 )
 
 # ---------------------------------------------------------------------------
@@ -309,8 +310,8 @@ def test_render_progress_message_contains_header() -> None:
 def test_render_progress_message_contains_progress_bar() -> None:
     entry = _make_entry(sn=1, rate=0.5)
     text = _render_progress_message(entry)
-    # 50% → 5 filled cells
-    assert '▓▓▓▓▓' in text
+    # 50% → 5 filled cells (▰) + 5 empty cells (▱)
+    assert '▰▰▰▰▰' in text
 
 
 def test_render_progress_message_contains_bangumi_name() -> None:
@@ -370,4 +371,63 @@ def test_format_progress_body_cooldown_overrides_bar() -> None:
 
     body = format_progress_body(entry)
     assert '冷卻' in body
-    assert '▓' not in body
+    assert '▰' not in body and '▱' not in body
+
+
+# ---------------------------------------------------------------------------
+# _should_show_cancel
+# ---------------------------------------------------------------------------
+
+
+def test_no_cancel_button_when_rate_at_100_percent() -> None:
+    # rate as 0-1 fraction (exactly 1.0 = 100%)
+    entry = TaskProgress(sn=1, rate=1.0, status='解密合并', filename='ep.mp4')
+    assert _should_show_cancel(entry) is False
+    # rate as 0-100 percent scale
+    entry2 = TaskProgress(sn=2, rate=100.0, status='正在解密', filename='ep.mp4')
+    assert _should_show_cancel(entry2) is False
+
+
+def test_no_cancel_button_during_post_download_phases() -> None:
+    for status in ('解密合并', '移動檔案', '正在上傳', '正在合并', '正在解密'):
+        entry = TaskProgress(sn=1, rate=0.5, status=status, filename='ep.mp4')
+        assert _should_show_cancel(entry) is False, f'status={status} should hide cancel'
+
+
+def test_cancel_button_visible_during_active_download() -> None:
+    entry = TaskProgress(sn=1, rate=0.3, status='下載中', filename='ep.mp4')
+    assert _should_show_cancel(entry) is True
+
+
+def test_edit_tick_includes_reply_markup_key() -> None:
+    """The edit call must always include a reply_markup key (either keyboard or None)."""
+    import time
+
+    live = FakeLiveMessages()
+    now = time.time()
+    sn, chat_id = 10, 1000
+    live.seed(sn, chat_id, message_id=55, last_edit_at=now - 20.0, last_rate=0.0)
+
+    entry = _make_entry(sn=sn, rate=0.3, status='正在下載')
+    _run(_run_tick({sn: entry}, live))
+
+    assert len(_send_with_options_calls) == 1
+    call_kwargs = _send_with_options_calls[0]['kwargs']  # type: ignore[index]
+    assert 'reply_markup' in call_kwargs  # type: ignore[index]
+
+
+def test_edit_tick_no_cancel_button_at_post_download_status() -> None:
+    """During post-download status the cancel keyboard should be suppressed (reply_markup=None)."""
+    import time
+
+    live = FakeLiveMessages()
+    now = time.time()
+    sn, chat_id = 11, 1100
+    live.seed(sn, chat_id, message_id=66, last_edit_at=now - 20.0, last_rate=0.0)
+
+    entry = _make_entry(sn=sn, rate=0.99, status='正在解密')
+    _run(_run_tick({sn: entry}, live))
+
+    assert len(_send_with_options_calls) == 1
+    call_kwargs = _send_with_options_calls[0]['kwargs']  # type: ignore[index]
+    assert call_kwargs['reply_markup'] is None  # type: ignore[index]

@@ -507,7 +507,7 @@ def _format_message(
             name_line,
         ]
         if resolution is not None:
-            res_esc = escape_markdown_v2(str(resolution))
+            res_esc = escape_markdown_v2(_format_resolution(resolution))
             lines.append(f'解析度: {res_esc}')
         if file_size_mb is not None:
             size_esc = escape_markdown_v2(str(file_size_mb))
@@ -542,6 +542,18 @@ def _seconds_to_human(seconds: int) -> str:
     return f'{seconds}s'
 
 
+def _format_resolution(resolution: object) -> str:
+    """Append 'p' suffix if missing — '1080' → '1080p', '1080p' → '1080p'."""
+    if resolution is None:
+        return ''
+    s = str(resolution).strip()
+    if not s:
+        return ''
+    if s.lower().endswith('p'):
+        return s
+    return f'{s}p'
+
+
 def format_progress_body(entry: object) -> str:
     """Build the MarkdownV2 progress body lines for an in-flight task.
 
@@ -566,9 +578,18 @@ def format_progress_body(entry: object) -> str:
             remaining_n = escape_markdown_v2(f'{int(remaining)}')
             return f'⏸ 冷卻中 \\(還 {remaining_n}s\\)'
 
-    # Progress bar: 10 cells.
+    # Normalise the rate to a 0.0-1.0 fraction.  segment_downloader writes it
+    # as 0-100 (done/total*100); ffmpeg_downloader writes it as 0-1.  Detect
+    # which by magnitude — values > 1.0 are clearly percentages.  Clamp
+    # to [0, 1] so a bug upstream can't blow Telegram's 4096-byte limit
+    # with thousands of bar characters.
+    if rate > 1.0:
+        rate = rate / 100.0
+    rate = max(0.0, min(1.0, rate))
+
+    # Progress bar: 10 cells — ▰/▱ render more clearly on mobile Telegram.
     filled = round(rate * 10)
-    bar_raw = '▓' * filled + '░' * (10 - filled)
+    bar_raw = '▰' * filled + '▱' * (10 - filled)
     pct_raw = f'{int(rate * 100)}%'
     lines = [escape_markdown_v2(f'{bar_raw} {pct_raw}')]
 
