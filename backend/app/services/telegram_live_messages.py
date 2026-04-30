@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import typing as T
+from collections.abc import Awaitable
 
 if T.TYPE_CHECKING:
     import redis.asyncio
@@ -26,7 +27,7 @@ _TTL_SECONDS = 24 * 60 * 60
 
 
 class LiveMessageRegistry:
-    def __init__(self, client: 'redis.asyncio.Redis') -> None:
+    def __init__(self, client: redis.asyncio.Redis) -> None:
         self._client = client
 
     async def set(
@@ -39,19 +40,19 @@ class LiveMessageRegistry:
         last_rate: float,
     ) -> None:
         key = f'{_PREFIX}{int(sn)}:{int(chat_id)}'
-        await self._client.hset(
+        await T.cast(Awaitable[int], self._client.hset(
             key,
             mapping={
                 'message_id': str(message_id),
                 'last_edit_at': json.dumps(last_edit_at),
                 'last_rate': json.dumps(last_rate),
             },
-        )
-        await self._client.expire(key, _TTL_SECONDS)
+        ))
+        await T.cast(Awaitable[bool], self._client.expire(key, _TTL_SECONDS))
 
     async def get(self, sn: int, chat_id: int) -> tuple[int, float, float] | None:
         key = f'{_PREFIX}{int(sn)}:{int(chat_id)}'
-        raw = await self._client.hgetall(key)
+        raw = await T.cast(Awaitable[dict[bytes, bytes]], self._client.hgetall(key))
         if not raw:
             return None
         data = {

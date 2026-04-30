@@ -20,6 +20,14 @@ if T.TYPE_CHECKING:
     from .progress_service import ProgressService
 
 
+class _LegacySchedulerProxy(T.Protocol):
+    """Narrow interface for the legacy SchedulerProxy kept for backward-compat tests."""
+
+    async def enqueue_manual(self, request: object, owner_id: str) -> None: ...
+    def is_scheduler_up(self) -> bool: ...
+    async def cancel_task(self, sn: int) -> None: ...
+
+
 class ManualTaskRunner(T.Protocol):
     """T.Protocol matching :meth:`ManualRunner.run`.
 
@@ -67,7 +75,7 @@ class TaskService:
         manual_runner: ManualRunner | ManualTaskRunner,
         # Legacy positional/keyword arg kept for backward compat with existing
         # tests and conftest that pass scheduler_proxy as 3rd arg.
-        scheduler_proxy: object = None,
+        scheduler_proxy: _LegacySchedulerProxy | None = None,
         *,
         progress_bus: ProgressBus | None = None,
         progress_service: ProgressService | None = None,
@@ -80,7 +88,7 @@ class TaskService:
         self._message_id_registry = message_id_registry
         # Legacy compat: tests pass a FakeSchedulerProxy so cancel_task/enqueue
         # can exercise the old proxy-based path without a real dramatiq broker.
-        self._legacy_proxy = scheduler_proxy
+        self._legacy_proxy: _LegacySchedulerProxy | None = scheduler_proxy
 
     async def enqueue(self, request: ManualTaskRequest, user: UserRow) -> None:
         """Enqueue a manual download task via dramatiq (or in-process fallback).
@@ -111,7 +119,7 @@ class TaskService:
                     classify=request.classify,
                     danmu=request.danmu,
                 )
-                await self._legacy_proxy.enqueue_manual(normalised, owner_id)  # type: ignore[union-attr]
+                await self._legacy_proxy.enqueue_manual(normalised, owner_id)
             except SchedulerUnreachable as exc:
                 raise fastapi.HTTPException(
                     status_code=503,
@@ -185,13 +193,13 @@ class TaskService:
 
         # Legacy proxy path — kept for tests wiring a FakeSchedulerProxy.
         if self._legacy_proxy is not None:
-            if not self._legacy_proxy.is_scheduler_up():  # type: ignore[union-attr]
+            if not self._legacy_proxy.is_scheduler_up():
                 raise fastapi.HTTPException(
                     status_code=503,
                     detail='Scheduler 暫時無法連線，請稍後再試',
                 )
             try:
-                await self._legacy_proxy.cancel_task(sn)  # type: ignore[union-attr]
+                await self._legacy_proxy.cancel_task(sn)
             except Exception as exc:  # noqa: BLE001
                 raise fastapi.HTTPException(
                     status_code=503,

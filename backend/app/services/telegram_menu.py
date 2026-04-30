@@ -42,9 +42,14 @@ _DURATION_CODES: dict[str, str] = {
 _TERMINAL_STATUSES = frozenset({'下載完成', '任務完成', '下載失敗', '已取消', '任務已取消'})
 
 
-def _back_button(target: str = 'm:root') -> dict[str, str]:
+def _btn(text: str, callback_data: str) -> dict[str, object]:
+    """Return a single inline button dict with text and callback_data."""
+    return {'text': text, 'callback_data': callback_data}
+
+
+def _back_button(target: str = 'm:root') -> dict[str, object]:
     """Return a standard back button dict."""
-    return {'text': '⬅ 返回', 'callback_data': target}
+    return _btn('⬅ 返回', target)
 
 
 def _kb(*rows: list[dict[str, object]]) -> dict[str, object]:
@@ -105,7 +110,7 @@ class MenuRenderer:
         self._telegram_settings_provider = telegram_settings_provider
         self._public_url = public_url
 
-    async def render(self, user: 'UserRow', callback_data: str) -> tuple[str, dict[str, object]]:
+    async def render(self, user: UserRow, callback_data: str) -> tuple[str, dict[str, object]]:
         """Route callback_data to the right page; returns (text, reply_markup)."""
         data = callback_data
 
@@ -187,9 +192,8 @@ class MenuRenderer:
     # Per-page renderers
     # ------------------------------------------------------------------
 
-    async def render_root(self, user: 'UserRow') -> tuple[str, dict[str, object]]:
+    async def render_root(self, user: UserRow) -> tuple[str, dict[str, object]]:
         """Render the main menu root page."""
-        import anyio.to_thread
 
         # Count active tasks
         snap = await self._progress_service.snapshot(user)
@@ -224,7 +228,7 @@ class MenuRenderer:
 
         return text, _kb(*rows)
 
-    async def render_tasks(self, user: 'UserRow') -> tuple[str, dict[str, object]]:
+    async def render_tasks(self, user: UserRow) -> tuple[str, dict[str, object]]:
         """Render the active tasks page."""
         snap = await self._progress_service.snapshot(user)
         active = {sn: e for sn, e in snap.tasks.items() if e.status not in _TERMINAL_STATUSES}
@@ -245,7 +249,7 @@ class MenuRenderer:
         rows.append([_back_button()])
         return '\n'.join(lines), _kb(*rows)
 
-    async def render_cancel_confirm(self, user: 'UserRow', sn: int) -> tuple[str, dict[str, object]]:
+    async def render_cancel_confirm(self, user: UserRow, sn: int) -> tuple[str, dict[str, object]]:
         """Render the cancel confirmation page."""
         text = escape_markdown_v2(f'確定要取消 SN {sn}？')
         return text, _kb(
@@ -256,7 +260,7 @@ class MenuRenderer:
             [_back_button()],
         )
 
-    async def execute_cancel(self, user: 'UserRow', sn: int) -> tuple[str, dict[str, object]]:
+    async def execute_cancel(self, user: UserRow, sn: int) -> tuple[str, dict[str, object]]:
         """Execute task cancellation and return result page."""
         import fastapi
 
@@ -275,7 +279,7 @@ class MenuRenderer:
 
         return text, _kb([_back_button()])
 
-    async def render_list(self, user: 'UserRow', page: int = 1) -> tuple[str, dict[str, object]]:
+    async def render_list(self, user: UserRow, page: int = 1) -> tuple[str, dict[str, object]]:
         """Render paginated anime list."""
         entries = await self._animelist_service.list_entries(user)
         own = sorted((e for e in entries if e.owner_id == user.id), key=lambda e: e.sn)
@@ -311,7 +315,7 @@ class MenuRenderer:
         rows.append([_back_button()])
         return '\n'.join(lines), _kb(*rows)
 
-    async def execute_unwatch(self, user: 'UserRow', sn: int) -> tuple[str, dict[str, object]]:
+    async def execute_unwatch(self, user: UserRow, sn: int) -> tuple[str, dict[str, object]]:
         """Remove an anime from watchlist and redisplay list."""
         entries = await self._animelist_service.list_entries(user)
         own = [e for e in entries if e.owner_id == user.id]
@@ -327,7 +331,7 @@ class MenuRenderer:
         # Redisplay list page 1 after removal
         return await self.render_list(user, 1)
 
-    async def render_notify(self, user: 'UserRow') -> tuple[str, dict[str, object]]:
+    async def render_notify(self, user: UserRow) -> tuple[str, dict[str, object]]:
         """Render the notification settings page."""
         notify_mark = '✓' if user.telegram_notify_enabled else '✗'
         toggle_label = '停用通知' if user.telegram_notify_enabled else '啟用通知'
@@ -358,7 +362,7 @@ class MenuRenderer:
         rows.append([_back_button()])
         return '\n'.join(lines), _kb(*rows)
 
-    async def toggle_notify(self, user: 'UserRow') -> tuple[str, dict[str, object]]:
+    async def toggle_notify(self, user: UserRow) -> tuple[str, dict[str, object]]:
         """Toggle user's telegram_notify_enabled and redraw notify page."""
         import anyio.to_thread
 
@@ -372,7 +376,7 @@ class MenuRenderer:
         updated_user = dataclasses.replace(user, telegram_notify_enabled=new_value)
         return await self.render_notify(updated_user)
 
-    async def toggle_event(self, user: 'UserRow', event: str) -> tuple[str, dict[str, object]]:
+    async def toggle_event(self, user: UserRow, event: str) -> tuple[str, dict[str, object]]:
         """Toggle an event in settings.telegram.notify_on; admin only."""
         if user.role != 'admin':
             return _admin_only_page()
@@ -397,8 +401,6 @@ class MenuRenderer:
 
         try:
             # settings is AppSettings; update telegram.notify_on
-            import dataclasses as _dc
-            import pydantic
 
             # Build updated telegram settings
             tg_dict = tg.model_dump() if hasattr(tg, 'model_dump') else {}
@@ -428,7 +430,7 @@ class MenuRenderer:
 
         return await self.render_notify(user)
 
-    async def render_silence(self, user: 'UserRow') -> tuple[str, dict[str, object]]:
+    async def render_silence(self, user: UserRow) -> tuple[str, dict[str, object]]:
         """Render the silence/mute configuration page."""
         now = datetime.datetime.now(datetime.UTC)
         lines = [escape_markdown_v2('⏸ 暫停通知'), '']
@@ -462,10 +464,11 @@ class MenuRenderer:
 
         return '\n'.join(lines), _kb(*rows)
 
-    async def execute_silence(self, user: 'UserRow', code: str) -> tuple[str, dict[str, object]]:
+    async def execute_silence(self, user: UserRow, code: str) -> tuple[str, dict[str, object]]:
         """Set or clear the mute deadline and redraw the silence page."""
-        import anyio.to_thread
         import dataclasses
+
+        import anyio.to_thread
 
         now = datetime.datetime.now(datetime.UTC)
         until = _compute_mute_until(code, now)
@@ -475,7 +478,7 @@ class MenuRenderer:
         updated_user = dataclasses.replace(user, telegram_mute_until=until)
         return await self.render_silence(updated_user)
 
-    async def render_history(self, user: 'UserRow', days: int = 7) -> tuple[str, dict[str, object]]:
+    async def render_history(self, user: UserRow, days: int = 7) -> tuple[str, dict[str, object]]:
         """Render task history for the last N days."""
         import anyio.to_thread
 
@@ -505,7 +508,7 @@ class MenuRenderer:
 
         return '\n'.join(lines), _kb(day_row, [_back_button()])
 
-    async def render_admin(self, user: 'UserRow') -> tuple[str, dict[str, object]]:
+    async def render_admin(self, user: UserRow) -> tuple[str, dict[str, object]]:
         """Render the admin panel page."""
         if user.role != 'admin':
             return _admin_only_page()
@@ -518,7 +521,7 @@ class MenuRenderer:
             [_back_button()],
         )
 
-    async def render_admin_stats(self, user: 'UserRow') -> tuple[str, dict[str, object]]:
+    async def render_admin_stats(self, user: UserRow) -> tuple[str, dict[str, object]]:
         """Render system statistics (admin only)."""
         if user.role != 'admin':
             return _admin_only_page()
@@ -556,7 +559,7 @@ class MenuRenderer:
 
         return '\n'.join(lines), _kb([_back_button('m:admin')])
 
-    async def render_admin_users(self, user: 'UserRow', page: int = 1) -> tuple[str, dict[str, object]]:
+    async def render_admin_users(self, user: UserRow, page: int = 1) -> tuple[str, dict[str, object]]:
         """Render paginated user list (admin only)."""
         if user.role != 'admin':
             return _admin_only_page()
@@ -600,7 +603,7 @@ class MenuRenderer:
 
         return '\n'.join(lines), _kb(*rows)
 
-    async def render_admin_disk(self, user: 'UserRow') -> tuple[str, dict[str, object]]:
+    async def render_admin_disk(self, user: UserRow) -> tuple[str, dict[str, object]]:
         """Render disk usage information (admin only)."""
         if user.role != 'admin':
             return _admin_only_page()

@@ -28,6 +28,9 @@ from .core import Container, build_container
 from .log_config import build_log_config, get_ring_buffer_handler
 from .persistence.paths import WorkspacePaths
 
+if T.TYPE_CHECKING:
+    from .scheduler.aps_scheduler import ApsScheduler
+
 # ---------------------------------------------------------------------------
 # Shared-secret resolution
 # ---------------------------------------------------------------------------

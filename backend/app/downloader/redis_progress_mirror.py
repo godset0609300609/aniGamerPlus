@@ -19,7 +19,7 @@ import time
 import typing as T
 
 if T.TYPE_CHECKING:
-    import redis  # type: ignore[import-not-found]
+    import redis
 
     from .progress import TaskProgress
 
@@ -52,10 +52,10 @@ def _serialise(entry: TaskProgress) -> dict[str, str]:
 class RedisProgressMirror:
     """Write-through mirror — installed on ProgressBus in production."""
 
-    def __init__(self, client: 'redis.Redis[bytes]') -> None:
+    def __init__(self, client: redis.Redis) -> None:
         self._client = client
 
-    def publish(self, sn: int, entry: 'TaskProgress') -> None:
+    def publish(self, sn: int, entry: TaskProgress) -> None:
         key = f'{_HASH_PREFIX}{int(sn)}'
         pipe = self._client.pipeline()
         pipe.hset(key, mapping=_serialise(entry))
@@ -68,6 +68,6 @@ class RedisProgressMirror:
             pipe.expire(key, _FINISHED_TTL_SECONDS)
         pipe.execute()
 
-    def publish_finish(self, sn: int, entry: 'TaskProgress') -> None:
+    def publish_finish(self, sn: int, entry: TaskProgress) -> None:
         # Same logic — entry is now finished, so zrem + expire.
         self.publish(sn, entry)

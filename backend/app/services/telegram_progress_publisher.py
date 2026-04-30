@@ -81,7 +81,7 @@ def _should_edit(now: float, last_edit_at: float, rate: float, last_rate: float)
     return (now - last_edit_at) >= _MIN_EDIT_INTERVAL_SECONDS or abs(rate - last_rate) >= _MIN_RATE_DELTA
 
 
-def _render_progress_message(entry: 'TaskProgress') -> str:
+def _render_progress_message(entry: TaskProgress) -> str:
     """Build the MarkdownV2 progress message for an in-flight task."""
     from .telegram_notifier import build_name_line, format_progress_body
 

@@ -14,7 +14,7 @@ _TTL_SECONDS = 7 * 24 * 60 * 60  # menu lasts a week — ample
 
 
 class LiveMenuRegistry:
-    def __init__(self, client: 'redis.asyncio.Redis') -> None:
+    def __init__(self, client: redis.asyncio.Redis) -> None:
         self._client = client
 
     async def set(self, user_id: str, message_id: int) -> None:

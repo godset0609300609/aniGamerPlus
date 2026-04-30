@@ -97,7 +97,7 @@ class Container:
     signals: SignalHandler
     # Sync client used by RedisProgressMirror (must stay sync — called from
     # sync ProgressBus callbacks on the downloader thread).
-    redis_client_sync: redis.Redis[bytes] | None = None
+    redis_client_sync: redis.Redis | None = None
     # Async client used by RedisProgressReader + MessageIdRegistry.
     redis_client_async: redis.asyncio.Redis | None = None
     redis_progress_reader: RedisProgressReader | None = None
@@ -138,7 +138,10 @@ class Container:
         """Build a :class:`DownloadWorker` using the container's collaborators."""
         from .tasks.telegram import notify_event_actor
 
-        notify_event_send = notify_event_actor.send_with_options if self.telegram_client is not None else None
+        def _notify_event_send(*, kwargs: dict[str, object]) -> None:
+            notify_event_actor.send_with_options(kwargs=kwargs)
+
+        notify_event_send = _notify_event_send if self.telegram_client is not None else None
         return DownloadWorker(
             queue=self.task_queue,
             anime_factory=self.anime_factory,
@@ -167,7 +170,10 @@ class Container:
             watchdog.start()
         from .tasks.telegram import notify_event_actor
 
-        notify_event_send = notify_event_actor.send_with_options if self.telegram_client is not None else None
+        def _notify_event_send_loop(*, kwargs: dict[str, object]) -> None:
+            notify_event_actor.send_with_options(kwargs=kwargs)
+
+        notify_event_send = _notify_event_send_loop if self.telegram_client is not None else None
         return UpdateLoop(
             settings_repo=self.settings_repo,
             sn_list_repo=self.sn_list_repo,
@@ -235,7 +241,7 @@ def build_container() -> Container:
 
     from .dramatiq_setup import get_redis_url
 
-    redis_client_sync: redis.Redis[bytes] | None = None
+    redis_client_sync: redis.Redis | None = None
     redis_client_async: redis.asyncio.Redis | None = None
     redis_progress_mirror = None
     redis_progress_reader = None

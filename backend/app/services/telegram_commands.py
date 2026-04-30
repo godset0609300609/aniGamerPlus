@@ -7,6 +7,7 @@ bound. Unbound users (no telegram_chat_id on their row) get a
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import typing as T
@@ -420,13 +421,11 @@ class TelegramCommandDispatcher:
         if self._menu_renderer is None or self._live_menu is None:
             await self._send(chat_id, escape_markdown_v2('❌ 控制台未啟用'))
             return
-        # Delete previous menu message if any
+        # Delete previous menu message if any (best effort).
         prev_message_id = await self._live_menu.get(user.id)
         if prev_message_id is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._client.delete_message(chat_id, prev_message_id)
-            except Exception:  # noqa: BLE001
-                pass
         text, kb = await self._menu_renderer.render_root(user)
         result = await self._client.send_message(chat_id, text, reply_markup=kb)
         msg_id = result.get('message_id') if isinstance(result, dict) else None
