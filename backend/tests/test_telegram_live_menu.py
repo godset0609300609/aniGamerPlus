@@ -59,9 +59,7 @@ async def test_corrupt_value_returns_none(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
-async def test_ttl_is_set(
-    anyio_backend: str, registry: LiveMenuRegistry, client: fakeredis.aioredis.FakeRedis
-) -> None:
+async def test_ttl_is_set(anyio_backend: str, registry: LiveMenuRegistry, client: fakeredis.aioredis.FakeRedis) -> None:
     """Mutation testing: catches if TTL is dropped."""
     await registry.set('u', 1)
     ttl = await client.ttl('menu_msg:u')

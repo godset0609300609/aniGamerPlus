@@ -521,9 +521,7 @@ def test_scheduler_server_lifespan_logs_secret_not_set(tmp_path: pathlib.Path, m
             pass
 
 
-def test_scheduler_server_health_includes_aps_running(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_scheduler_server_health_includes_aps_running(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Health response includes aps_running field and status is ok when running."""
     import fastapi.testclient
 

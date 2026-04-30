@@ -151,6 +151,7 @@ def test_now_unix_none_uses_real_time(monkeypatch) -> None:
     Kills mutations on `is None` and `time.time()` calls."""
     fixed_time = 1_700_000_000.0
     import app.services.telegram_webapp_auth as auth_mod
+
     monkeypatch.setattr(auth_mod.time, 'time', lambda: fixed_time)
     init_data = _make_initdata(bot_token=BOT_TOKEN, auth_date=int(fixed_time))
     result = verify_telegram_webapp_initdata(init_data, BOT_TOKEN)
@@ -161,6 +162,7 @@ def test_explicit_now_unix_takes_precedence_over_real_time(monkeypatch) -> None:
     """When now_unix is provided, time.time() is not called.
     Kills mutations that drop the conditional."""
     import app.services.telegram_webapp_auth as auth_mod
+
     real_time_called = []
 
     def fake_real_time() -> float:

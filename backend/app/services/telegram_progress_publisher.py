@@ -99,7 +99,9 @@ def _render_progress_message(entry: TaskProgress) -> str:
 def _cancel_keyboard(sn: int) -> dict[str, object]:
     """Inline keyboard with a single ❌ 取消 cancel button."""
     return {
-        'inline_keyboard': [[
-            {'text': '❌ 取消', 'callback_data': f'm:cancel_yes:{int(sn)}'},
-        ]],
+        'inline_keyboard': [
+            [
+                {'text': '❌ 取消', 'callback_data': f'm:cancel_yes:{int(sn)}'},
+            ]
+        ],
     }

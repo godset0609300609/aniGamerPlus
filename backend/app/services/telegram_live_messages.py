@@ -40,14 +40,17 @@ class LiveMessageRegistry:
         last_rate: float,
     ) -> None:
         key = f'{_PREFIX}{int(sn)}:{int(chat_id)}'
-        await T.cast(Awaitable[int], self._client.hset(
-            key,
-            mapping={
-                'message_id': str(message_id),
-                'last_edit_at': json.dumps(last_edit_at),
-                'last_rate': json.dumps(last_rate),
-            },
-        ))
+        await T.cast(
+            Awaitable[int],
+            self._client.hset(
+                key,
+                mapping={
+                    'message_id': str(message_id),
+                    'last_edit_at': json.dumps(last_edit_at),
+                    'last_rate': json.dumps(last_rate),
+                },
+            ),
+        )
         await T.cast(Awaitable[bool], self._client.expire(key, _TTL_SECONDS))
 
     async def get(self, sn: int, chat_id: int) -> tuple[int, float, float] | None:
