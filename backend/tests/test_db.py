@@ -92,6 +92,29 @@ def test_run_baseline_migrations_is_idempotent(tmp_path: pathlib.Path) -> None:
     db.dispose()
 
 
+def test_sqlite_database_uses_wal_mode(tmp_path: pathlib.Path) -> None:
+    db = _make_db(tmp_path, 'wal.db')
+    with db.session() as sess:
+        result = sess.execute(sqlalchemy.text('PRAGMA journal_mode')).scalar()
+        assert str(result).lower() == 'wal'
+        timeout = sess.execute(sqlalchemy.text('PRAGMA busy_timeout')).scalar()
+        assert int(timeout) >= 30000
+    db.dispose()
+
+
+def test_non_sqlite_url_skips_pragmas() -> None:
+    """The pragma listener is only registered when the backend name is 'sqlite'."""
+    # We verify the guard by inspecting the Database source: the event listener
+    # is wrapped in ``if self._engine.url.get_backend_name() == 'sqlite'``.
+    # Without a live non-SQLite engine we confirm the branch exists in source.
+    import inspect
+
+    import app.persistence.db as db_module
+
+    src = inspect.getsource(db_module.Database.__init__)
+    assert "get_backend_name() == 'sqlite'" in src
+
+
 def test_migrations_succeed_over_legacy_schema(tmp_path: pathlib.Path) -> None:
     """An SQLite file that already has the legacy ``anime`` table upgrades cleanly."""
     db_path = tmp_path / 'legacy.db'

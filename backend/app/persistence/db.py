@@ -11,11 +11,13 @@ from __future__ import annotations
 import collections.abc
 import contextlib
 import pathlib
+import sqlite3
 import typing as T
 
 import alembic.command
 import alembic.config
 import sqlalchemy
+import sqlalchemy.event
 import sqlalchemy.orm
 
 if T.TYPE_CHECKING:
@@ -54,9 +56,28 @@ class Database:
         connect_args: dict[str, object] = {}
         if url.startswith('sqlite'):
             connect_args['check_same_thread'] = False
+            # 30 s busy_timeout at the Python sqlite3 driver level (belt-and-suspenders
+            # alongside the PRAGMA below — the PRAGMA wins once a connection is open).
+            connect_args['timeout'] = 30
         self._engine: sqlalchemy.Engine = sqlalchemy.create_engine(
             url, echo=echo, future=True, connect_args=connect_args
         )
+
+        # Register WAL + busy_timeout PRAGMAs for every SQLite connection so
+        # that concurrent writers (api, scheduler, worker) wait up to 30 s
+        # instead of raising "database is locked" immediately.
+        if self._engine.url.get_backend_name() == 'sqlite':
+
+            @sqlalchemy.event.listens_for(self._engine, 'connect')
+            def _set_sqlite_pragmas(dbapi_conn: sqlite3.Connection, _connection_record: object) -> None:
+                cursor = dbapi_conn.cursor()
+                try:
+                    cursor.execute('PRAGMA journal_mode=WAL')
+                    cursor.execute('PRAGMA synchronous=NORMAL')
+                    cursor.execute('PRAGMA busy_timeout=30000')  # 30 s — matches connect_args timeout
+                finally:
+                    cursor.close()
+
         self._session_factory = sqlalchemy.orm.sessionmaker(bind=self._engine, expire_on_commit=False, future=True)
 
     @property

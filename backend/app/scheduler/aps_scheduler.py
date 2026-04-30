@@ -49,6 +49,9 @@ class ApsScheduler:
             id='auto_scan_tick',
             replace_existing=True,
             next_run_time=None,  # let interval start the first run
+            max_instances=3,
+            coalesce=True,
+            misfire_grace_time=60,
         )
         self._scheduler.add_job(
             progress_publish_tick.send,
@@ -56,6 +59,9 @@ class ApsScheduler:
             seconds=5,
             id='progress_publish_tick',
             replace_existing=True,
+            max_instances=3,
+            coalesce=True,
+            misfire_grace_time=30,
         )
         self._scheduler.add_job(
             health_check_tick.send,
@@ -63,6 +69,9 @@ class ApsScheduler:
             minutes=5,
             id='health_check_tick',
             replace_existing=True,
+            max_instances=3,
+            coalesce=True,
+            misfire_grace_time=60,
         )
 
         self._scheduler.start()
