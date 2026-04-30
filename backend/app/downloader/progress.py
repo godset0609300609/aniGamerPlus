@@ -22,6 +22,7 @@ during I/O.  An internal ``_row_ids`` dict maps ``sn`` → DB row id.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime
 import functools
@@ -39,8 +40,8 @@ class _ProgressMirror(T.Protocol):
     must serialise the given entry to a cross-process store (Redis hash
     in production)."""
 
-    def publish(self, sn: int, entry: 'TaskProgress') -> None: ...
-    def publish_finish(self, sn: int, entry: 'TaskProgress') -> None: ...
+    def publish(self, sn: int, entry: TaskProgress) -> None: ...
+    def publish_finish(self, sn: int, entry: TaskProgress) -> None: ...
 
 
 # Statuses that represent a genuine terminal outcome — the task reached one of
@@ -461,10 +462,9 @@ class ProgressBus:
             if entry is None:
                 return
             snap = dataclasses.replace(entry, _cancel_event=None)
-        try:
+        # Never let a mirror failure kill a download — log nothing, swallow all.
+        with contextlib.suppress(Exception):
             self._mirror.publish(sn, snap)
-        except Exception:  # noqa: BLE001 — never let the mirror kill a download
-            pass
 
     def _mirror_publish_finish(self, sn: int) -> None:
         if self._mirror is None:
@@ -474,10 +474,8 @@ class ProgressBus:
             if entry is None:
                 return
             snap = dataclasses.replace(entry, _cancel_event=None)
-        try:
+        with contextlib.suppress(Exception):
             self._mirror.publish_finish(sn, snap)
-        except Exception:  # noqa: BLE001
-            pass
 
     def get_cancel_event(self, sn: int) -> threading.Event | None:
         """Return the cancel ``threading.Event`` for ``sn``, or ``None`` if unknown."""

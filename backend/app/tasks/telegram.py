@@ -22,6 +22,10 @@ from ..services.telegram_client import (
 )
 from ..services.telegram_client_cache import resolve_telegram_client
 
+if T.TYPE_CHECKING:
+    from ..core import Container
+    from ..services.telegram_notifier import TelegramNotifier
+
 _setup.init_broker()
 
 
@@ -132,24 +136,22 @@ async def notify_event_actor(**kwargs: T.Any) -> None:
     await notifier.notify_download_event(**kwargs)
 
 
-def _build_notifier(container: object) -> object | None:
+def _build_notifier(container: Container) -> TelegramNotifier | None:
     """Construct a TelegramNotifier from the given container, or None when disabled."""
-    from ..services.telegram_live_messages import LiveMessageRegistry
-    from ..services.telegram_notifier import TelegramNotifier
+    from ..models import TelegramSettings as _TelegramSettings
+    from ..services.telegram_notifier import TelegramNotifier as _TelegramNotifier
 
-    tg_client = getattr(container, 'telegram_client', None)
+    tg_client = container.telegram_client
     if tg_client is None:
         return None
 
-    def _settings_provider() -> object:
-        return container.settings_repo.load().telegram  # type: ignore[union-attr]
+    def _settings_provider() -> _TelegramSettings:
+        return container.settings_repo.load().telegram
 
-    live_messages: LiveMessageRegistry | None = getattr(container, 'live_messages', None)
-
-    return TelegramNotifier(
-        client=tg_client,  # type: ignore[arg-type]
-        user_repo=container.user_repo,  # type: ignore[union-attr]
-        settings_provider=_settings_provider,  # type: ignore[arg-type]
-        live_messages=live_messages,
-        logger=container.logger,  # type: ignore[union-attr]
+    return _TelegramNotifier(
+        client=tg_client,
+        user_repo=container.user_repo,
+        settings_provider=_settings_provider,
+        live_messages=container.live_messages,
+        logger=container.logger,
     )

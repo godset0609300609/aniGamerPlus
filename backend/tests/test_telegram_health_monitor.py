@@ -11,7 +11,6 @@ import collections.abc
 import datetime
 import shutil
 import types
-import typing as T
 import unittest.mock
 
 import pytest
@@ -192,10 +191,21 @@ def test_disk_free_above_threshold_no_dm(monkeypatch: pytest.MonkeyPatch) -> Non
     redis = FakeRedis()
     container = _make_container(redis=redis)
 
-    monkeypatch.setattr(shutil, 'disk_usage', lambda _: shutil._ntuple_diskusage(total=100 * _10GIB, used=0, free=20 * _10GIB))
+    _patch_disk_free(monkeypatch, free_bytes=20 * _10GIB)
     _run(_run_tick(container))
 
     assert _send_with_options_calls == []
+
+
+def _patch_disk_free(monkeypatch: pytest.MonkeyPatch, *, free_bytes: int) -> None:
+    """Stub ``shutil.disk_usage`` to return a controlled free-space value.
+
+    Wrapped so the test bodies stay under the 120-char ruff line limit.
+    """
+    def _stub(_path: object) -> object:
+        total = 100 * _10GIB
+        return shutil._ntuple_diskusage(total=total, used=total - free_bytes, free=free_bytes)
+    monkeypatch.setattr(shutil, 'disk_usage', _stub)
 
 
 def test_disk_free_below_threshold_sends_dm(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -214,7 +224,7 @@ def test_disk_free_below_threshold_sends_dm(monkeypatch: pytest.MonkeyPatch) -> 
     )
     container = _make_container(redis=redis, users=[admin])
 
-    monkeypatch.setattr(shutil, 'disk_usage', lambda _: shutil._ntuple_diskusage(total=100 * _10GIB, used=100 * _10GIB - 5 * 1024**3, free=5 * 1024**3))
+    _patch_disk_free(monkeypatch, free_bytes=5 * 1024**3)
     _run(_run_tick(container))
 
     assert len(_send_with_options_calls) == 1
@@ -237,7 +247,7 @@ def test_disk_cooldown_prevents_second_dm(monkeypatch: pytest.MonkeyPatch) -> No
     )
     container = _make_container(redis=redis, users=[admin])
 
-    monkeypatch.setattr(shutil, 'disk_usage', lambda _: shutil._ntuple_diskusage(total=100 * _10GIB, used=100 * _10GIB - 5 * 1024**3, free=5 * 1024**3))
+    _patch_disk_free(monkeypatch, free_bytes=5 * 1024**3)
     _run(_run_tick(container))
     first_count = len(_send_with_options_calls)
 
@@ -410,7 +420,7 @@ def test_health_alerts_false_no_dm(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     container = _make_container(redis=redis, progress_snap=snap, users=[admin], health_alerts=False)
 
-    monkeypatch.setattr(shutil, 'disk_usage', lambda _: shutil._ntuple_diskusage(total=100 * _10GIB, used=100 * _10GIB - 5 * 1024**3, free=5 * 1024**3))
+    _patch_disk_free(monkeypatch, free_bytes=5 * 1024**3)
     _run(_run_tick(container))
 
     assert _send_with_options_calls == []

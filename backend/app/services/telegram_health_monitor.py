@@ -12,12 +12,18 @@ Two rules:
 
 from __future__ import annotations
 
+import datetime
 import shutil
+import typing as T
 
 import dramatiq
+import redis.asyncio
 
 from .. import dramatiq_setup as _setup
 from ..core import build_container
+
+if T.TYPE_CHECKING:
+    from ..core import Container
 
 _setup.init_broker()
 
@@ -41,10 +47,12 @@ async def health_check_tick() -> None:
     await _check_cookie_expired(container, tg_settings)
 
 
-async def _check_disk_low(container: object, settings: object, tg_settings: object) -> None:
+async def _check_disk_low(container: Container, settings: object, tg_settings: object) -> None:
     """Disk space rule with 6h cooldown."""
-    redis = container.redis_client_async  # type: ignore[union-attr]
-    if await _is_in_cooldown(redis, 'disk_low'):
+    redis_client = container.redis_client_async
+    if redis_client is None:
+        return
+    if await _is_in_cooldown(redis_client, 'disk_low'):
         return
     bangumi_dir: str = getattr(settings, 'bangumi_dir', '')
     if not bangumi_dir:
@@ -62,17 +70,19 @@ async def _check_disk_low(container: object, settings: object, tg_settings: obje
         f'剩餘: {free_gib:.1f} GiB \\(< 10 GiB\\)'
     )
     await _broadcast_to_admins(container, tg_settings, text)
-    await _set_cooldown(redis, 'disk_low')
+    await _set_cooldown(redis_client, 'disk_low')
 
 
-async def _check_cookie_expired(container: object, tg_settings: object) -> None:
+async def _check_cookie_expired(container: Container, tg_settings: object) -> None:
     """Cookie expiry heuristic with 6h cooldown."""
-    redis = container.redis_client_async  # type: ignore[union-attr]
-    if await _is_in_cooldown(redis, 'cookie_expired'):
+    redis_client = container.redis_client_async
+    if redis_client is None:
         return
-    if container.redis_progress_reader is None:  # type: ignore[union-attr]
+    if await _is_in_cooldown(redis_client, 'cookie_expired'):
         return
-    snap = await container.redis_progress_reader.snapshot()  # type: ignore[union-attr]
+    if container.redis_progress_reader is None:
+        return
+    snap = await container.redis_progress_reader.snapshot()
     failed_sns = {sn for sn, entry in snap.items() if entry.status == '失敗' and entry.retries >= 3}
     if len(failed_sns) < _COOKIE_FAILURE_THRESHOLD:
         return
@@ -82,17 +92,15 @@ async def _check_cookie_expired(container: object, tg_settings: object) -> None:
         '請確認 Bahamut cookie 是否需要更新。'
     )
     await _broadcast_to_admins(container, tg_settings, text)
-    await _set_cooldown(redis, 'cookie_expired')
+    await _set_cooldown(redis_client, 'cookie_expired')
 
 
-async def _broadcast_to_admins(container: object, tg_settings: object, text: str) -> None:
+async def _broadcast_to_admins(container: Container, tg_settings: object, text: str) -> None:
     """Send via send_message_actor to every admin who is bound + opted-in + not muted."""
-    import datetime
-
     from ..tasks.telegram import send_message_actor
 
     now = datetime.datetime.now(datetime.UTC)
-    all_users = container.user_repo.list_all()  # type: ignore[union-attr]
+    all_users = container.user_repo.list_all()
     admins = [
         u
         for u in all_users
@@ -112,21 +120,20 @@ async def _broadcast_to_admins(container: object, tg_settings: object, text: str
         )
 
 
-def _ensure_aware(dt: object) -> object:
+def _ensure_aware(dt: datetime.datetime) -> datetime.datetime:
     """Return a tz-aware datetime; attach UTC if naive."""
-    import datetime
-
-    if isinstance(dt, datetime.datetime) and dt.tzinfo is None:
+    if dt.tzinfo is None:
         return dt.replace(tzinfo=datetime.UTC)
     return dt
 
 
-async def _is_in_cooldown(client: object, rule: str) -> bool:
-    return bool(await client.exists(f'alert_cooldown:{rule}'))  # type: ignore[union-attr]
+async def _is_in_cooldown(client: redis.asyncio.Redis, rule: str) -> bool:
+    result = await client.exists(f'alert_cooldown:{rule}')
+    return bool(result)
 
 
-async def _set_cooldown(client: object, rule: str) -> None:
-    await client.setex(f'alert_cooldown:{rule}', _ALERT_COOLDOWN_SECONDS, '1')  # type: ignore[union-attr]
+async def _set_cooldown(client: redis.asyncio.Redis, rule: str) -> None:
+    await client.setex(f'alert_cooldown:{rule}', _ALERT_COOLDOWN_SECONDS, '1')
 
 
 def _md_escape(text: str) -> str:

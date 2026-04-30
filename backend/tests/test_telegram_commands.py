@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.downloader.metadata import AnimeMetadata
-from app.models import AnimeListEntry, TaskProgressEntry, TaskProgressSnapshot
+from app.models import AnimeListEntry, TaskProgressSnapshot
 from app.persistence.user_repo import UserRow
 from app.services.telegram_commands import TelegramCommandDispatcher, _parse_watch_args
 from app.services.telegram_rate_limiter import TelegramRateLimiter

@@ -23,7 +23,6 @@ import time
 import typing as T
 import urllib.parse
 
-
 _DEFAULT_MAX_AGE_SECONDS = 24 * 60 * 60
 
 

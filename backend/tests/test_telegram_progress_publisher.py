@@ -9,14 +9,11 @@ from __future__ import annotations
 import asyncio
 import collections.abc
 import datetime
-import typing as T
 
 import pytest
 
 from app.downloader.progress import TaskProgress
 from app.services.telegram_progress_publisher import (
-    _MIN_EDIT_INTERVAL_SECONDS,
-    _MIN_RATE_DELTA,
     _cancel_keyboard,
     _render_progress_message,
 )

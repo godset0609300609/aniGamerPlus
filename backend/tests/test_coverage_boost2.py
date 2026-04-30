@@ -472,7 +472,6 @@ def test_scheduler_server_lifespan_logs_bootstrap_and_history(
     container = _fake_container_with_history('stest', tmp_path)
 
     # Patch ApsScheduler so no real BackgroundScheduler is started.
-    from app.scheduler.aps_scheduler import ApsScheduler as _RealAps
 
     class _FakeAps:
         _scheduler = types.SimpleNamespace(running=True)

@@ -6,10 +6,9 @@ calls happen.
 
 from __future__ import annotations
 
-import dataclasses
 import datetime
 import typing as T
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -621,10 +620,7 @@ async def test_render_admin_disk_non_admin() -> None:
 
 @pytest.mark.anyio
 async def test_render_admin_disk_monkeypatched() -> None:
-    import shutil
-
-    fake_usage = shutil.disk_usage.__class__
-    # Use a namedtuple-like object
+    # Use a namedtuple-like object so we can substitute shutil.disk_usage's return.
     class _Usage(T.NamedTuple):
         total: int
         used: int

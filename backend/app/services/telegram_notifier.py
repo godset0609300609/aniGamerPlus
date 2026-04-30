@@ -40,11 +40,11 @@ class TelegramNotifier:
 
     def __init__(
         self,
-        client: 'TelegramClient',
-        user_repo: 'UserRepository',
-        settings_provider: collections.abc.Callable[[], 'TelegramSettings'],
-        live_messages: 'LiveMessageRegistry | None',
-        logger: 'Logger',
+        client: TelegramClient,
+        user_repo: UserRepository,
+        settings_provider: collections.abc.Callable[[], TelegramSettings],
+        live_messages: LiveMessageRegistry | None,
+        logger: Logger,
     ) -> None:
         self._client = client
         self._user_repo = user_repo
@@ -135,7 +135,7 @@ class TelegramNotifier:
         custom_name: str | None,
         season: int,
         episode_number: int | None,
-        settings: 'TelegramSettings',
+        settings: TelegramSettings,
     ) -> None:
         text = _format_message(
             event='started',
@@ -179,7 +179,7 @@ class TelegramNotifier:
         custom_name: str | None,
         season: int,
         episode_number: int | None,
-        settings: 'TelegramSettings',
+        settings: TelegramSettings,
     ) -> None:
         """Notify only the owner (no admin broadcast for auto_enqueue)."""
         text = _format_message(
@@ -216,7 +216,7 @@ class TelegramNotifier:
         custom_name: str | None,
         season: int,
         episode_number: int | None,
-        settings: 'TelegramSettings',
+        settings: TelegramSettings,
     ) -> None:
         text = _format_message(
             event=event,
@@ -250,7 +250,7 @@ class TelegramNotifier:
         self,
         owner_id: str | None,
         *,
-        settings: 'TelegramSettings',
+        settings: TelegramSettings,
     ) -> list[tuple[str, int]]:
         """Return [(user_id, chat_id), ...] de-duplicated, mute-filtered."""
         seen_chat_ids: set[int] = set()
@@ -334,7 +334,7 @@ class TelegramNotifier:
         text: str,
         user_id: str,
         *,
-        settings: 'TelegramSettings',
+        settings: TelegramSettings,
         reply_markup: dict[str, object] | None = None,
     ) -> None:
         """Enqueue a send via the dramatiq actor (fire-and-forget)."""
@@ -364,7 +364,7 @@ class TelegramNotifier:
         text: str,
         user_id: str,
         *,
-        settings: 'TelegramSettings',
+        settings: TelegramSettings,
         reply_markup: dict[str, object] | None = None,
     ) -> None:
         """Enqueue an edit via the dramatiq actor (fire-and-forget)."""
@@ -413,7 +413,7 @@ class TelegramNotifier:
         # Ensure tz-aware comparison.
         if mute_until.tzinfo is None:
             mute_until = mute_until.replace(tzinfo=datetime.UTC)
-        return mute_until > now
+        return bool(mute_until > now)
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +549,6 @@ def format_progress_body(entry: object) -> str:
     duplicating the bar/speed/ETA rendering logic.
     """
     import datetime
-    import time
 
     rate: float = getattr(entry, 'rate', 0.0) or 0.0
     speed_mbps: float | None = getattr(entry, 'speed_mbps', None)

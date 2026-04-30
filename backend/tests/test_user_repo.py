@@ -384,7 +384,7 @@ def test_set_telegram_mute_until_persists(tmp_path: pathlib.Path) -> None:
         assert row2 is not None
         assert row2.telegram_mute_until is not None
         # Compare at-second granularity to avoid sub-second drift from DB storage.
-        assert abs((row2.telegram_mute_until.replace(tzinfo=datetime.timezone.utc) - deadline).total_seconds()) < 2
+        assert abs((row2.telegram_mute_until.replace(tzinfo=datetime.UTC) - deadline).total_seconds()) < 2
     finally:
         db.dispose()
 

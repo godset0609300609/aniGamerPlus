@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import datetime
 import json
+import typing as T
+from collections.abc import Awaitable
 
 import redis.asyncio
 
@@ -62,7 +64,7 @@ class RedisProgressReader:
                 sn = int(sn_str)
             except ValueError:
                 continue
-            raw = await self._client.hgetall(key)
+            raw = await T.cast(Awaitable[dict[bytes, bytes]], self._client.hgetall(key))
             if not raw:
                 continue
             data = {
