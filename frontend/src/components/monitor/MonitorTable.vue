@@ -4,7 +4,7 @@ import type { TaskProgressEntry } from '@/types'
 import { categorize } from '@/composables/useTaskCategory'
 import { clampPercentage, ownerInitials, taskDisplayTitle } from '@/utils/format'
 import { sourceBadgeColor, sourceBadgeLabel, sourceBadgeTextColor } from '@/utils/sourceBadge'
-import { confirmCancelTask } from '@/utils/taskActions'
+import { dismissTask } from '@/utils/taskActions'
 import {
   buildFilterOptions,
   compareNullableAsc,
@@ -136,7 +136,7 @@ function isCancelable(row: TaskProgressEntry): boolean {
 }
 
 async function onCancel(row: TaskProgressEntry): Promise<void> {
-  await confirmCancelTask(row.sn)
+  await dismissTask(row.sn)
 }
 </script>
 

@@ -1,9 +1,13 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import MonitorTable from '@/components/monitor/MonitorTable.vue'
 import type { TaskProgressEntry } from '@/types'
 import { filterByOwner, filterBySource, filterByStatus } from '@/utils/monitorTable'
 import { createElementPlusStubs } from '../../helpers/elementPlusStubs'
+
+const { dismissTaskMock } = vi.hoisted(() => ({
+  dismissTaskMock: vi.fn().mockResolvedValue({ status: 'ok' }),
+}))
 
 vi.mock('element-plus', async (importOriginal) => {
   const mod = (await importOriginal()) as Record<string, unknown>
@@ -18,9 +22,14 @@ vi.mock('element-plus', async (importOriginal) => {
   }
 })
 
-vi.mock('@/api/client', async (importOriginal) => {
+vi.mock('@/api/tasks', async (importOriginal) => {
   const mod = (await importOriginal()) as Record<string, unknown>
-  return { ...mod, cancelTask: vi.fn().mockResolvedValue(undefined) }
+  return {
+    ...mod,
+    TasksApi: vi.fn().mockImplementation(() => ({
+      dismissTask: dismissTaskMock,
+    })),
+  }
 })
 
 const stubs = createElementPlusStubs()
@@ -191,6 +200,11 @@ describe('MonitorTable — dimmed state', () => {
 })
 
 describe('MonitorTable — cancel action', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    dismissTaskMock.mockResolvedValue({ status: 'ok' })
+  })
+
   it('renders a cancel button for an active (non-completed) row', () => {
     const wrapper = mountTable([makeTask({ status: '正在下載' })])
     expect(wrapper.find('.cancel-btn').exists()).toBe(true)
@@ -201,14 +215,44 @@ describe('MonitorTable — cancel action', () => {
     expect(wrapper.find('.cancel-btn').exists()).toBe(false)
   })
 
-  it('clicking cancel calls ElMessageBox.confirm', async () => {
-    const { ElMessageBox } = await import('element-plus')
-    const confirmMock = vi.mocked(ElMessageBox.confirm)
-
+  it('test_x_button_calls_dismiss_api_not_the_legacy_cancel_flow', async () => {
     const wrapper = mountTable([makeTask({ sn: 77 })])
     await wrapper.find('.cancel-btn').trigger('click')
     await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(dismissTaskMock).toHaveBeenCalledWith(77)
+  })
 
-    expect(confirmMock).toHaveBeenCalled()
+  it('clicking the button does not open a confirm dialog — dismiss is immediate', async () => {
+    const { ElMessageBox } = await import('element-plus')
+    const confirmMock = vi.mocked(ElMessageBox.confirm)
+    const wrapper = mountTable([makeTask()])
+    await wrapper.find('.cancel-btn').trigger('click')
+    await Promise.resolve()
+    expect(confirmMock).not.toHaveBeenCalled()
+  })
+
+  it('shows a success toast after a successful dismiss', async () => {
+    const { ElMessage } = await import('element-plus')
+    const successMock = vi.mocked(ElMessage.success)
+    const wrapper = mountTable([makeTask({ sn: 7 })])
+    await wrapper.find('.cancel-btn').trigger('click')
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(successMock).toHaveBeenCalled()
+  })
+
+  it('shows an error toast when the dismiss API call fails', async () => {
+    const { ElMessage } = await import('element-plus')
+    const errorMock = vi.mocked(ElMessage.error)
+    dismissTaskMock.mockRejectedValueOnce(new Error('network down'))
+    const wrapper = mountTable([makeTask({ sn: 8 })])
+    await wrapper.find('.cancel-btn').trigger('click')
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(errorMock).toHaveBeenCalled()
   })
 })

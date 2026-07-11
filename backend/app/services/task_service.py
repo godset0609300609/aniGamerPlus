@@ -328,18 +328,20 @@ class TaskService:
 def _build_task_service(c: Container) -> TaskService:
     from .progress_service import ProgressService
 
+    message_id_registry = getattr(c, 'message_id_registry', None)
     progress_service = ProgressService(
         c.progress_bus,
         getattr(c, 'user_repo', None),
         getattr(c, 'redis_progress_reader', None),
         getattr(c, 'bt_progress_bus', None),
+        message_id_registry,
     )
     return TaskService(
         c.settings_repo,
         c.manual_runner,
         progress_bus=c.progress_bus,
         progress_service=progress_service,
-        message_id_registry=getattr(c, 'message_id_registry', None),
+        message_id_registry=message_id_registry,
         task_id_map_repo=getattr(c, 'task_id_map_repo', None),
         bilibili_runner=getattr(c, 'bilibili_runner', None),
     )

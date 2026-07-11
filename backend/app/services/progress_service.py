@@ -18,10 +18,20 @@ WebSocket push (≤ 1 s latency) without waiting for the 60-second DB history
 poll.  ``ProgressBus`` keeps finished entries alive for 7 days, and the
 ``finished_at`` field on the DTO tells the frontend exactly when the task
 completed.
+
+Dismissal (``force_finish``)
+-----------------------------
+Dismissing a card from the monitor ("X" button) is best-effort: it sends a
+``dramatiq_abort`` signal (which only reaches a genuinely live worker — a
+ghost's owning process is gone, so the signal has nothing to land on) and
+then unconditionally closes out the Redis mirror so the card disappears
+either way. See :meth:`ProgressService.force_finish` for the two-phase
+breakdown.
 """
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import typing as T
 
@@ -36,6 +46,7 @@ from .redis_progress_reader import RedisProgressReader
 if T.TYPE_CHECKING:
     from ..downloader.progress import ProgressBus, TaskProgress
     from ..persistence.user_repo import UserRepository
+    from ..redis_state import MessageIdRegistry
 
 
 class ProgressService:
@@ -47,6 +58,7 @@ class ProgressService:
         user_repo: UserRepository | None = None,
         redis_reader: RedisProgressReader | None = None,
         bt_progress_bus: ProgressBus | None = None,
+        message_id_registry: MessageIdRegistry | None = None,
     ) -> None:
         self._bus = progress_bus
         self._user_repo = user_repo
@@ -55,6 +67,10 @@ class ProgressService:
         # at the BT bus rather than the shared one (see Container.bt_progress_bus's
         # docstring in core.py for why they are separate ProgressBus instances).
         self._bt_bus = bt_progress_bus
+        # Optional: only force_finish() needs this, to best-effort signal a
+        # genuinely live worker (via dramatiq_abort) before closing the
+        # mirror. None in any process/test that doesn't wire Redis.
+        self._message_id_registry = message_id_registry
 
     async def _raw_snapshot(self) -> dict[int, TaskProgress]:
         """Unfiltered ``sn -> entry`` snapshot from whichever source is wired.
@@ -150,13 +166,27 @@ class ProgressService:
     async def force_finish(self, sn: int, user: UserRow, *, status: str) -> None:
         """Force-close a live progress entry so it drops off the monitor.
 
-        Used by the dismiss ("X") button on MonitorView task cards to close
-        out ghost cards that a plain ``cancel()`` cannot reach: a ghost's
-        owning process is already dead, so ``ProgressBus.cancel()`` (and any
-        dramatiq-abort follow-up keyed off it) is a silent no-op — see
-        :class:`~app.services.bt_progress_reconciler.BtProgressReconciler`'s
-        module docstring for the full story of how a ghost gets into this
-        state in the first place.
+        Used by the dismiss ("X") button on MonitorView task cards. Two
+        phases:
+
+        1. **Best-effort abort** — try to reach a genuinely *live* worker via
+           ``dramatiq_abort`` (looked up through ``message_id_registry``) so
+           it actually stops downloading instead of wasting bandwidth and
+           later overwriting the mirror with a rosy ``'下載完成'`` that would
+           make the dismissed card reappear. This step is a no-op for a
+           ghost card: its owning process is already dead, so there is
+           nothing on the other end of the pubsub signal, and any Redis
+           blip or missing broker is swallowed rather than failing the
+           dismiss.
+        2. **Unconditional mirror close** — ``ProgressBus.force_finish()``
+           closes out the Redis mirror directly, which is the only way to
+           dismiss a ghost card that a plain ``cancel()`` cannot reach (a
+           ghost's owning process is already dead, so ``ProgressBus.cancel()``
+           is itself a silent no-op) — see
+           :class:`~app.services.bt_progress_reconciler.BtProgressReconciler`'s
+           module docstring for the full story of how a ghost gets into this
+           state in the first place. This step always runs, regardless of
+           whether the abort in step 1 found anything to signal.
 
         Authorization: admin may dismiss any entry; a downloader may only
         dismiss an entry they own (``entry.owner_id == user.id``).
@@ -183,6 +213,28 @@ class ProgressService:
             return
 
         bus = self._bt_bus if entry.source == 'bt' and self._bt_bus is not None else self._bus
+
+        # Phase 1: best-effort abort signal. Never allowed to block the
+        # mirror cleanup below — a Redis blip, a missing message_id (ghost),
+        # or no registry at all must all fall through silently.
+        with contextlib.suppress(Exception):
+            bus.cancel(sn)
+        with contextlib.suppress(Exception):
+            if self._message_id_registry is not None:
+                message_id = await self._message_id_registry.get(sn)
+                if message_id is not None:
+                    import dramatiq_abort
+
+                    await anyio.to_thread.run_sync(
+                        functools.partial(
+                            dramatiq_abort.abort,
+                            message_id,
+                            mode=dramatiq_abort.AbortMode.ABORT,
+                            abort_timeout=5000,
+                        )
+                    )
+
+        # Phase 2: unconditional mirror close so the card disappears either way.
         await anyio.to_thread.run_sync(
             functools.partial(bus.force_finish, sn, status=status, filename=entry.filename)
         )
@@ -194,6 +246,7 @@ get_progress_service = container_bound(
         c.user_repo,
         getattr(c, 'redis_progress_reader', None),
         getattr(c, 'bt_progress_bus', None),
+        getattr(c, 'message_id_registry', None),
     )
 )
 """FastAPI dependency resolver for :class:`ProgressService`."""
