@@ -60,6 +60,8 @@ class FakeHistoryRepo:
         episode: str | None = None,
         resolution: str | None = None,
         started_at: datetime.datetime | None = None,
+        source: str | None = None,
+        external_id: str | None = None,
     ) -> int:
         self.start_calls.append(
             _StartCall(

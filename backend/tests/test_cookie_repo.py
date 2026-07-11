@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import pathlib
+import platform
 import threading
 import unittest.mock
 
@@ -141,3 +142,30 @@ def test_atomic_write_propagates_non_ebusy_oserror(tmp_path: pathlib.Path) -> No
     # Temp file must be cleaned up even though we re-raised.
     siblings = [p for p in tmp_path.iterdir() if p != target]
     assert siblings == []
+
+
+@pytest.mark.skipif(platform.system() == 'Windows', reason='POSIX mode bits do not apply on Windows')
+def test_atomic_write_sets_0600_permissions(tmp_path: pathlib.Path) -> None:
+    """The written file must be chmod 0600 — these files hold secrets."""
+    target = tmp_path / 'secret.txt'
+    atomic_write_text(target, 'top-secret')
+
+    mode = os.stat(target).st_mode & 0o777
+    assert mode == 0o600, f'expected 0600, got {oct(mode)}'
+
+
+@pytest.mark.skipif(platform.system() == 'Windows', reason='POSIX mode bits do not apply on Windows')
+def test_atomic_write_sets_0600_on_ebusy_fallback(tmp_path: pathlib.Path) -> None:
+    """The EBUSY in-place-overwrite fallback must also end up chmod 0600."""
+    target = tmp_path / 'secret.txt'
+    target.write_text('old', encoding='utf-8')
+    os.chmod(target, 0o644)
+
+    def patched_replace(src: str, dst: str) -> None:
+        raise OSError(errno.EBUSY, 'Device or resource busy', src)
+
+    with unittest.mock.patch('app.persistence.file_utils.os.replace', side_effect=patched_replace):
+        atomic_write_text(target, 'new-secret')
+
+    mode = os.stat(target).st_mode & 0o777
+    assert mode == 0o600, f'expected 0600, got {oct(mode)}'

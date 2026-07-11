@@ -114,13 +114,11 @@ def _make_client_for_user(
     from app.main import DashboardApp
     from app.services import (
         AnimeListService,
-        AuthService,
         ConfigService,
         ProgressService,
         SnListService,
         TaskService,
         get_animelist_service,
-        get_auth_service,
         get_config_service,
         get_progress_service,
         get_snlist_service,
@@ -139,7 +137,6 @@ def _make_client_for_user(
         anime_list_entry_repo=fake_container.anime_list_entry_repo,
         progress_bus=fake_container.progress_bus,
         manual_runner=fake_container.manual_runner,
-        scheduler_proxy=fake_container.scheduler_proxy,
     )
     app = DashboardApp(proxy).app
 
@@ -154,14 +151,11 @@ def _make_client_for_user(
     app.dependency_overrides[get_task_service] = lambda: TaskService(
         fake_container.settings_repo,
         fake_container.manual_runner,
-        fake_container.scheduler_proxy,
     )
     app.dependency_overrides[get_progress_service] = lambda: ProgressService(
         fake_container.progress_bus,
         fake_container.user_repo,
-        fake_container.scheduler_proxy,
     )
-    app.dependency_overrides[get_auth_service] = lambda: AuthService(fake_container.settings_repo)
     app.dependency_overrides[get_health_service] = lambda: HealthService(fake_container.paths)
 
     # Override auth to return the supplied user (or None to simulate no session).
@@ -228,6 +222,64 @@ def test_admin_receives_historical_snapshot(
     messages = {msg1['message'], msg2['message']}
     assert 'system boot' in messages
     assert 'download started' in messages
+
+
+# ---------------------------------------------------------------------------
+# Per-user connection cap (fix #21) — shared registry with progress_ws
+# ---------------------------------------------------------------------------
+
+
+def test_ws_connection_cap_rejects_sixth_connection(
+    fake_container: FakeContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import contextlib
+
+    import starlette.testclient
+
+    tc = _make_client_for_user(fake_container, monkeypatch, user=_admin_user())
+
+    with contextlib.ExitStack() as stack:
+        for _ in range(5):
+            stack.enter_context(tc.websocket_connect('/api/ws/logs'))
+
+        try:
+            with tc.websocket_connect('/api/ws/logs') as ws:
+                ws.receive_text()
+        except starlette.testclient.WebSocketDisconnect as exc:
+            assert exc.code == 4429
+        else:
+            pytest.fail('Expected WebSocketDisconnect with code 4429')
+
+
+# ---------------------------------------------------------------------------
+# Origin allowlist (fix #37)
+# ---------------------------------------------------------------------------
+
+
+def test_ws_rejects_disallowed_origin(
+    fake_container: FakeContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import starlette.testclient
+
+    tc = _make_client_for_user(fake_container, monkeypatch, user=_admin_user())
+    try:
+        with tc.websocket_connect('/api/ws/logs', headers={'origin': 'http://evil.example'}) as ws:
+            ws.receive_text()
+    except starlette.testclient.WebSocketDisconnect as exc:
+        assert exc.code == 1008
+    else:
+        pytest.fail('Expected WebSocketDisconnect with code 1008')
+
+
+def test_ws_accepts_allowed_origin(
+    fake_container: FakeContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tc = _make_client_for_user(fake_container, monkeypatch, user=_admin_user())
+    with tc.websocket_connect('/api/ws/logs', headers={'origin': 'http://web'}):
+        pass  # accepted — no exception
 
 
 # ---------------------------------------------------------------------------

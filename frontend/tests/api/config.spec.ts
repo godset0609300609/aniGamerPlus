@@ -15,6 +15,7 @@ function makeSettings(overrides: Partial<WebSettings> = {}): WebSettings {
     default_download_mode: 'latest',
     check_frequency: 5,
     'multi-thread': 1,
+    'bilibili-concurrent-parts': 2,
     multi_downloading_segment: 2,
     customized_video_filename_prefix: '',
     customized_video_filename_suffix: '',
@@ -32,12 +33,22 @@ function makeSettings(overrides: Partial<WebSettings> = {}): WebSettings {
     parse_cd: 3,
     telegram: {
       enabled: false,
-      bot_token: '',
-      webhook_secret: '',
       public_url: '',
+      bot_username: '',
       notify_on: ['completed', 'failed', 'cancelled'],
       admin_broadcast: true,
       rate_limit_per_minute: 30,
+      health_alerts: true,
+    },
+    'bt-downloader': {
+      enabled: false,
+      'poll-interval-seconds': 300,
+      'landing-poll-seconds': 60,
+      'hanzi-convert': true,
+      'landing-dir': '',
+      'entry-retention-days': 90,
+      'task-history-retention-days': 180,
+      'auto-delete-remote-on-landed': true,
     },
     ...overrides,
   }
@@ -80,6 +91,86 @@ describe('ConfigApi', () => {
 
     const result = await api.getCookieStatus()
     expect(getJson).toHaveBeenCalledWith('/config/cookie/status')
+    expect(result.configured).toBe(true)
+  })
+
+  it('setBilibiliCookie() PUTs /config/bilibili-cookie with the cookie string', async () => {
+    const putJson = vi.fn().mockResolvedValue({ status: 'ok' })
+    const api = new ConfigApi({ putJson } as never)
+
+    const result = await api.setBilibiliCookie('SESSDATA=abc123; buvid3=xyz')
+    expect(putJson).toHaveBeenCalledWith('/config/bilibili-cookie', {
+      cookie: 'SESSDATA=abc123; buvid3=xyz',
+    })
+    expect(result.status).toBe('ok')
+  })
+
+  it('getBilibiliCookieStatus() GETs /config/bilibili-cookie/status', async () => {
+    const getJson = vi.fn().mockResolvedValue({ configured: true })
+    const api = new ConfigApi({ getJson } as never)
+
+    const result = await api.getBilibiliCookieStatus()
+    expect(getJson).toHaveBeenCalledWith('/config/bilibili-cookie/status')
+    expect(result.configured).toBe(true)
+  })
+
+  it('setPutioToken() PUTs /config/putio-token with the token string', async () => {
+    const putJson = vi.fn().mockResolvedValue({ status: 'ok' })
+    const api = new ConfigApi({ putJson } as never)
+
+    const result = await api.setPutioToken('putio-oauth-token-abc')
+    expect(putJson).toHaveBeenCalledWith('/config/putio-token', {
+      token: 'putio-oauth-token-abc',
+    })
+    expect(result.status).toBe('ok')
+  })
+
+  it('getPutioTokenStatus() GETs /config/putio-token/status', async () => {
+    const getJson = vi.fn().mockResolvedValue({ configured: true })
+    const api = new ConfigApi({ getJson } as never)
+
+    const result = await api.getPutioTokenStatus()
+    expect(getJson).toHaveBeenCalledWith('/config/putio-token/status')
+    expect(result.configured).toBe(true)
+  })
+
+  it('setTelegramBotToken() PUTs /config/telegram-bot-token with the token string', async () => {
+    const putJson = vi.fn().mockResolvedValue({ status: 'ok' })
+    const api = new ConfigApi({ putJson } as never)
+
+    const result = await api.setTelegramBotToken('123456:ABC-DEF')
+    expect(putJson).toHaveBeenCalledWith('/config/telegram-bot-token', {
+      bot_token: '123456:ABC-DEF',
+    })
+    expect(result.status).toBe('ok')
+  })
+
+  it('getTelegramBotTokenStatus() GETs /config/telegram-bot-token/status', async () => {
+    const getJson = vi.fn().mockResolvedValue({ configured: true })
+    const api = new ConfigApi({ getJson } as never)
+
+    const result = await api.getTelegramBotTokenStatus()
+    expect(getJson).toHaveBeenCalledWith('/config/telegram-bot-token/status')
+    expect(result.configured).toBe(true)
+  })
+
+  it('setTelegramWebhookSecret() PUTs /config/telegram-webhook-secret with the secret string', async () => {
+    const putJson = vi.fn().mockResolvedValue({ status: 'ok' })
+    const api = new ConfigApi({ putJson } as never)
+
+    const result = await api.setTelegramWebhookSecret('deadbeef')
+    expect(putJson).toHaveBeenCalledWith('/config/telegram-webhook-secret', {
+      webhook_secret: 'deadbeef',
+    })
+    expect(result.status).toBe('ok')
+  })
+
+  it('getTelegramWebhookSecretStatus() GETs /config/telegram-webhook-secret/status', async () => {
+    const getJson = vi.fn().mockResolvedValue({ configured: true })
+    const api = new ConfigApi({ getJson } as never)
+
+    const result = await api.getTelegramWebhookSecretStatus()
+    expect(getJson).toHaveBeenCalledWith('/config/telegram-webhook-secret/status')
     expect(result.configured).toBe(true)
   })
 })

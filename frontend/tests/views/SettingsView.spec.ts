@@ -22,6 +22,17 @@ vi.mock('@/stores/auth', () => ({
 }))
 
 // ---------------------------------------------------------------------------
+// vue-router stub — SettingsView.vue reads/writes ?tab= via useRoute /
+// useRouter. Mirrors the pattern used by BtView.spec.ts.
+// ---------------------------------------------------------------------------
+const mockRoute = { query: {} as Record<string, string | undefined> }
+const mockRouterReplace = vi.fn()
+vi.mock('vue-router', () => ({
+  useRoute: () => mockRoute,
+  useRouter: () => ({ push: vi.fn(), replace: mockRouterReplace }),
+}))
+
+// ---------------------------------------------------------------------------
 // useTelegramBinding stub — prevents real fetch calls in these tests.
 // ---------------------------------------------------------------------------
 vi.mock('@/composables/useTelegramBinding', () => ({
@@ -49,6 +60,14 @@ const mockLoad = vi.fn()
 const mockSave = vi.fn()
 const mockSetCookie = vi.fn()
 const mockGetCookieStatus = vi.fn()
+const mockSetBilibiliCookie = vi.fn()
+const mockGetBilibiliCookieStatus = vi.fn()
+const mockSetPutioToken = vi.fn()
+const mockGetPutioTokenStatus = vi.fn()
+const mockSetTelegramBotToken = vi.fn()
+const mockGetTelegramBotTokenStatus = vi.fn()
+const mockSetTelegramWebhookSecret = vi.fn()
+const mockGetTelegramWebhookSecretStatus = vi.fn()
 
 vi.mock('@/api/config', () => ({
   ConfigApi: vi.fn().mockImplementation(() => ({
@@ -56,6 +75,14 @@ vi.mock('@/api/config', () => ({
     save: mockSave,
     setCookie: mockSetCookie,
     getCookieStatus: mockGetCookieStatus,
+    setBilibiliCookie: mockSetBilibiliCookie,
+    getBilibiliCookieStatus: mockGetBilibiliCookieStatus,
+    setPutioToken: mockSetPutioToken,
+    getPutioTokenStatus: mockGetPutioTokenStatus,
+    setTelegramBotToken: mockSetTelegramBotToken,
+    getTelegramBotTokenStatus: mockGetTelegramBotTokenStatus,
+    setTelegramWebhookSecret: mockSetTelegramWebhookSecret,
+    getTelegramWebhookSecretStatus: mockGetTelegramWebhookSecretStatus,
   })),
   parseProxy: vi.fn().mockReturnValue({
     protocol: 'HTTP',
@@ -65,6 +92,30 @@ vi.mock('@/api/config', () => ({
     password: '',
   }),
   serializeProxy: vi.fn().mockReturnValue(''),
+}))
+
+// ---------------------------------------------------------------------------
+// TgApi stub — prevents SettingsView.vue's Telegram 帳號 section (and the
+// always-mounted TgBindDialog child) from making a real fetch on mount.
+// ---------------------------------------------------------------------------
+vi.mock('@/api/tg', () => ({
+  TgApi: vi.fn().mockImplementation(() => ({
+    getSessionStatus: vi.fn().mockResolvedValue({
+      status: 'no_session',
+      phone_tail4: null,
+      telegram_user_id: null,
+      telegram_handle: null,
+      last_active_at: null,
+      notification_bound: false,
+    }),
+    deleteSession: vi.fn().mockResolvedValue({ status: 'ok' }),
+    startQrLogin: vi.fn(),
+    pollQrLogin: vi.fn(),
+    submitQrPassword: vi.fn(),
+    startPhoneLogin: vi.fn(),
+    submitPhoneCode: vi.fn(),
+    submitPhonePassword: vi.fn(),
+  })),
 }))
 
 // ---------------------------------------------------------------------------
@@ -113,6 +164,7 @@ function defaultSettings() {
     default_download_mode: 'latest',
     check_frequency: 5,
     'multi-thread': 1,
+    'bilibili-concurrent-parts': 2,
     multi_downloading_segment: 2,
     customized_video_filename_prefix: '',
     customized_video_filename_suffix: '',
@@ -130,12 +182,21 @@ function defaultSettings() {
     parse_cd: 3,
     telegram: {
       enabled: false,
-      bot_token: '',
-      webhook_secret: '',
       public_url: '',
       notify_on: ['completed', 'failed', 'cancelled'],
       admin_broadcast: true,
       rate_limit_per_minute: 30,
+      health_alerts: true,
+    },
+    'bt-downloader': {
+      enabled: false,
+      'poll-interval-seconds': 300,
+      'landing-poll-seconds': 60,
+      'hanzi-convert': true,
+      'landing-dir': '',
+      'entry-retention-days': 90,
+      'task-history-retention-days': 180,
+      'auto-delete-remote-on-landed': true,
     },
   }
 }
@@ -151,14 +212,135 @@ function mountView() {
   })
 }
 
+/**
+ * Scope a "row" lookup to the `.cookie-row` (input + 儲存 button pair)
+ * that holds the input with the given placeholder. The BT 下載設定
+ * section also has a 儲存 button ahead of this one in the DOM, so a
+ * bare `buttons.find(b => b.text().includes('儲存'))` is ambiguous.
+ */
+function findCookieRow(wrapper: ReturnType<typeof mountView>, placeholder: string) {
+  const row = wrapper
+    .findAll('.cookie-row')
+    .find((r) => r.find('input.el-input').attributes('placeholder') === placeholder)
+  if (!row) throw new Error(`no .cookie-row found for placeholder: ${placeholder}`)
+  return row
+}
+
+/**
+ * Activates a tab by clicking its <el-tabs> nav item. The Bahamut/Bilibili
+ * cookie fields and the bilibili-concurrent-parts field now live under the
+ * 來源 tab (id "source") rather than the default 一般 tab.
+ */
+async function switchTab(wrapper: ReturnType<typeof mountView>, tabId: string) {
+  const nav = wrapper.find(`.el-tabs__item[data-name="${tabId}"]`)
+  await nav.trigger('click')
+  await flushPromises()
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  mockRoute.query = {}
   isAdminRef.value = true
   mockLoad.mockResolvedValue(defaultSettings())
   mockSave.mockResolvedValue({ status: 'ok' })
   mockSetCookie.mockResolvedValue(undefined)
   mockGetCookieStatus.mockResolvedValue({ configured: false })
+  mockSetBilibiliCookie.mockResolvedValue({ status: 'ok' })
+  mockGetBilibiliCookieStatus.mockResolvedValue({ configured: false })
+  mockSetPutioToken.mockResolvedValue({ status: 'ok' })
+  mockGetPutioTokenStatus.mockResolvedValue({ configured: false })
+  mockSetTelegramBotToken.mockResolvedValue({ status: 'ok' })
+  mockGetTelegramBotTokenStatus.mockResolvedValue({ configured: false })
+  mockSetTelegramWebhookSecret.mockResolvedValue({ status: 'ok' })
+  mockGetTelegramWebhookSecretStatus.mockResolvedValue({ configured: false })
   mockElMessageBoxConfirm.mockResolvedValue(undefined)
+})
+
+// ---------------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------------
+
+describe('SettingsView — tabs', () => {
+  it('renders <el-tabs> with a nav item per visible tab', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('.el-tabs').exists()).toBe(true)
+    const labels = wrapper.findAll('.ag-settings-tabs .el-tabs__item').map((n) => n.text())
+    expect(labels).toEqual(['一般', '來源', 'BT 下載', 'Telegram'])
+  })
+
+  it('defaults to the 一般 tab', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { activeTab: string }
+    expect(vm.activeTab).toBe('general')
+    expect(wrapper.text()).toContain('路徑設定')
+  })
+
+  it('mounts with the tab from ?tab= active (deep link)', async () => {
+    mockRoute.query = { tab: 'bt' }
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { activeTab: string }
+    expect(vm.activeTab).toBe('bt')
+    expect(wrapper.text()).toContain('BT 下載設定')
+
+    const btNav = wrapper.find('.el-tabs__item[data-name="bt"]')
+    expect(btNav.classes()).toContain('is-active')
+  })
+
+  it('falls back to the first visible tab when ?tab= is unknown', async () => {
+    mockRoute.query = { tab: 'does-not-exist' }
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { activeTab: string }
+    expect(vm.activeTab).toBe('general')
+  })
+
+  it('switching tabs updates the ?tab= query param via router.replace', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await switchTab(wrapper, 'source')
+
+    expect(mockRouterReplace).toHaveBeenCalledWith({ path: '/settings', query: { tab: 'source' } })
+  })
+
+  it('admin-only tabs (一般 / 來源 / BT 下載) are hidden entirely for non-admin', async () => {
+    isAdminRef.value = false
+    const wrapper = mountView()
+    await flushPromises()
+
+    const labels = wrapper.findAll('.ag-settings-tabs .el-tabs__item').map((n) => n.text())
+    expect(labels).toEqual(['Telegram'])
+
+    const vm = wrapper.vm as unknown as { activeTab: string }
+    expect(vm.activeTab).toBe('telegram')
+  })
+
+  it('dirty state survives switching tabs (form data lives on the parent scope)', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      dirty: boolean
+      settings: { bangumi_dir: string } | null
+    }
+    if (vm.settings) vm.settings.bangumi_dir = '/edited/path'
+    await wrapper.vm.$nextTick()
+    expect(vm.dirty).toBe(true)
+
+    await switchTab(wrapper, 'bt')
+    expect(vm.dirty).toBe(true)
+    expect(vm.settings?.bangumi_dir).toBe('/edited/path')
+
+    await switchTab(wrapper, 'general')
+    expect(vm.dirty).toBe(true)
+    expect(vm.settings?.bangumi_dir).toBe('/edited/path')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -169,6 +351,7 @@ describe('SettingsView — cookie field rendering', () => {
   it('renders a password input for the cookie draft', async () => {
     const wrapper = mountView()
     await flushPromises()
+    await switchTab(wrapper, 'source')
 
     // The cookie input has type="password" — stub renders it with class el-input.
     // We look for the input whose placeholder matches.
@@ -183,6 +366,7 @@ describe('SettingsView — cookie field rendering', () => {
     mockGetCookieStatus.mockResolvedValue({ configured: false })
     const wrapper = mountView()
     await flushPromises()
+    await switchTab(wrapper, 'source')
 
     expect(wrapper.text()).toContain('尚未設定')
   })
@@ -191,6 +375,7 @@ describe('SettingsView — cookie field rendering', () => {
     mockGetCookieStatus.mockResolvedValue({ configured: true })
     const wrapper = mountView()
     await flushPromises()
+    await switchTab(wrapper, 'source')
 
     expect(wrapper.text()).toContain('目前已設定')
   })
@@ -198,6 +383,7 @@ describe('SettingsView — cookie field rendering', () => {
   it('displays the hint text about admin-only and no display after save', async () => {
     const wrapper = mountView()
     await flushPromises()
+    await switchTab(wrapper, 'source')
 
     expect(wrapper.text()).toContain('Cookie 只有管理員能修改')
   })
@@ -211,6 +397,7 @@ describe('SettingsView — cookie submit', () => {
   it('calls api.setCookie with the draft value on button click', async () => {
     const wrapper = mountView()
     await flushPromises()
+    await switchTab(wrapper, 'source')
 
     // Set a draft value into the cookie input.
     const inputs = wrapper.findAll('input.el-input')
@@ -221,10 +408,9 @@ describe('SettingsView — cookie submit', () => {
     await cookieInput!.setValue('BAHAMUT_SESSID=test123')
 
     // Find the save button labelled '儲存' and click it.
-    const buttons = wrapper.findAll('button')
-    const saveBtn = buttons.find((b) => b.text().includes('儲存'))
-    expect(saveBtn).toBeDefined()
-    await saveBtn!.trigger('click')
+    const saveBtn = findCookieRow(wrapper, '貼上完整 cookie 字串').find('button')
+    expect(saveBtn.exists()).toBe(true)
+    await saveBtn.trigger('click')
     await flushPromises()
 
     expect(mockSetCookie).toHaveBeenCalledWith('BAHAMUT_SESSID=test123')
@@ -233,6 +419,7 @@ describe('SettingsView — cookie submit', () => {
   it('clears the draft and sets status to configured after successful save', async () => {
     const wrapper = mountView()
     await flushPromises()
+    await switchTab(wrapper, 'source')
 
     const inputs = wrapper.findAll('input.el-input')
     const cookieInput = inputs.find(
@@ -240,8 +427,7 @@ describe('SettingsView — cookie submit', () => {
     )!
     await cookieInput.setValue('BAHAMUT=something')
 
-    const buttons = wrapper.findAll('button')
-    const saveBtn = buttons.find((b) => b.text().includes('儲存'))!
+    const saveBtn = findCookieRow(wrapper, '貼上完整 cookie 字串').find('button')
     await saveBtn.trigger('click')
     await flushPromises()
 
@@ -258,6 +444,7 @@ describe('SettingsView — cookie submit', () => {
 
     const wrapper = mountView()
     await flushPromises()
+    await switchTab(wrapper, 'source')
 
     const inputs = wrapper.findAll('input.el-input')
     const cookieInput = inputs.find(
@@ -265,8 +452,7 @@ describe('SettingsView — cookie submit', () => {
     )!
     await cookieInput.setValue('BAHAMUT=fail')
 
-    const buttons = wrapper.findAll('button')
-    const saveBtn = buttons.find((b) => b.text().includes('儲存'))!
+    const saveBtn = findCookieRow(wrapper, '貼上完整 cookie 字串').find('button')
     await saveBtn.trigger('click')
     await flushPromises()
 
@@ -325,10 +511,26 @@ describe('SettingsView — load on mount', () => {
     expect(mockGetCookieStatus).toHaveBeenCalledTimes(1)
   })
 
+  it('calls api.getBilibiliCookieStatus on mount', async () => {
+    mountView()
+    await flushPromises()
+
+    expect(mockGetBilibiliCookieStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('survives getBilibiliCookieStatus rejection without throwing', async () => {
+    mockGetBilibiliCookieStatus.mockRejectedValue(new Error('bilibili status fetch failed'))
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('form').exists()).toBe(true)
+  })
+
   it('survives getCookieStatus rejection without throwing', async () => {
     mockGetCookieStatus.mockRejectedValue(new Error('status fetch failed'))
     const wrapper = mountView()
     await flushPromises()
+    await switchTab(wrapper, 'source')
 
     // Form is still rendered; status badge defaults to false.
     expect(wrapper.find('form').exists()).toBe(true)
@@ -449,5 +651,41 @@ describe('SettingsView — dirty computed', () => {
     if (vm.settings) vm.settings.bangumi_dir = '/new/path'
     await wrapper.vm.$nextTick()
     expect(vm.dirty).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Bilibili concurrent parts field
+// ---------------------------------------------------------------------------
+
+describe('SettingsView — bilibili-concurrent-parts field', () => {
+  it('renders the Bilibili concurrent parts input with the loaded value', async () => {
+    mockLoad.mockResolvedValue({ ...defaultSettings(), 'bilibili-concurrent-parts': 3 })
+    const wrapper = mountView()
+    await flushPromises()
+    await switchTab(wrapper, 'source')
+
+    const inputs = wrapper.findAll('input.el-input-number')
+    const partsInput = inputs.find((i) => (i.element as HTMLInputElement).value === '3')
+    expect(partsInput).toBeDefined()
+  })
+
+  it('includes updated bilibili-concurrent-parts value when save is called', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      save: () => Promise<void>
+      settings: { 'bilibili-concurrent-parts': number } | null
+    }
+    if (vm.settings) vm.settings['bilibili-concurrent-parts'] = 4
+    await wrapper.vm.$nextTick()
+
+    await vm.save()
+    await flushPromises()
+
+    expect(mockSave).toHaveBeenCalledTimes(1)
+    const savedArg = mockSave.mock.calls[0][0] as Record<string, unknown>
+    expect(savedArg['bilibili-concurrent-parts']).toBe(4)
   })
 })

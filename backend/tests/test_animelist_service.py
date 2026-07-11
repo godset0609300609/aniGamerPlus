@@ -399,13 +399,14 @@ async def test_admin_removes_owner_entirely_clears_their_slice(tmp_path: pathlib
 
 
 # ---------------------------------------------------------------------------
-# Feature A: non-admin GET returns all entries with owner info
+# fix #15: list_entries is scoped by role — admin sees everyone,
+# downloader sees only their own entries.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_non_admin_list_entries_returns_all_users(tmp_path: pathlib.Path) -> None:
-    """After Feature A: non-admin list_entries returns all entries, not just own."""
+async def test_downloader_list_entries_scoped_to_own(tmp_path: pathlib.Path) -> None:
+    """Downloader role must only see their own entries, not other users' watchlists."""
     service, entry_repo, user_repo, db = _make_service_with_repos(tmp_path)
     try:
         user_repo.upsert(id='admin1', username='Alice', avatar_url=None, role='admin')
@@ -417,7 +418,28 @@ async def test_non_admin_list_entries_returns_all_users(tmp_path: pathlib.Path) 
         downloader = _make_user_row('dl1', 'downloader')
         entries = await service.list_entries(downloader)
 
-        # Non-admin should now see all entries.
+        # Only the downloader's own entry — admin1's sn=10 must not leak.
+        assert [e.sn for e in entries] == [20]
+        assert entries[0].owner_id == 'dl1'
+        assert entries[0].owner_username == 'Bob'
+    finally:
+        db.dispose()
+
+
+@pytest.mark.anyio
+async def test_admin_list_entries_returns_all_users(tmp_path: pathlib.Path) -> None:
+    """Admin role must still see every user's entries, each annotated with owner info."""
+    service, entry_repo, user_repo, db = _make_service_with_repos(tmp_path)
+    try:
+        user_repo.upsert(id='admin1', username='Alice', avatar_url=None, role='admin')
+        user_repo.upsert(id='dl1', username='Bob', avatar_url=None, role='downloader')
+
+        entry_repo.replace_all_for_user('admin1', [AnimeListEntryDTO(sn=10)])
+        entry_repo.replace_all_for_user('dl1', [AnimeListEntryDTO(sn=20)])
+
+        admin = _make_user_row('admin1', 'admin')
+        entries = await service.list_entries(admin)
+
         assert len(entries) == 2
         sns = {e.sn for e in entries}
         assert sns == {10, 20}
@@ -426,6 +448,85 @@ async def test_non_admin_list_entries_returns_all_users(tmp_path: pathlib.Path) 
         for e in entries:
             assert e.owner_id is not None
             assert e.owner_username is not None
+    finally:
+        db.dispose()
+
+
+@pytest.mark.anyio
+async def test_downloader_sees_duplicate_tooltip_across_owners(tmp_path: pathlib.Path) -> None:
+    """A downloader's own duplicate entry must still resolve the cross-owner tooltip
+    fields (bangumi name + owner username of the original) even though the original
+    entry itself — owned by another user — is excluded from the returned list."""
+    service, entry_repo, user_repo, db = _make_service_with_repos(tmp_path)
+    try:
+        user_repo.upsert(id='admin1', username='Alice', avatar_url=None, role='admin')
+        user_repo.upsert(id='dl1', username='Bob', avatar_url=None, role='downloader')
+
+        entry_repo.replace_all_for_user('admin1', [AnimeListEntryDTO(sn=100, anime_name='進擊的巨人')])
+        source_id = entry_repo.list_for_user('admin1')[0].id
+        assert source_id is not None
+
+        entry_repo.replace_all_for_user(
+            'dl1',
+            [AnimeListEntryDTO(sn=200, enabled=False, anime_name='進擊的巨人', duplicate_of_entry_id=source_id)],
+        )
+
+        downloader = _make_user_row('dl1', 'downloader')
+        entries = await service.list_entries(downloader)
+
+        # Only dl1's own entry is returned — admin1's sn=100 is not leaked.
+        assert [e.sn for e in entries] == [200]
+        assert entries[0].duplicate_of_bangumi_name == '進擊的巨人'
+        assert entries[0].duplicate_of_owner_username == 'Alice'
+    finally:
+        db.dispose()
+
+
+# ---------------------------------------------------------------------------
+# bilingual round-trip through the RBAC-aware API layer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_bilingual_round_trips_through_replace_and_list(tmp_path: pathlib.Path) -> None:
+    """bilingual set via replace_entries must come back through list_entries.
+
+    Exercises the service-layer DTO<->pydantic mapping (_entry_to_dto /
+    _dto_to_entry), not just the repository, since that's the actual path
+    the /api/anime-list endpoints use.
+    """
+    service, entry_repo, user_repo, db = _make_service_with_repos(tmp_path)
+    try:
+        user_repo.upsert(id='u1', username='User1', avatar_url=None, role='downloader')
+        user = _make_user_row('u1', 'downloader')
+
+        entry = AnimeListEntry(
+            sn=555, enabled=True, mode=None, tag='', season=1, comment='', bilingual=True, owner_id='u1'
+        )
+        await service.replace_entries(user, [entry])
+
+        entries = await service.list_entries(user)
+        assert len(entries) == 1
+        assert entries[0].sn == 555
+        assert entries[0].bilingual is True
+    finally:
+        db.dispose()
+
+
+@pytest.mark.anyio
+async def test_bilingual_defaults_to_false_through_service(tmp_path: pathlib.Path) -> None:
+    """An entry saved without bilingual set must round-trip as False."""
+    service, entry_repo, user_repo, db = _make_service_with_repos(tmp_path)
+    try:
+        user_repo.upsert(id='u1', username='User1', avatar_url=None, role='downloader')
+        user = _make_user_row('u1', 'downloader')
+
+        entry = AnimeListEntry(sn=556, enabled=True, mode=None, tag='', season=1, comment='', owner_id='u1')
+        await service.replace_entries(user, [entry])
+
+        entries = await service.list_entries(user)
+        assert len(entries) == 1
+        assert entries[0].bilingual is False
     finally:
         db.dispose()
 

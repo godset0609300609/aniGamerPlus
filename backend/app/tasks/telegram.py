@@ -21,12 +21,17 @@ from ..services.telegram_client import (
     TelegramChatNotFoundError,
 )
 from ..services.telegram_client_cache import resolve_telegram_client
+from ..services.telegram_outbound_limiter import get_telegram_outbound_limiter
 
 if T.TYPE_CHECKING:
     from ..core import Container
     from ..services.telegram_notifier import TelegramNotifier
 
 _setup.init_broker()
+
+_BT_EVENTS = frozenset(
+    {'bt_dispatched', 'bt_status_update', 'bt_landing_progress', 'bt_landed', 'bt_failed'}
+)
 
 
 def _retry_when_429(retries_so_far: int, exc: Exception) -> bool:
@@ -57,6 +62,7 @@ async def send_message_actor(
     client = resolve_telegram_client(bot_token)
     if client is None:
         return None
+    await get_telegram_outbound_limiter().acquire(chat_id)
     return await client.send_message(
         chat_id,
         text,
@@ -84,6 +90,7 @@ async def edit_message_actor(
     client = resolve_telegram_client(bot_token)
     if client is None:
         return
+    await get_telegram_outbound_limiter().acquire(chat_id)
     try:
         await client.edit_message_text(chat_id, message_id, text, reply_markup=reply_markup)
     except TelegramApiError as exc:
@@ -108,6 +115,7 @@ async def delete_message_actor(
     client = resolve_telegram_client(bot_token)
     if client is None:
         return
+    await get_telegram_outbound_limiter().acquire(chat_id)
     try:
         await client.delete_message(chat_id, message_id)
     except TelegramApiError as exc:
@@ -120,12 +128,18 @@ async def delete_message_actor(
 
 @dramatiq.actor(queue_name='telegram', max_retries=0)
 async def notify_event_actor(**kwargs: T.Any) -> None:
-    """Dispatch a download lifecycle event through TelegramNotifier.
+    """Dispatch a download (or BT downloader) lifecycle event through TelegramNotifier.
 
     Decouples the sync worker thread from the async notifier — the worker
     calls ``notify_event_actor.send_with_options(kwargs={...})`` and returns
     immediately; this actor runs in the dramatiq worker process where an
     asyncio event loop is already running via the AsyncIO middleware.
+
+    ``event`` picks the payload shape: 'bt_dispatched' / 'bt_status_update' /
+    'bt_landing_progress' / 'bt_landed' / 'bt_failed' carry BT-specific
+    kwargs (title/feed_name/... — no owner_id/sn) and route to
+    ``notify_bt_event``; everything else is a per-download owner event
+    routed to ``notify_download_event``.
     """
     from ..core import build_container
 
@@ -133,7 +147,10 @@ async def notify_event_actor(**kwargs: T.Any) -> None:
     notifier = _build_notifier(container)
     if notifier is None:
         return
-    await notifier.notify_download_event(**kwargs)
+    if kwargs.get('event') in _BT_EVENTS:
+        await notifier.notify_bt_event(**kwargs)
+    else:
+        await notifier.notify_download_event(**kwargs)
 
 
 def _build_notifier(container: Container) -> TelegramNotifier | None:
@@ -153,5 +170,6 @@ def _build_notifier(container: Container) -> TelegramNotifier | None:
         user_repo=container.user_repo,
         settings_provider=_settings_provider,
         live_messages=container.live_messages,
+        bt_live_messages=container.bt_live_messages,
         logger=container.logger,
     )

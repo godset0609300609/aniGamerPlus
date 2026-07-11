@@ -891,6 +891,34 @@ class TestUvicornWsNoiseFilter:
         )
         assert self.f.filter(record) is False
 
+    def test_connection_closed_error_from_asyncio_is_filtered(self) -> None:
+        """asyncio's 'exception in shielded future' ConnectionClosedError must be dropped.
+
+        This is the exact production symptom: uvicorn's own error path
+        doesn't log this one — asyncio's default exception handler does,
+        under the plain ``asyncio`` logger name, when the websockets
+        library's keepalive-ping task (wrapped in ``asyncio.shield``) never
+        gets its result retrieved before the connection closes:
+
+            ERROR asyncio: ConnectionClosedError exception in shielded future
+            Close(code=<CloseCode.INTERNAL_ERROR: 1011>, reason='keepalive ping timeout')
+        """
+        record = _make_record(
+            name='asyncio',
+            msg='ConnectionClosedError exception in shielded future',
+            level=logging.ERROR,
+        )
+        assert self.f.filter(record) is False
+
+    def test_asyncio_real_error_still_passes(self) -> None:
+        """asyncio record unrelated to WS keepalive noise must NOT be dropped."""
+        record = _make_record(
+            name='asyncio',
+            msg='Task was destroyed but it is pending!',
+            level=logging.ERROR,
+        )
+        assert self.f.filter(record) is True
+
 
 # ---------------------------------------------------------------------------
 # _UvicornWsNoiseFilter integration: ring buffer drops WS noise end-to-end
@@ -943,6 +971,34 @@ def test_uvicorn_ws_noise_real_error_reaches_ring_buffer(
     )
 
 
+def test_asyncio_shielded_future_noise_dropped_from_ring_buffer(
+    _reset_ring_buffer_singleton: None,
+) -> None:
+    """asyncio ERROR 'ConnectionClosedError exception in shielded future' must not appear.
+
+    Reproduces the production symptom verbatim: the record is logged under
+    the plain ``asyncio`` logger name (not ``uvicorn.error``), so this
+    pins the fix that widened ``_UvicornWsNoiseFilter`` beyond the two
+    uvicorn logger names.
+    """
+    cfg = _ring_buffer_only_cfg()
+    cfg['loggers'] = {
+        'asyncio': {
+            'level': 'INFO',
+            'handlers': ['ring_buffer'],
+            'propagate': False,
+        }
+    }
+    logging.config.dictConfig(cfg)
+
+    logging.getLogger('asyncio').error('ConnectionClosedError exception in shielded future')
+
+    snap = _lc.get_ring_buffer_handler().snapshot()
+    assert not any('exception in shielded future' in e['message'] for e in snap), (
+        'asyncio-logged WS keepalive-timeout noise must be dropped from the ring buffer'
+    )
+
+
 # ---------------------------------------------------------------------------
 # push_parsed_entry: WS noise filter via tailed log entries
 # ---------------------------------------------------------------------------
@@ -962,3 +1018,127 @@ def test_push_parsed_entry_drops_ws_noise_by_name_message(
     )
     snap = handler.snapshot()
     assert not any('1011' in e['message'] for e in snap), 'push_parsed_entry must drop uvicorn.error WS noise entries'
+
+
+# ---------------------------------------------------------------------------
+# DailyLogFileHandler — size-based rollover (fix #30)
+# ---------------------------------------------------------------------------
+
+
+def _daily_handler(tmp_path: pathlib.Path, backup_count: int = 7) -> _lc.DailyLogFileHandler:
+    handler = _lc.DailyLogFileHandler(tmp_path, backupCount=backup_count, encoding='utf-8')
+    handler.setFormatter(logging.Formatter(fmt='%(message)s'))
+    return handler
+
+
+def test_emit_writes_plain_dated_file_below_cap(tmp_path: pathlib.Path) -> None:
+    """Below the size cap, emit() keeps writing to the plain ``{date}.log`` file."""
+    handler = _daily_handler(tmp_path)
+    handler.emit(_make_record(msg='hello'))
+    handler.emit(_make_record(msg='world'))
+
+    dated_files = sorted(p.name for p in tmp_path.glob('*.log'))
+    assert len(dated_files) == 1
+    assert not dated_files[0][10:].startswith('.0'), 'suffix-0 file must be plain {date}.log, no ".0" in the name'
+
+    today = _lc.datetime.datetime.now().strftime('%Y-%m-%d')
+    assert dated_files[0] == f'{today}.log'
+
+
+def test_emit_rolls_over_to_suffixed_file_once_cap_exceeded(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the active file's size >= _MAX_BYTES, the next emit() lands in ``{date}.1.log``."""
+    handler = _daily_handler(tmp_path)
+    monkeypatch.setattr(_lc.DailyLogFileHandler, '_MAX_BYTES', 10)
+
+    today = _lc.datetime.datetime.now().strftime('%Y-%m-%d')
+    base_path = tmp_path / f'{today}.log'
+    rotated_path = tmp_path / f'{today}.1.log'
+
+    # First emit: writes to the plain file; the write itself already exceeds
+    # the tiny 10-byte cap, so the *next* emit rolls over.
+    handler.emit(_make_record(msg='this line alone is > 10 bytes'))
+    assert base_path.exists()
+    assert not rotated_path.exists()
+
+    # Second emit: base file was already >= cap after the first write, so
+    # this record goes to the suffix-1 file instead.
+    handler.emit(_make_record(msg='second line'))
+    assert rotated_path.exists()
+    assert 'second line' in rotated_path.read_text(encoding='utf-8')
+    assert 'second line' not in base_path.read_text(encoding='utf-8')
+
+
+def test_emit_keeps_rolling_over_across_multiple_caps(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated overflow keeps incrementing the suffix: .1, .2, .3, ..."""
+    handler = _daily_handler(tmp_path)
+    monkeypatch.setattr(_lc.DailyLogFileHandler, '_MAX_BYTES', 5)
+
+    for i in range(5):
+        handler.emit(_make_record(msg=f'line-{i}-padded-to-exceed-cap'))
+
+    today = _lc.datetime.datetime.now().strftime('%Y-%m-%d')
+    dated_files = {p.name for p in tmp_path.glob(f'{today}*.log')}
+    # 5 emits, each individually over the 5-byte cap, so every emit after the
+    # first rolls to a brand-new suffix: base, .1, .2, .3, .4
+    expected = {f'{today}.log'} | {f'{today}.{n}.log' for n in range(1, 5)}
+    assert dated_files == expected
+
+
+def test_resolve_suffix_resumes_after_restart(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A freshly constructed handler (simulating a process restart) must
+    resume appending after the last already-full rotated file rather than
+    overwriting it."""
+    monkeypatch.setattr(_lc.DailyLogFileHandler, '_MAX_BYTES', 5)
+    today = _lc.datetime.datetime.now().date()
+
+    stem = today.strftime('%Y-%m-%d')
+    (tmp_path / f'{stem}.log').write_text('x' * 20, encoding='utf-8')
+    (tmp_path / f'{stem}.1.log').write_text('x' * 20, encoding='utf-8')
+
+    # New handler instance, as if the process had restarted mid-day.
+    fresh_handler = _daily_handler(tmp_path)
+    assert fresh_handler._resolve_suffix(today) == 2
+
+
+def test_prune_old_removes_stale_suffixed_files(tmp_path: pathlib.Path) -> None:
+    """_prune_old must delete size-rotated suffix files just like the plain ones."""
+    handler = _daily_handler(tmp_path, backup_count=3)
+
+    today = _lc.datetime.datetime.now().date()
+    stale_day = today - _lc.datetime.timedelta(days=10)
+    fresh_day = today - _lc.datetime.timedelta(days=1)
+
+    stale_stem = stale_day.strftime('%Y-%m-%d')
+    fresh_stem = fresh_day.strftime('%Y-%m-%d')
+
+    stale_base = tmp_path / f'{stale_stem}.log'
+    stale_rotated = tmp_path / f'{stale_stem}.1.log'
+    stale_rotated_2 = tmp_path / f'{stale_stem}.2.log'
+    fresh_base = tmp_path / f'{fresh_stem}.log'
+    fresh_rotated = tmp_path / f'{fresh_stem}.1.log'
+
+    for p in (stale_base, stale_rotated, stale_rotated_2, fresh_base, fresh_rotated):
+        p.write_text('data', encoding='utf-8')
+
+    handler._prune_old(today)
+
+    assert not stale_base.exists(), 'stale plain file must be pruned'
+    assert not stale_rotated.exists(), 'stale suffix-1 file must be pruned'
+    assert not stale_rotated_2.exists(), 'stale suffix-2 file must be pruned'
+    assert fresh_base.exists(), 'fresh plain file must survive pruning'
+    assert fresh_rotated.exists(), 'fresh suffix-1 file must survive pruning'
+
+
+def test_prune_old_ignores_non_dated_files(tmp_path: pathlib.Path) -> None:
+    """Non-dated filenames (e.g. a stray README) must never be touched by pruning."""
+    handler = _daily_handler(tmp_path, backup_count=1)
+    stray = tmp_path / 'README.md'
+    stray.write_text('keep me', encoding='utf-8')
+
+    handler._prune_old(_lc.datetime.datetime.now().date())
+
+    assert stray.exists()

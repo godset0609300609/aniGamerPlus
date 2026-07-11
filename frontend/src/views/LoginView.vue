@@ -9,7 +9,7 @@ function loginWithDiscord(): void {
     <el-card class="login-card">
       <template #header>
         <div class="login-title">
-          動畫管家
+          影片管家
         </div>
       </template>
       <el-button
@@ -30,11 +30,14 @@ function loginWithDiscord(): void {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
+  padding: 16px;
+  box-sizing: border-box;
   background-color: var(--el-bg-color-page, #f5f5f5);
 }
 
 .login-card {
   width: 360px;
+  max-width: 100%;
   text-align: center;
 }
 

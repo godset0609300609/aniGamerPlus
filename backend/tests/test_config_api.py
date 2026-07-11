@@ -128,7 +128,7 @@ def test_put_config_round_trips_through_pydantic(
 def test_get_config_includes_telegram_subobject(
     client: fastapi.testclient.TestClient,
 ) -> None:
-    """GET /config response must include a 'telegram' sub-object with all expected fields."""
+    """GET /config response must include a 'telegram' sub-object with the public fields."""
     r = client.get('/api/config')
     assert r.status_code == 200
     body = r.json()
@@ -137,8 +137,6 @@ def test_get_config_includes_telegram_subobject(
     tg = body['telegram']
     for field in (
         'enabled',
-        'bot_token',
-        'webhook_secret',
         'public_url',
         'notify_on',
         'admin_broadcast',
@@ -147,11 +145,47 @@ def test_get_config_includes_telegram_subobject(
         assert field in tg, f'telegram.{field} missing from GET /config response'
 
 
-def test_put_config_telegram_round_trips(
+def test_get_config_never_leaks_telegram_secrets(
     client: fastapi.testclient.TestClient,
     fake_container: FakeContainer,
 ) -> None:
-    """PUT /config with telegram payload persists the telegram fields."""
+    """GET /config must never echo back bot_token / webhook_secret (fix #1 CRITICAL).
+
+    Seeds real secret values on disk, then asserts neither the structured
+    'telegram' sub-object nor the raw response body contains them.
+    """
+    current = fake_container.settings_repo.load()
+    updated_telegram = current.telegram.model_copy(
+        update={'bot_token': 'super-secret-bot-token', 'webhook_secret': 'super-secret-webhook'}
+    )
+    fake_container.settings_repo.save(current.model_copy(update={'telegram': updated_telegram}))
+
+    r = client.get('/api/config')
+    assert r.status_code == 200
+
+    assert 'bot_token' not in r.json()['telegram']
+    assert 'webhook_secret' not in r.json()['telegram']
+    assert 'super-secret-bot-token' not in r.text
+    assert 'super-secret-webhook' not in r.text
+
+
+def test_put_config_telegram_round_trips_public_fields_only(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """PUT /config with a telegram payload persists the public fields.
+
+    bot_token / webhook_secret are not part of the public WebSettings schema
+    (extra keys are ignored), so sending them here must NOT change the
+    secrets already on disk — those can only be set via the dedicated
+    write-only endpoints.
+    """
+    current = fake_container.settings_repo.load()
+    seeded_telegram = current.telegram.model_copy(
+        update={'bot_token': 'preexisting-token', 'webhook_secret': 'preexisting-secret'}
+    )
+    fake_container.settings_repo.save(current.model_copy(update={'telegram': seeded_telegram}))
+
     payload = {
         'bangumi_dir': '',
         'temp_dir': '',
@@ -181,8 +215,10 @@ def test_put_config_telegram_round_trips(
         'parse_cd': 3,
         'telegram': {
             'enabled': True,
-            'bot_token': 'test_bot_token_12345',
-            'webhook_secret': 'deadsecret',
+            # These are ignored by TelegramSettingsPublic (extra='ignore') —
+            # PUT /config must never be able to set secrets.
+            'bot_token': 'attacker-supplied-token',
+            'webhook_secret': 'attacker-supplied-secret',
             'public_url': 'https://example.com',
             'notify_on': ['completed'],
             'admin_broadcast': False,
@@ -196,12 +232,14 @@ def test_put_config_telegram_round_trips(
 
     persisted = fake_container.settings_repo.load()
     assert persisted.telegram.enabled is True
-    assert persisted.telegram.bot_token == 'test_bot_token_12345'
-    assert persisted.telegram.webhook_secret == 'deadsecret'
     assert persisted.telegram.public_url == 'https://example.com'
     assert persisted.telegram.notify_on == ['completed']
     assert persisted.telegram.admin_broadcast is False
     assert persisted.telegram.rate_limit_per_minute == 60
+    # Secrets are untouched by the public PUT — not overwritten by the
+    # attacker-supplied values, and not wiped to empty either.
+    assert persisted.telegram.bot_token == 'preexisting-token'
+    assert persisted.telegram.webhook_secret == 'preexisting-secret'
 
 
 def test_put_config_rejects_invalid_resolution(
@@ -469,3 +507,315 @@ def test_put_config_accepts_rate_limit_150(
     }
     r = client.put('/api/config', json=payload)
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Bilibili cookie endpoints
+# ---------------------------------------------------------------------------
+
+
+def test_put_bilibili_cookie_admin_writes(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """Admin PUT /config/bilibili-cookie → 200 and cookie file written in Netscape format."""
+    from app.api.config_api import get_bilibili_cookie_repo
+
+    client.app.dependency_overrides[get_bilibili_cookie_repo] = lambda: fake_container.bilibili_cookie_repo  # type: ignore[attr-defined]
+
+    cookie_value = 'SESSDATA=abc123; buvid3=xyz'
+    r = client.put('/api/config/bilibili-cookie', json={'cookie': cookie_value})
+    assert r.status_code == 200
+    assert r.json() == {'status': 'ok'}
+
+    assert fake_container.bilibili_cookie_repo.exists_and_nonempty()
+    content = fake_container.paths.bilibili_cookie_path.read_text(encoding='utf-8')
+    assert 'SESSDATA' in content
+    assert 'Netscape' in content
+
+
+def test_put_bilibili_cookie_downloader_forbidden(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """Downloader PUT /config/bilibili-cookie → 403."""
+    from app.api.config_api import get_bilibili_cookie_repo
+
+    downloader_client = _make_downloader_client(client)
+    downloader_client.app.dependency_overrides[get_bilibili_cookie_repo] = lambda: fake_container.bilibili_cookie_repo  # type: ignore[attr-defined]
+
+    r = downloader_client.put('/api/config/bilibili-cookie', json={'cookie': 'SESSDATA=x'})
+    assert r.status_code == 403
+
+
+def test_put_bilibili_cookie_requires_non_empty(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """Empty cookie string → 422 (min_length=1)."""
+    r = client.put('/api/config/bilibili-cookie', json={'cookie': ''})
+    assert r.status_code == 422
+
+
+def test_bilibili_cookie_status_returns_configured_true(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """GET /config/bilibili-cookie/status returns configured=true when file exists."""
+    from app.api.config_api import get_bilibili_cookie_repo
+
+    client.app.dependency_overrides[get_bilibili_cookie_repo] = lambda: fake_container.bilibili_cookie_repo  # type: ignore[attr-defined]
+
+    fake_container.bilibili_cookie_repo.write('SESSDATA=hello')
+
+    r = client.get('/api/config/bilibili-cookie/status')
+    assert r.status_code == 200
+    assert r.json() == {'configured': True}
+
+
+def test_bilibili_cookie_status_returns_configured_false(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """GET /config/bilibili-cookie/status returns configured=false when file is absent."""
+    from app.api.config_api import get_bilibili_cookie_repo
+
+    client.app.dependency_overrides[get_bilibili_cookie_repo] = lambda: fake_container.bilibili_cookie_repo  # type: ignore[attr-defined]
+
+    cookie_path = fake_container.paths.bilibili_cookie_path
+    if cookie_path.exists():
+        cookie_path.unlink()
+
+    r = client.get('/api/config/bilibili-cookie/status')
+    assert r.status_code == 200
+    assert r.json() == {'configured': False}
+
+
+# ---------------------------------------------------------------------------
+# Put.io token endpoints
+# ---------------------------------------------------------------------------
+
+
+def test_put_putio_token_admin_writes(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """Admin PUT /config/putio-token -> 200 and token file written to disk, never echoed back."""
+    from app.api.config_api import get_putio_token_repo
+
+    client.app.dependency_overrides[get_putio_token_repo] = lambda: fake_container.putio_token_repo  # type: ignore[attr-defined]
+
+    r = client.put('/api/config/putio-token', json={'token': 'putio-oauth-token-abc123'})
+    assert r.status_code == 200
+    assert r.json() == {'status': 'ok'}
+    assert 'token' not in r.json()
+
+    assert fake_container.putio_token_repo.exists_and_nonempty()
+    assert fake_container.putio_token_repo.read() == 'putio-oauth-token-abc123'
+
+
+def test_put_putio_token_downloader_forbidden(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """Downloader PUT /config/putio-token -> 403."""
+    from app.api.config_api import get_putio_token_repo
+
+    downloader_client = _make_downloader_client(client)
+    downloader_client.app.dependency_overrides[get_putio_token_repo] = lambda: fake_container.putio_token_repo  # type: ignore[attr-defined]
+
+    r = downloader_client.put('/api/config/putio-token', json={'token': 'x'})
+    assert r.status_code == 403
+
+
+def test_put_putio_token_requires_non_empty(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """Empty token string -> 422 (min_length=1)."""
+    r = client.put('/api/config/putio-token', json={'token': ''})
+    assert r.status_code == 422
+
+
+def test_putio_token_status_returns_configured_true(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """GET /config/putio-token/status returns configured=true once a token has been written."""
+    from app.api.config_api import get_putio_token_repo
+
+    client.app.dependency_overrides[get_putio_token_repo] = lambda: fake_container.putio_token_repo  # type: ignore[attr-defined]
+
+    fake_container.putio_token_repo.write('some-token')
+
+    r = client.get('/api/config/putio-token/status')
+    assert r.status_code == 200
+    assert r.json() == {'configured': True}
+
+
+def test_putio_token_status_returns_configured_false(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """GET /config/putio-token/status returns configured=false when the file is absent."""
+    from app.api.config_api import get_putio_token_repo
+
+    client.app.dependency_overrides[get_putio_token_repo] = lambda: fake_container.putio_token_repo  # type: ignore[attr-defined]
+
+    token_path = fake_container.putio_token_repo.path
+    if token_path.exists():
+        token_path.unlink()
+
+    r = client.get('/api/config/putio-token/status')
+    assert r.status_code == 200
+    assert r.json() == {'configured': False}
+
+
+def test_putio_token_status_downloader_forbidden(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """Downloader GET /config/putio-token/status -> 403."""
+    from app.api.config_api import get_putio_token_repo
+
+    downloader_client = _make_downloader_client(client)
+    downloader_client.app.dependency_overrides[get_putio_token_repo] = lambda: fake_container.putio_token_repo  # type: ignore[attr-defined]
+
+    r = downloader_client.get('/api/config/putio-token/status')
+    assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Telegram bot token endpoint (write-only, fix #1 CRITICAL)
+# ---------------------------------------------------------------------------
+
+
+def test_put_telegram_bot_token_admin_writes(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """Admin PUT /config/telegram-bot-token -> 200; token persisted, never echoed back."""
+    r = client.put('/api/config/telegram-bot-token', json={'bot_token': '123456:ABC-DEF'})
+    assert r.status_code == 200
+    assert r.json() == {'status': 'ok'}
+    assert 'bot_token' not in r.json()
+
+    persisted = fake_container.settings_repo.load()
+    assert persisted.telegram.bot_token == '123456:ABC-DEF'
+
+
+def test_put_telegram_bot_token_downloader_forbidden(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """Downloader PUT /config/telegram-bot-token -> 403."""
+    downloader_client = _make_downloader_client(client)
+    r = downloader_client.put('/api/config/telegram-bot-token', json={'bot_token': 'x'})
+    assert r.status_code == 403
+
+
+def test_put_telegram_bot_token_requires_non_empty(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """Empty bot_token -> 422 (min_length=1)."""
+    r = client.put('/api/config/telegram-bot-token', json={'bot_token': ''})
+    assert r.status_code == 422
+
+
+def test_telegram_bot_token_status_returns_configured_true(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """GET /config/telegram-bot-token/status returns configured=true once a token is set."""
+    current = fake_container.settings_repo.load()
+    updated = current.model_copy(update={'telegram': current.telegram.model_copy(update={'bot_token': 'tok'})})
+    fake_container.settings_repo.save(updated)
+
+    r = client.get('/api/config/telegram-bot-token/status')
+    assert r.status_code == 200
+    assert r.json() == {'configured': True}
+
+
+def test_telegram_bot_token_status_returns_configured_false(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """GET /config/telegram-bot-token/status returns configured=false by default."""
+    r = client.get('/api/config/telegram-bot-token/status')
+    assert r.status_code == 200
+    assert r.json() == {'configured': False}
+
+
+def test_telegram_bot_token_status_downloader_forbidden(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """Downloader GET /config/telegram-bot-token/status -> 403."""
+    downloader_client = _make_downloader_client(client)
+    r = downloader_client.get('/api/config/telegram-bot-token/status')
+    assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Telegram webhook secret endpoint (write-only, fix #1 CRITICAL)
+# ---------------------------------------------------------------------------
+
+
+def test_put_telegram_webhook_secret_admin_writes(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """Admin PUT /config/telegram-webhook-secret -> 200; persisted, never echoed back."""
+    r = client.put('/api/config/telegram-webhook-secret', json={'webhook_secret': 'deadbeef'})
+    assert r.status_code == 200
+    assert r.json() == {'status': 'ok'}
+    assert 'webhook_secret' not in r.json()
+
+    persisted = fake_container.settings_repo.load()
+    assert persisted.telegram.webhook_secret == 'deadbeef'
+
+
+def test_put_telegram_webhook_secret_downloader_forbidden(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """Downloader PUT /config/telegram-webhook-secret -> 403."""
+    downloader_client = _make_downloader_client(client)
+    r = downloader_client.put('/api/config/telegram-webhook-secret', json={'webhook_secret': 'x'})
+    assert r.status_code == 403
+
+
+def test_put_telegram_webhook_secret_requires_non_empty(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """Empty webhook_secret -> 422 (min_length=1)."""
+    r = client.put('/api/config/telegram-webhook-secret', json={'webhook_secret': ''})
+    assert r.status_code == 422
+
+
+def test_telegram_webhook_secret_status_returns_configured_true(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+) -> None:
+    """GET /config/telegram-webhook-secret/status returns configured=true once set."""
+    current = fake_container.settings_repo.load()
+    updated = current.model_copy(
+        update={'telegram': current.telegram.model_copy(update={'webhook_secret': 'sec'})}
+    )
+    fake_container.settings_repo.save(updated)
+
+    r = client.get('/api/config/telegram-webhook-secret/status')
+    assert r.status_code == 200
+    assert r.json() == {'configured': True}
+
+
+def test_telegram_webhook_secret_status_returns_configured_false(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """GET /config/telegram-webhook-secret/status returns configured=false by default."""
+    r = client.get('/api/config/telegram-webhook-secret/status')
+    assert r.status_code == 200
+    assert r.json() == {'configured': False}
+
+
+def test_telegram_webhook_secret_status_downloader_forbidden(
+    client: fastapi.testclient.TestClient,
+) -> None:
+    """Downloader GET /config/telegram-webhook-secret/status -> 403."""
+    downloader_client = _make_downloader_client(client)
+    r = downloader_client.get('/api/config/telegram-webhook-secret/status')
+    assert r.status_code == 403

@@ -769,60 +769,10 @@ async def test_task_service_cancel_no_progress_service_non_admin_gets_404(
     )
     # No progress_service wired + non-admin -> 404
     fake_runner = types.SimpleNamespace(run=lambda *a, **kw: None)
-    service = TaskService(repo, fake_runner, scheduler_proxy=None)  # type: ignore[arg-type]
+    service = TaskService(repo, fake_runner)  # type: ignore[arg-type]
     with pytest.raises(fastapi.HTTPException) as exc_info:
         await service.cancel_task(999, user)
     assert exc_info.value.status_code == 404
-
-
-@pytest.mark.anyio
-async def test_task_service_cancel_proxy_exception_becomes_503(
-    tmp_path: pathlib.Path,
-) -> None:
-    """cancel_task proxy raises generic Exception -> 503."""
-    import datetime
-
-    import fastapi
-
-    from app.downloader.progress import ProgressBus
-    from app.logging_ import Logger
-    from app.persistence.paths import WorkspacePaths
-    from app.persistence.settings_repo import SettingsRepository
-    from app.persistence.user_repo import UserRow
-    from app.services.progress_service import ProgressService
-    from app.services.task_service import TaskService
-
-    paths = WorkspacePaths.detect(working_dir=tmp_path)
-    logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
-    repo = SettingsRepository(paths, logger)
-
-    bus = ProgressBus()
-    user = UserRow(
-        id='admin-1',
-        username='admin',
-        avatar_url=None,
-        role='admin',
-        created_at=datetime.datetime.now(datetime.UTC),
-        last_login_at=None,
-    )
-    bus.start(777, 'ep.mp4', status='正在下載', owner_id=user.id)
-
-    class _BadProxy:
-        def is_scheduler_up(self) -> bool:
-            return True
-
-        async def cancel_task(self, sn: int) -> None:
-            raise RuntimeError('proxy exploded')
-
-    progress_service = ProgressService(bus)
-    fake_runner = types.SimpleNamespace(run=lambda *a, **kw: None)
-    service = TaskService(  # type: ignore[arg-type]
-        repo, fake_runner, scheduler_proxy=_BadProxy(), progress_service=progress_service
-    )
-
-    with pytest.raises(fastapi.HTTPException) as exc_info:
-        await service.cancel_task(777, user)
-    assert exc_info.value.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -882,7 +832,6 @@ def test_build_task_service_constructs_service(tmp_path: pathlib.Path) -> None:
         settings_repo=repo,
         manual_runner=types.SimpleNamespace(run=lambda *a, **kw: None),
         progress_bus=bus,
-        # No scheduler_proxy attr — tests getattr fallback
     )
     svc = _build_task_service(container)  # type: ignore[arg-type]
     assert isinstance(svc, TaskService)
@@ -892,7 +841,7 @@ def test_build_task_service_constructs_service(tmp_path: pathlib.Path) -> None:
 async def test_task_service_cancel_admin_no_progress_service_fallback(
     tmp_path: pathlib.Path,
 ) -> None:
-    """cancel_task with no progress_service and admin user reaches fallback (no proxy -> returns)."""
+    """cancel_task with no progress_service and admin user reaches fallback (returns normally)."""
     import datetime
 
     from app.logging_ import Logger
@@ -913,8 +862,8 @@ async def test_task_service_cancel_admin_no_progress_service_fallback(
         created_at=datetime.datetime.now(datetime.UTC),
         last_login_at=None,
     )
-    # Admin + no progress_service + no proxy: falls through to in-process fallback (returns normally)
+    # Admin + no progress_service: falls through to in-process fallback (returns normally)
     fake_runner = types.SimpleNamespace(run=lambda *a, **kw: None)
-    service = TaskService(repo, fake_runner, scheduler_proxy=None)  # type: ignore[arg-type]
+    service = TaskService(repo, fake_runner)  # type: ignore[arg-type]
     # Should not raise
     await service.cancel_task(999, user)

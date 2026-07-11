@@ -74,12 +74,19 @@ class ManualRunner:
         realtime_show: bool = True,
         cui_danmu: bool = False,
         owner_id: str | None = None,
+        bilingual: bool = False,
     ) -> None:
         """Dispatch by mode. Matches legacy ``__cui`` shape.
 
         ``owner_id`` is the user id of the caller who triggered this task.
         It is forwarded to :meth:`ProgressBus.start` so the RBAC layer can
         filter in-flight tasks per user.
+
+        ``bilingual`` is the explicit per-call opt-in (e.g. from the manual
+        task dialog). It wins over the anime-list entry's ``bilingual``
+        setting; when ``False`` (the default) the anime-list entry — if any
+        — is still consulted so scheduled/CLI-triggered runs keep their
+        existing per-SN behaviour.
         """
         ep_range = list(ep_range or [])
         realtime_show_file_size = realtime_show and (thread_limit == 1 or mode in ('single', 'latest', 'largest-sn'))
@@ -125,7 +132,21 @@ class ManualRunner:
                 raise ValueError("mode='all' requires sn")
             anime = self._anime_factory(int(sn))
             anime.load()
-            episode_sns = sorted(anime.get_episode_list().values())
+            episode_dict = anime.get_episode_list()
+            # Per-SN opt-in: default (bilingual=False) drops 中文配音 variants
+            # entirely so mode='all' never downloads two SNs that would
+            # collide on the same filename. bilingual=True keeps both and
+            # tags the dub SN so its filename doesn't overwrite the 日文 one.
+            effective_bilingual = self._resolve_bilingual(bilingual, owner_id=owner_id, sn=int(sn))
+            pairs: list[tuple[int, str | None]] = []
+            for label, ep_sn in episode_dict.items():
+                is_dub = label.startswith('中文配音')
+                if is_dub and not effective_bilingual:
+                    continue
+                pairs.append((ep_sn, '中' if is_dub else None))
+            pairs.sort(key=lambda p: p[0])
+            episode_sns = [p[0] for p in pairs]
+            language_tags = {p[0]: p[1] for p in pairs}
             self._download_many(
                 episode_sns,
                 thread_limit=thread_limit,
@@ -136,6 +157,7 @@ class ManualRunner:
                 cui_danmu=cui_danmu,
                 realtime_show_file_size=realtime_show_file_size,
                 owner_id=owner_id,
+                language_tags=language_tags,
             )
             return
 
@@ -200,6 +222,23 @@ class ManualRunner:
         raise ValueError(f'unknown mode: {mode!r}')
 
     # ------------------------------------------------------------------ helpers
+
+    def _resolve_bilingual(self, bilingual: bool, *, owner_id: str | None, sn: int) -> bool:
+        """Resolve the effective bilingual flag for one ``mode='all'`` run.
+
+        The explicit ``bilingual`` parameter (e.g. from the manual task
+        dialog) wins outright. When it is ``False`` — the default — fall
+        back to the owning anime-list entry's ``bilingual`` setting so
+        scheduled/CLI-triggered runs (which never pass an explicit flag)
+        keep their existing per-SN opt-in behaviour. No entry (or no
+        ``owner_id``) means the safe default: drop 中文配音 variants.
+        """
+        effective_bilingual = bilingual
+        if not effective_bilingual and owner_id is not None and self._anime_list_repo is not None:
+            entry = self._anime_list_repo.get_by_user_sn(owner_id, sn)
+            if entry is not None:
+                effective_bilingual = entry.bilingual
+        return effective_bilingual
 
     def _announce_waiting(self, sn: int, *, owner_id: str | None = None) -> None:
         """Seed a ``'等待下載'`` entry on the progress bus if one is wired.
@@ -299,6 +338,7 @@ class ManualRunner:
         cui_danmu: bool,
         realtime_show_file_size: bool,
         owner_id: str | None = None,
+        language_tag: str | None = None,
     ) -> None:
         # Fix: check if the task was cancelled while waiting in the thread-pool
         # queue.  This can happen when _download_many submits N futures but the
@@ -378,6 +418,7 @@ class ManualRunner:
                 save_dir=save_dir,
                 classify=classify,
                 realtime_show_file_size=realtime_show_file_size,
+                language_tag=language_tag,
             )
         except exceptions.TaskCancelledError:
             self._logger.info(sn, '任務取消', '使用者取消了下載任務', display=False)
@@ -476,6 +517,7 @@ class ManualRunner:
         cui_danmu: bool,
         realtime_show_file_size: bool,
         owner_id: str | None = None,
+        language_tags: dict[int, str | None] | None = None,
     ) -> None:
         if not sns:
             return
@@ -503,6 +545,7 @@ class ManualRunner:
             parse_pool.shutdown(wait=False)
 
         max_workers = max(1, int(thread_limit))
+        tags = language_tags or {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [
                 pool.submit(
@@ -515,6 +558,7 @@ class ManualRunner:
                     cui_danmu=cui_danmu,
                     realtime_show_file_size=realtime_show_file_size,
                     owner_id=owner_id,
+                    language_tag=tags.get(int(sn)),
                 )
                 for sn in sns
             ]

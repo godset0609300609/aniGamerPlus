@@ -91,21 +91,46 @@ _UVICORN_WS_NOISE_SIGS: tuple[str, ...] = (
     'ConnectionClosedError',
     'ConnectionClosedOK',
     'WebSocket is closed',
+    # asyncio's default exception handler logs the websockets library's
+    # keepalive-ping task (run under asyncio.shield) with this phrase when
+    # the connection closes before the ping resolves, e.g.:
+    #   ERROR asyncio: ConnectionClosedError exception in shielded future
+    #   Close(code=<CloseCode.INTERNAL_ERROR: 1011>, reason='keepalive ping timeout')
+    'exception in shielded future',
+)
+
+
+#: Logger names that can legitimately emit the benign WS-disconnect noise
+#: this filter targets. ``uvicorn.error`` / ``uvicorn.protocols.websockets``
+#: log the close from uvicorn's own protocol handler; ``asyncio`` logs it
+#: separately when the ``websockets`` library's keepalive-ping task (run via
+#: ``asyncio.shield``) has its ``ConnectionClosedError`` surfaced by
+#: asyncio's default "exception in shielded future" handler instead of
+#: uvicorn's own error path — e.g. ``ERROR asyncio: ConnectionClosedError
+#: exception in shielded future``. Both are the same underlying event
+#: (keepalive ping timeout / 1011 close) observed from two different log
+#: sources.
+_UVICORN_WS_NOISE_LOGGERS: tuple[str, ...] = (
+    'uvicorn.error',
+    'uvicorn.protocols.websockets',
+    'asyncio',
 )
 
 
 class _UvicornWsNoiseFilter:
-    """Drop uvicorn.error records whose message or exception indicates a
+    """Drop uvicorn/asyncio records whose message or exception indicates a
     benign client-disconnect WebSocket close (ping timeout, no close frame).
 
     Browsers and mobile clients disconnect without clean close frames all
-    the time — uvicorn logs each as ERROR with a full traceback. The event
-    is expected, non-actionable, and dwarfs real server errors in the
-    panel. File handler still receives the record for audit.
+    the time — uvicorn (and, for the keepalive-ping task specifically,
+    asyncio's own "exception in shielded future" handler) logs each as
+    ERROR with a full traceback. The event is expected, non-actionable, and
+    dwarfs real server errors in the panel. File handler still receives the
+    record for audit.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — stdlib API
-        if record.name not in ('uvicorn.error', 'uvicorn.protocols.websockets'):
+        if record.name not in _UVICORN_WS_NOISE_LOGGERS:
             return True
         msg = record.getMessage()
         if any(sig in msg for sig in _UVICORN_WS_NOISE_SIGS):
@@ -271,7 +296,7 @@ class RingBufferHandler(logging.Handler):
         """
         # --- WS noise filter (mirrors _UvicornWsNoiseFilter) ---
         name = str(entry.get('name', ''))
-        if name in ('uvicorn.error', 'uvicorn.protocols.websockets'):
+        if name in _UVICORN_WS_NOISE_LOGGERS:
             msg = str(entry.get('message', ''))
             if any(sig in msg for sig in _UVICORN_WS_NOISE_SIGS):
                 return  # drop benign disconnect before dedup + append
@@ -454,10 +479,29 @@ class DailyLogFileHandler(logging.Handler):
        from ``unlink()``-ing today's log file. Per-emit open sidesteps the
        lock entirely.
 
+    Size-based rollover
+    --------------------
+    In addition to the daily filename change, a single day's file is capped
+    at :data:`_MAX_BYTES`. Once ``{date}.log`` reaches the cap, subsequent
+    records for that day go to ``{date}.1.log``, then ``{date}.2.log``, and
+    so on — this keeps any single file (and any single ``open(..., 'a')``
+    call) bounded even on a very chatty day, and keeps ``tail``-ing /
+    log-viewer tooling responsive. The active suffix is re-derived from disk
+    on the first emit of each day (see :meth:`_resolve_suffix`) so a process
+    restart mid-day resumes appending after the last rotated file instead of
+    silently overwriting it.
+
     The ``_prune_old`` helper still trims files older than ``backupCount`` days
     whenever a record is emitted (cheap — the directory only holds a handful
-    of dated files).
+    of dated files), and matches both the plain and size-rotated filenames.
     """
+
+    #: Size cap per dated log file (including rotated suffixes). Once a file
+    #: reaches this size, the next emit rolls over to the next suffix.
+    _MAX_BYTES: T.ClassVar[int] = 100 * 1024 * 1024  # 100 MB
+
+    #: Matches ``YYYY-MM-DD.log`` or a size-rotated ``YYYY-MM-DD.<N>.log``.
+    _DATED_LOG_RE: T.ClassVar[re.Pattern[str]] = re.compile(r'^(\d{4}-\d{2}-\d{2})(?:\.\d+)?\.log$')
 
     def __init__(
         self,
@@ -472,34 +516,77 @@ class DailyLogFileHandler(logging.Handler):
         self._encoding = encoding
         self._io_lock = threading.Lock()
         self._last_pruned_date: datetime.date | None = None
+        # Size-based rollover state: the suffix (0 = no suffix, i.e. plain
+        # ``{date}.log``) currently being written to, and the date it
+        # applies to. Re-derived from disk whenever the date changes —
+        # including on the first emit of a freshly constructed handler.
+        self._rollover_date: datetime.date | None = None
+        self._rollover_suffix: int = 0
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
             today = datetime.datetime.now()
-            path = self._logs_dir / (today.strftime('%Y-%m-%d') + '.log')
+            today_date = today.date()
             with self._io_lock:
+                if self._rollover_date != today_date:
+                    self._rollover_date = today_date
+                    self._rollover_suffix = self._resolve_suffix(today_date)
+
+                path = self._file_path(today_date, self._rollover_suffix)
                 self._logs_dir.mkdir(parents=True, exist_ok=True)
                 with open(path, 'a', encoding=self._encoding) as fh:
                     fh.write(msg + '\n')
+
+                if self._file_size(path) >= self._MAX_BYTES:
+                    self._rollover_suffix += 1
+
                 # Prune at most once per calendar day to keep emit cheap.
-                if self._last_pruned_date != today.date():
-                    self._prune_old(today.date())
-                    self._last_pruned_date = today.date()
+                if self._last_pruned_date != today_date:
+                    self._prune_old(today_date)
+                    self._last_pruned_date = today_date
         except Exception:  # noqa: BLE001 — logging must never crash callers
             self.handleError(record)
 
+    def _file_path(self, day: datetime.date, suffix: int) -> pathlib.Path:
+        """Return the log file path for *day* / *suffix* (0 = no suffix)."""
+        stem = day.strftime('%Y-%m-%d')
+        name = f'{stem}.log' if suffix == 0 else f'{stem}.{suffix}.log'
+        return self._logs_dir / name
+
+    @staticmethod
+    def _file_size(path: pathlib.Path) -> int:
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+
+    def _resolve_suffix(self, day: datetime.date) -> int:
+        """Return the suffix to (re)start writing to for *day*.
+
+        Scans forward from suffix 0, skipping any file that already reached
+        :data:`_MAX_BYTES`, so a freshly constructed handler (e.g. after a
+        process restart) resumes appending to the correct rotated file
+        instead of overwriting an already-full one.
+        """
+        suffix = 0
+        while self._file_size(self._file_path(day, suffix)) >= self._MAX_BYTES:
+            suffix += 1
+        return suffix
+
     def _prune_old(self, today: datetime.date) -> None:
-        """Delete dated ``.log`` files older than ``backupCount`` days."""
+        """Delete dated ``.log`` files (including size-rotated suffixes) older than ``backupCount`` days."""
         if self.backupCount <= 0:
             return
         cutoff = today - datetime.timedelta(days=self.backupCount - 1)
         for entry in self._logs_dir.iterdir():
-            if not entry.is_file() or not entry.name.endswith('.log'):
+            if not entry.is_file():
                 continue
-            stem = entry.name[:-4]
+            match = self._DATED_LOG_RE.match(entry.name)
+            if not match:
+                continue
             try:
-                day = datetime.datetime.strptime(stem, '%Y-%m-%d').date()
+                day = datetime.datetime.strptime(match.group(1), '%Y-%m-%d').date()
             except ValueError:
                 continue
             if day < cutoff:

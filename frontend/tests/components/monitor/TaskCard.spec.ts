@@ -6,6 +6,10 @@ type CardVariant = 'downloading' | 'waiting' | 'completed' | 'retry' | 'other'
 import { createElementPlusStubs } from '../../helpers/elementPlusStubs'
 
 // Module-level mocks (hoisted by Vitest automatically).
+const { dismissTaskMock } = vi.hoisted(() => ({
+  dismissTaskMock: vi.fn().mockResolvedValue({ status: 'ok' }),
+}))
+
 vi.mock('element-plus', async (importOriginal) => {
   const mod = (await importOriginal()) as Record<string, unknown>
   return {
@@ -19,9 +23,17 @@ vi.mock('element-plus', async (importOriginal) => {
   }
 })
 
-vi.mock('@/api/client', async (importOriginal) => {
+// TaskCard's X button now dismisses via TasksApi.dismissTask (a real backend
+// call, POST /api/monitor/progress/{sn}/force-finish) rather than the old
+// confirm+cancelTask flow — see src/utils/taskActions.ts's dismissTask().
+vi.mock('@/api/tasks', async (importOriginal) => {
   const mod = (await importOriginal()) as Record<string, unknown>
-  return { ...mod, cancelTask: vi.fn().mockResolvedValue(undefined) }
+  return {
+    ...mod,
+    TasksApi: vi.fn().mockImplementation(() => ({
+      dismissTask: dismissTaskMock,
+    })),
+  }
 })
 
 const stubs = createElementPlusStubs({
@@ -46,6 +58,15 @@ function mountCard(task: TaskProgressEntry, variant: CardVariant = 'downloading'
     props: { task, variant },
     global: { stubs },
   })
+}
+
+/** Minimal shape for reading props off the ElAvatar stub — `findComponent`
+ * with a plain stub definition (rather than a real SFC import) still types
+ * as `WrapperLike`, so we narrow through `unknown` like FeedsTab.spec.ts
+ * does for ElTableColumn. */
+interface AvatarWrapper {
+  props(name: string): unknown
+  text(): string
 }
 
 describe('TaskCard — title display', () => {
@@ -96,6 +117,105 @@ describe('TaskCard — badges', () => {
   it('hides retry badge when retries is absent', () => {
     const wrapper = mountCard(makeTask({ retries: undefined }))
     expect(wrapper.find('.task-card__badge--retry').exists()).toBe(false)
+  })
+
+  it('shows BT badge when source is bt', () => {
+    const wrapper = mountCard(makeTask({ source: 'bt' }))
+    const badge = wrapper.find('.task-card__badge--bt')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('BT')
+  })
+
+  it('hides BT badge when source is animad/other', () => {
+    const wrapper = mountCard(makeTask({ source: 'animad' }))
+    expect(wrapper.find('.task-card__badge--bt').exists()).toBe(false)
+  })
+
+  it('hides BT badge when source is absent', () => {
+    const wrapper = mountCard(makeTask({ source: undefined }))
+    expect(wrapper.find('.task-card__badge--bt').exists()).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Source badge colors — shared mapping in src/utils/sourceBadge.ts.
+// Colors are asserted via the `data-color` attribute (not the `style`
+// attribute) because happy-dom/browsers normalize inline hex colors set
+// through `element.style` to `rgb(...)` when serialized back out, which
+// would make a literal-hex assertion on `style` environment-dependent.
+// ---------------------------------------------------------------------------
+describe('TaskCard — source badge colors', () => {
+  it('test_source_badge_uses_bahamut_green_for_animad', () => {
+    const wrapper = mountCard(makeTask({ source: 'animad' }))
+    const badge = wrapper.find('.task-card__badge--animad')
+    expect(badge.exists()).toBe(true)
+    expect(badge.attributes('data-color')).toBe('#3b8686')
+    expect(badge.text()).toBe('動畫瘋')
+  })
+
+  it('defaults the animad badge (and color) when source is absent', () => {
+    const wrapper = mountCard(makeTask({ source: undefined }))
+    const badge = wrapper.find('.task-card__badge--animad')
+    expect(badge.exists()).toBe(true)
+    expect(badge.attributes('data-color')).toBe('#3b8686')
+  })
+
+  it('test_source_badge_uses_bilibili_blue', () => {
+    const wrapper = mountCard(makeTask({ source: 'bilibili' }))
+    const badge = wrapper.find('.task-card__badge--bilibili')
+    expect(badge.exists()).toBe(true)
+    expect(badge.attributes('data-color')).toBe('#00a1d6')
+    expect(badge.text()).toBe('Bilibili')
+  })
+
+  it('test_source_badge_uses_orange_for_bt', () => {
+    const wrapper = mountCard(makeTask({ source: 'bt' }))
+    const badge = wrapper.find('.task-card__badge--bt')
+    expect(badge.exists()).toBe(true)
+    expect(badge.attributes('data-color')).toBe('#e6a23c')
+    expect(badge.text()).toBe('BT')
+  })
+
+  it('falls back to a neutral gray badge for an unrecognized source', () => {
+    const wrapper = mountCard(makeTask({ source: 'mystery-source' }))
+    const badge = wrapper.find('.task-card__badge--other')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('mystery-source')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Owner avatar
+// ---------------------------------------------------------------------------
+describe('TaskCard — owner avatar', () => {
+  it('shows an avatar with initials when owner_username is present', () => {
+    const wrapper = mountCard(makeTask({ owner_username: 'edward' }))
+    const avatar = wrapper.find('.task-card__avatar')
+    expect(avatar.exists()).toBe(true)
+    expect(avatar.text()).toBe('ED')
+  })
+
+  it('hides the avatar when owner_username is absent', () => {
+    const wrapper = mountCard(makeTask({ owner_username: undefined }))
+    expect(wrapper.find('.task-card__avatar').exists()).toBe(false)
+  })
+
+  it('passes owner_avatar_url through to el-avatar as :src', () => {
+    const wrapper = mountCard(
+      makeTask({ owner_username: 'edward', owner_avatar_url: 'https://cdn.discordapp.com/avatars/1/abc.png' }),
+    )
+    // Pass the stub's own component definition (not a CSS selector) so
+    // Vue Test Utils resolves the actual ElAvatar instance rather than an
+    // untyped DOM node.
+    const avatar = wrapper.findComponent(stubs.ElAvatar) as unknown as AvatarWrapper
+    expect(avatar.props('src')).toBe('https://cdn.discordapp.com/avatars/1/abc.png')
+  })
+
+  it('passes a null owner_avatar_url through so el-avatar falls back to initials', () => {
+    const wrapper = mountCard(makeTask({ owner_username: 'edward', owner_avatar_url: null }))
+    const avatar = wrapper.findComponent(stubs.ElAvatar) as unknown as AvatarWrapper
+    expect(avatar.props('src')).toBeFalsy()
+    expect(avatar.text()).toBe('ED')
   })
 })
 
@@ -285,59 +405,82 @@ describe('TaskCard — status row spacing', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Batch H — cancel button
+// Batch H — dismiss ('X') button
 // ---------------------------------------------------------------------------
 
-describe('TaskCard — cancel button', () => {
+describe('TaskCard — dismiss button', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    dismissTaskMock.mockResolvedValue({ status: 'ok' })
   })
 
-  it('renders a cancel button with class cancel-btn for downloading variant', () => {
+  it('renders a dismiss button with class cancel-btn for downloading variant', () => {
     const wrapper = mountCard(makeTask(), 'downloading')
     expect(wrapper.find('.cancel-btn').exists()).toBe(true)
   })
 
-  it('hides cancel button when variant is completed', () => {
+  it('hides dismiss button when variant is completed', () => {
     const wrapper = mountCard(makeTask(), 'completed')
     expect(wrapper.find('.cancel-btn').exists()).toBe(false)
   })
 
-  it('cancel button has title="取消任務"', () => {
+  it('dismiss button has title="取消任務"', () => {
     const wrapper = mountCard(makeTask())
     const btn = wrapper.find('.cancel-btn')
     expect(btn.attributes('title')).toBe('取消任務')
   })
 
-  it('clicking cancel button calls ElMessageBox.confirm', async () => {
-    const { ElMessageBox } = await import('element-plus')
-    const confirmMock = vi.mocked(ElMessageBox.confirm)
-
+  it('test_x_button_calls_dismiss_api_not_just_local_removal', async () => {
     const wrapper = mountCard(makeTask({ sn: 42 }))
     const btn = wrapper.find('.cancel-btn')
     await btn.trigger('click')
-    // Flush promise microtasks for the async handler.
+    // Flush multiple microtask ticks for the async handler.
+    await Promise.resolve()
+    await Promise.resolve()
     await Promise.resolve()
 
-    expect(confirmMock).toHaveBeenCalled()
+    // Proves the click reaches the backend dismiss API (POST .../force-finish
+    // via TasksApi.dismissTask) rather than just splicing the entry out of
+    // local reactive state — a purely-local removal would never call this.
+    expect(dismissTaskMock).toHaveBeenCalledWith(42)
   })
 
-  it('confirmed cancel calls cancelTask with the task sn', async () => {
+  it('clicking the button does not open a confirm dialog — dismiss is immediate', async () => {
     const { ElMessageBox } = await import('element-plus')
-    vi.mocked(ElMessageBox.confirm).mockResolvedValue('confirm' as never)
+    const confirmMock = vi.mocked(ElMessageBox.confirm)
 
-    const clientModule = await import('@/api/client')
-    const cancelTaskMock = vi.mocked(clientModule.cancelTask)
+    const wrapper = mountCard(makeTask())
+    await wrapper.find('.cancel-btn').trigger('click')
+    await Promise.resolve()
 
-    const wrapper = mountCard(makeTask({ sn: 99 }))
-    const btn = wrapper.find('.cancel-btn')
-    await btn.trigger('click')
-    // Flush multiple microtask ticks.
+    expect(confirmMock).not.toHaveBeenCalled()
+  })
+
+  it('shows a success toast after a successful dismiss', async () => {
+    const { ElMessage } = await import('element-plus')
+    const successMock = vi.mocked(ElMessage.success)
+
+    const wrapper = mountCard(makeTask({ sn: 7 }))
+    await wrapper.find('.cancel-btn').trigger('click')
     await Promise.resolve()
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(cancelTaskMock).toHaveBeenCalledWith(99)
+    expect(successMock).toHaveBeenCalled()
+  })
+
+  it('shows an error toast when the dismiss API call fails', async () => {
+    const { ElMessage } = await import('element-plus')
+    const errorMock = vi.mocked(ElMessage.error)
+    dismissTaskMock.mockRejectedValueOnce(new Error('network down'))
+
+    const wrapper = mountCard(makeTask({ sn: 8 }))
+    await wrapper.find('.cancel-btn').trigger('click')
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(errorMock).toHaveBeenCalled()
   })
 })
 

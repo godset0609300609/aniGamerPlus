@@ -8,11 +8,15 @@ column until the 60-second DB history poll fired.
 from __future__ import annotations
 
 import datetime
+import pathlib
 
+import fastapi
 import pytest
 
-from app.downloader.progress import ProgressBus
-from app.persistence.user_repo import UserRow
+from app.downloader.progress import ProgressBus, TaskProgress
+from app.logging_ import Logger
+from app.persistence.db import Database
+from app.persistence.user_repo import UserRepository, UserRow
 from app.services.progress_service import ProgressService
 
 # ---------------------------------------------------------------------------
@@ -43,7 +47,14 @@ def _downloader(uid: str = 'user-1') -> UserRow:
 
 
 def _make_service(bus: ProgressBus) -> ProgressService:
-    return ProgressService(progress_bus=bus, user_repo=None, scheduler_proxy=None)
+    return ProgressService(progress_bus=bus, user_repo=None)
+
+
+def _make_db(tmp_path: pathlib.Path, name: str = 'test.db') -> Database:
+    logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
+    db = Database(f'sqlite:///{(tmp_path / name).as_posix()}', logger)
+    db.run_baseline_migrations()
+    return db
 
 
 # ---------------------------------------------------------------------------
@@ -149,3 +160,225 @@ async def test_snapshot_multiple_terminal_statuses_included() -> None:
 
     assert '2001' in snap.tasks
     assert '2002' in snap.tasks
+
+
+# ---------------------------------------------------------------------------
+# Regression: source / external_id must survive the bus → ProgressService path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_snapshot_propagates_source_and_external_id_for_admin() -> None:
+    """Admin snapshot must include source and external_id from the bus entry."""
+    bus = ProgressBus()
+    bus.start(3001, 'BV1xxx.mp4', owner_id='admin-1', source='bilibili', external_id='BV1xxx')
+
+    svc = _make_service(bus)
+    snap = await svc.snapshot(_admin())
+
+    assert '3001' in snap.tasks
+    dto = snap.tasks['3001']
+    assert dto.source == 'bilibili'
+    assert dto.external_id == 'BV1xxx'
+
+
+@pytest.mark.anyio
+async def test_snapshot_propagates_source_and_external_id_for_downloader() -> None:
+    """Downloader snapshot also carries source and external_id through."""
+    bus = ProgressBus()
+    bus.start(3002, 'BV1yyy.mp4', owner_id='user-1', source='bilibili', external_id='BV1yyy')
+
+    svc = _make_service(bus)
+    snap = await svc.snapshot(_downloader('user-1'))
+
+    assert '3002' in snap.tasks
+    dto = snap.tasks['3002']
+    assert dto.source == 'bilibili'
+    assert dto.external_id == 'BV1yyy'
+
+
+# ---------------------------------------------------------------------------
+# owner_avatar_url — MonitorView owner column Discord avatar (fix #4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_snapshot_populates_owner_avatar_url_for_admin(tmp_path: pathlib.Path) -> None:
+    """Admin snapshot must carry the owner's Discord avatar_url through."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        user_repo.upsert(
+            id='user-1',
+            username='alice',
+            avatar_url='https://cdn.discordapp.com/avatars/user-1/abc123.png',
+            role='downloader',
+        )
+
+        bus = ProgressBus()
+        bus.start(4001, 'ep01.mp4', owner_id='user-1')
+
+        svc = ProgressService(progress_bus=bus, user_repo=user_repo)
+        snap = await svc.snapshot(_admin())
+
+        dto = snap.tasks['4001']
+        assert dto.owner_username == 'alice'
+        assert dto.owner_avatar_url == 'https://cdn.discordapp.com/avatars/user-1/abc123.png'
+    finally:
+        db.dispose()
+
+
+@pytest.mark.anyio
+async def test_snapshot_owner_avatar_url_none_when_user_has_no_avatar(tmp_path: pathlib.Path) -> None:
+    """A user without a custom Discord avatar yields owner_avatar_url=None, not an error."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        user_repo.upsert(id='user-2', username='bob', avatar_url=None, role='downloader')
+
+        bus = ProgressBus()
+        bus.start(4002, 'ep02.mp4', owner_id='user-2')
+
+        svc = ProgressService(progress_bus=bus, user_repo=user_repo)
+        snap = await svc.snapshot(_admin())
+
+        dto = snap.tasks['4002']
+        assert dto.owner_username == 'bob'
+        assert dto.owner_avatar_url is None
+    finally:
+        db.dispose()
+
+
+@pytest.mark.anyio
+async def test_snapshot_owner_avatar_url_none_for_downloader_view() -> None:
+    """Downloader snapshots never leak owner_avatar_url, matching owner_username/owner_id."""
+    bus = ProgressBus()
+    bus.start(4003, 'ep03.mp4', owner_id='user-1')
+
+    svc = _make_service(bus)
+    snap = await svc.snapshot(_downloader('user-1'))
+
+    dto = snap.tasks['4003']
+    assert dto.owner_avatar_url is None
+
+
+# ---------------------------------------------------------------------------
+# force_finish — MonitorView dismiss ('X') button backend
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_force_finish_admin_can_dismiss_any_owners_task() -> None:
+    bus = ProgressBus()
+    bus.start(5001, 'ep01.mp4', status='正在下載', owner_id='some-downloader')
+
+    svc = _make_service(bus)
+    await svc.force_finish(5001, _admin(), status='已取消')
+
+    entry = bus.snapshot()[5001]
+    assert entry.status == '已取消'
+    assert entry.finished_at is not None
+
+
+@pytest.mark.anyio
+async def test_force_finish_owner_can_dismiss_their_own_task() -> None:
+    bus = ProgressBus()
+    bus.start(5002, 'ep02.mp4', status='正在下載', owner_id='user-1')
+
+    svc = _make_service(bus)
+    await svc.force_finish(5002, _downloader('user-1'), status='已取消')
+
+    assert bus.snapshot()[5002].status == '已取消'
+
+
+@pytest.mark.anyio
+async def test_force_finish_raises_403_for_non_owner_non_admin() -> None:
+    bus = ProgressBus()
+    bus.start(5003, 'ep03.mp4', status='正在下載', owner_id='user-1')
+
+    svc = _make_service(bus)
+    with pytest.raises(fastapi.HTTPException) as exc_info:
+        await svc.force_finish(5003, _downloader('user-2'), status='已取消')
+
+    assert exc_info.value.status_code == 403
+    # Must not have been touched.
+    assert bus.snapshot()[5003].status == '正在下載'
+
+
+@pytest.mark.anyio
+async def test_force_finish_raises_404_when_sn_not_visible() -> None:
+    bus = ProgressBus()
+
+    svc = _make_service(bus)
+    with pytest.raises(fastapi.HTTPException) as exc_info:
+        await svc.force_finish(9999, _admin(), status='已取消')
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_force_finish_is_a_noop_on_an_already_finished_entry() -> None:
+    """Idempotency: dismissing an entry that has already reached a real
+    terminal outcome (e.g. genuinely completed between the WS snapshot and
+    the click) must not clobber that outcome with '已取消'."""
+    bus = ProgressBus()
+    bus.start(5004, 'ep04.mp4', status='正在下載', owner_id='admin-1')
+    bus.update_status(5004, '下載完成')
+    bus.finish(5004)
+
+    svc = _make_service(bus)
+    await svc.force_finish(5004, _admin(), status='已取消')
+
+    entry = bus.snapshot()[5004]
+    assert entry.status == '下載完成', 'a real terminal outcome must survive a dismiss click'
+
+
+@pytest.mark.anyio
+async def test_force_finish_repeated_dismiss_is_idempotent() -> None:
+    """X on an already-dismissed row is a no-op — calling force_finish twice
+    must not raise or change the outcome the second time."""
+    bus = ProgressBus()
+    bus.start(5005, 'ep05.mp4', status='正在下載', owner_id='admin-1')
+
+    svc = _make_service(bus)
+    await svc.force_finish(5005, _admin(), status='已取消')
+    first_finished_at = bus.snapshot()[5005].finished_at
+
+    # Second dismiss call must be a silent no-op: the API's raw snapshot now
+    # sees the already-terminal entry and the idempotency guard short-circuits.
+    await svc.force_finish(5005, _admin(), status='已取消')
+
+    entry = bus.snapshot()[5005]
+    assert entry.status == '已取消'
+    assert entry.finished_at == first_finished_at
+
+
+class _FakeRawSnapshotReader:
+    """Stands in for RedisProgressReader — the real cross-process source that
+    lets the API process see entries live in *either* bus (both write through
+    the same Redis mirror; see Container.bt_progress_bus's docstring)."""
+
+    def __init__(self, snapshot: dict[int, TaskProgress]) -> None:
+        self._snapshot = snapshot
+
+    async def snapshot(self) -> dict[int, TaskProgress]:
+        return dict(self._snapshot)
+
+
+@pytest.mark.anyio
+async def test_force_finish_routes_bt_sourced_sn_to_the_bt_bus() -> None:
+    """A sn tagged source='bt' in the raw snapshot must be force-finished on
+    the BT bus, not the shared one, mirroring how BtProgressReconciler
+    routes BT rows."""
+    bt_entry = TaskProgress(
+        sn=5006, rate=0.4, status='落地中', filename='bt-entry.mkv', owner_id='admin-1', source='bt'
+    )
+    reader = _FakeRawSnapshotReader({5006: bt_entry})
+    bus = ProgressBus()
+    bt_bus = ProgressBus()
+
+    svc = ProgressService(progress_bus=bus, user_repo=None, redis_reader=reader, bt_progress_bus=bt_bus)  # type: ignore[arg-type]
+    await svc.force_finish(5006, _admin(), status='已取消')
+
+    assert bt_bus.snapshot()[5006].status == '已取消'
+    assert bus.snapshot() == {}, 'must not have touched the shared (non-BT) bus'

@@ -18,10 +18,11 @@ Permission rules
   annotated with ``owner_username``.  ``replace_entries`` can supply entries
   with an explicit ``owner_id``; entries whose ``owner_id`` is ``None`` are
   assigned to the calling user.
-* downloader: ``list_entries`` now also returns all entries across all users,
-  annotated with ``owner_username``.  ``replace_entries`` rejects any entry
-  whose ``owner_id`` differs from the caller's id (returns HTTP 400).
-  Creating new entries always assigns ``owner_id = current_user.id``.
+* downloader: ``list_entries`` returns only the caller's own entries — a
+  downloader must not be able to see another user's watchlist.
+  ``replace_entries`` rejects any entry whose ``owner_id`` differs from the
+  caller's id (returns HTTP 400).  Creating new entries always assigns
+  ``owner_id = current_user.id``.
 """
 
 from __future__ import annotations
@@ -90,23 +91,30 @@ class AnimeListService:
     # -- RBAC-aware read -------------------------------------------------
 
     async def list_entries(self, user: UserRow) -> _List[AnimeListEntry]:
-        """Return the anime list for the given user.
+        """Return the anime list visible to the given user.
 
-        Both admin and non-admin roles now receive all entries across all
-        users, each annotated with ``owner_id`` and ``owner_username``.
-        This allows the frontend to render the owner-grouped section view
-        for everyone, while enforcing per-row write permissions on the
-        client and server sides.
+        * admin — every entry across all users, each annotated with
+          ``owner_id`` / ``owner_username``.
+        * downloader — only the caller's own entries.  Returning every
+          user's watchlist to any downloader would leak other users'
+          private anime lists (RBAC hygiene), so the result is scoped to
+          ``owner_id == user.id``.
+
+        The username cache and duplicate-resolution lookup are still built
+        from the *full* entry set regardless of role: a downloader's own
+        entry may be flagged as a duplicate of another user's entry, and
+        that cross-reference (bangumi name + owner username, not the full
+        watchlist) must still resolve correctly for the UI tooltip.
         """
         if self._anime_list_entry_repo is None:
             # Fallback to legacy flat-file path (e.g. during migration).
             return await self.list()
 
         entry_repo = self._anime_list_entry_repo
-        dtos = await anyio.to_thread.run_sync(entry_repo.list_all)
+        all_dtos = await anyio.to_thread.run_sync(entry_repo.list_all)
 
         # Build username cache to avoid N+1 queries.
-        user_ids = {dto.user_id for dto in dtos if dto.user_id is not None}
+        user_ids = {dto.user_id for dto in all_dtos if dto.user_id is not None}
         username_cache: dict[str, str] = {}
         user_repo = self._user_repo
         if user_repo is not None:
@@ -117,9 +125,11 @@ class AnimeListService:
 
         # Also build a cache from entry id → (anime_name, owner_username) for
         # resolving duplicate_of_entry_id pointers.
-        id_to_dto: dict[int, AnimeListEntryDTO] = {dto.id: dto for dto in dtos if dto.id is not None}
+        id_to_dto: dict[int, AnimeListEntryDTO] = {dto.id: dto for dto in all_dtos if dto.id is not None}
 
-        entries = [self._dto_to_entry(dto, username_cache, id_to_dto) for dto in dtos]
+        visible_dtos = all_dtos if user.role == 'admin' else [dto for dto in all_dtos if dto.user_id == user.id]
+
+        entries = [self._dto_to_entry(dto, username_cache, id_to_dto) for dto in visible_dtos]
 
         await self._enrich(entries)
         return entries
@@ -286,6 +296,7 @@ class AnimeListService:
             tag=dto.tag,
             season=dto.season,
             custom_name=dto.custom_name,
+            bilingual=dto.bilingual,
             anime_name=dto.anime_name,
             comment=dto.comment,
             owner_id=user_id,
@@ -305,6 +316,7 @@ class AnimeListService:
             season=entry.season,
             anime_name=entry.anime_name,  # preserve cached name sent back from frontend
             custom_name=entry.custom_name,
+            bilingual=entry.bilingual,
             comment=entry.comment,
             sort_order=sort_order,
             duplicate_of_entry_id=entry.duplicate_of_entry_id,

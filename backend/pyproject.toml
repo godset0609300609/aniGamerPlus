@@ -13,7 +13,12 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "lxml>=5.3",
     "pysocks>=1.7",
-    "pyhttpx",
+    "pyhttpx>=2.10,<3",
+    # NOTE: cryptography>=43 breaks pyhttpx at runtime (see [tool.uv] comment
+    # below). Pinned to the highest version pyhttpx can still import until
+    # pyhttpx is replaced (tracked for Wave 3).
+    "cryptography>=42.0.8,<43",
+    "slowapi>=0.1.9",
     "termcolor>=2.5",
     "pip-system-certs>=4.0",
     "colorama>=0.4",
@@ -27,6 +32,36 @@ dependencies = [
     "dramatiq-abort>=1.2",
     "redis>=5.0",
     "apscheduler>=3.10",
+    "yt-dlp>=2024.12",
+    "feedparser>=6.0",
+    "opencc-python-reimplemented>=0.1.7",
+    # hydrogram is an actively-maintained fork of pyrogram (2.0.106, which we
+    # migrated off of). pyrogram 2.0.106's `utils.get_peer_type()` still has
+    # a narrow 32-bit-derived MIN_CHANNEL_ID, so any supergroup/channel with
+    # an id below it (newly-created large-id supergroups are common now)
+    # blows up `resolve_peer()` with "Peer id invalid" — see
+    # app.tg_downloader.__init__ and the 0.2.0 hydrogram changelog entry
+    # ("Support newly-created chats by increasing MIN_CHANNEL_ID and
+    # MIN_CHAT_ID", hydrogram/hydrogram#25). hydrogram is otherwise a
+    # drop-in API match for pyrogram 2.0.106 (same Client/raw/errors/types
+    # surface; verified against every pyrogram call site in this codebase
+    # during the migration) and ships a universal `py3-none-any` wheel, so
+    # it needs no compiled-extension story of its own.
+    "hydrogram>=0.2.0",
+    # tgcrypto gives hydrogram a native AES backend instead of the pure-Python
+    # pyaes fallback (~10x faster MTProto crypto for Telegram uploads/
+    # downloads) — hydrogram detects/uses it exactly the way pyrogram did.
+    # No PyPI wheel exists yet for Python 3.14 on any platform (TgCrypto
+    # 1.2.5's newest build is cp311), so this always compiles from sdist.
+    # It's a plain C extension (Python.h only, no external libs), so it
+    # builds fine in the Debian trixie container as long as a C compiler is
+    # present (see Dockerfile). It does NOT build on Windows without MSVC
+    # Build Tools, which the dev machine lacks, so it's restricted to Linux
+    # via the environment marker below; local `uv sync` on Windows simply
+    # skips it and hydrogram falls back to pyaes there.
+    "tgcrypto>=1.2.5; sys_platform == 'linux'",
+    "qrcode>=8.2",
+    "pillow>=12.3.0",
 ]
 
 [project.scripts]
@@ -48,6 +83,25 @@ packages = ["app"]
 
 [tool.uv]
 package = true
+# pyhttpx==2.10.9 hard-pins cryptography==36.0.1 and pyOpenSSL==21.0.0.
+# Override the resolver's view of both pins so we can move off the known-
+# vulnerable 36.0.1 build. cryptography>=43 is NOT reachable here: as of
+# 43.0.0 the legacy `cryptography.hazmat.backends.openssl.backend.
+# GetCipherByName` symbol that pyhttpx imports directly
+# (pyhttpx/layers/tls/crypto/cipher_block.py) was removed, so pyhttpx fails
+# ImportError on any 43+ build (verified). cryptography 42.0.8 is the last
+# release carrying that symbol, so it is the highest version reachable
+# without dropping/forking pyhttpx. pyOpenSSL also needs bumping off its
+# 21.0.0 pin: 21.0.0 crashes at import time against cryptography 42.0.8
+# (references an OpenSSL constant cryptography's cffi bindings dropped).
+# pyOpenSSL 24.3.0 is the newest release whose own cryptography bound
+# (<45,>=41.0.5) still covers 42.0.8, and it imports/runs cleanly (verified).
+# See the report for this wave: full cryptography>=43 upgrade is deferred
+# to the pyhttpx -> curl_cffi migration planned for Wave 3.
+override-dependencies = [
+    "cryptography>=42.0.8,<43",
+    "pyopenssl>=24.3.0,<25",
+]
 
 [dependency-groups]
 dev = [
@@ -67,7 +121,16 @@ dev = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-ra --cov=app --cov-report=term-missing --cov-report=html --cov-report=xml"
-filterwarnings = ["error", "ignore::coverage.exceptions.CoverageWarning"]
+filterwarnings = [
+    "error",
+    "ignore::coverage.exceptions.CoverageWarning",
+    # slowapi 0.1.10 (latest on PyPI, unmaintained since 2023) calls the
+    # stdlib's asyncio.iscoroutinefunction internally when @limiter.limit(...)
+    # decorates a route at import time; Python 3.14 deprecated that alias in
+    # favour of inspect.iscoroutinefunction. Nothing on our side to fix — this
+    # fires from inside slowapi/extension.py, not our code.
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
+]
 
 [tool.coverage.run]
 source = ["app"]

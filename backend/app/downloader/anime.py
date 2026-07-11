@@ -189,6 +189,7 @@ class Anime:
         custom_name: str | None = None,
         classify: bool = True,
         include_resolution_in_filename: bool = True,
+        language_tag: str | None = None,
     ) -> DownloadResult:
         """Run the full per-sn download pipeline."""
         self.load()
@@ -232,6 +233,7 @@ class Anime:
                 custom_name=custom_name,
                 classify=classify,
                 include_resolution_in_filename=include_resolution_in_filename,
+                language_tag=language_tag,
             )
 
             _check_cancelled()  # phase: before cooldown / download
@@ -391,6 +393,7 @@ class Anime:
         custom_name: str | None = None,
         classify: bool,
         include_resolution_in_filename: bool = True,
+        language_tag: str | None = None,
     ) -> _PreparedPaths:
         assert self._metadata is not None
         meta = self._metadata
@@ -400,6 +403,7 @@ class Anime:
             season=season,
             custom_name=custom_name,
             include_resolution=include_resolution_in_filename,
+            language_tag=language_tag,
         )
 
         base_bangumi_dir = (
@@ -420,10 +424,20 @@ class Anime:
         segment_temp_dir = temp_root / f'{self._sn}-downloading-by-aniGamerPlus'
 
         merging_name = self._filename_builder.build_temp(
-            meta, resolution, temp_suffix='MERGING', season=season, custom_name=custom_name
+            meta,
+            resolution,
+            temp_suffix='MERGING',
+            season=season,
+            custom_name=custom_name,
+            language_tag=language_tag,
         )
         downloading_name = self._filename_builder.build_temp(
-            meta, resolution, temp_suffix='DOWNLOADING', season=season, custom_name=custom_name
+            meta,
+            resolution,
+            temp_suffix='DOWNLOADING',
+            season=season,
+            custom_name=custom_name,
+            language_tag=language_tag,
         )
 
         return _PreparedPaths(

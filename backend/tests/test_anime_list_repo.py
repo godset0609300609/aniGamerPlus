@@ -371,6 +371,53 @@ def test_custom_name_defaults_to_none(tmp_path: pathlib.Path) -> None:
         db.dispose()
 
 
+def test_bilingual_round_trips(tmp_path: pathlib.Path) -> None:
+    """bilingual=True is persisted and returned via list_for_user."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        repo = AnimeListEntryRepository(db)
+        _seed_user(user_repo, 'u1')
+
+        entry = AnimeListEntryDTO(sn=77, bilingual=True)
+        repo.replace_all_for_user('u1', [entry])
+        r = repo.list_for_user('u1')[0]
+        assert r.bilingual is True
+    finally:
+        db.dispose()
+
+
+def test_bilingual_defaults_to_false(tmp_path: pathlib.Path) -> None:
+    """bilingual is False by default."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        repo = AnimeListEntryRepository(db)
+        _seed_user(user_repo, 'u1')
+
+        repo.replace_all_for_user('u1', [AnimeListEntryDTO(sn=88)])
+        r = repo.list_for_user('u1')[0]
+        assert r.bilingual is False
+    finally:
+        db.dispose()
+
+
+def test_bilingual_round_trips_via_list_all(tmp_path: pathlib.Path) -> None:
+    """bilingual is returned correctly via list_all too."""
+    db = _make_db(tmp_path)
+    try:
+        user_repo = UserRepository(db)
+        repo = AnimeListEntryRepository(db)
+        _seed_user(user_repo, 'u1')
+
+        repo.replace_all_for_user('u1', [AnimeListEntryDTO(sn=99, bilingual=True)])
+        all_entries = repo.list_all()
+        assert len(all_entries) == 1
+        assert all_entries[0].bilingual is True
+    finally:
+        db.dispose()
+
+
 def test_custom_name_round_trips_via_list_all(tmp_path: pathlib.Path) -> None:
     """custom_name is returned correctly via list_all too."""
     db = _make_db(tmp_path)

@@ -1,11 +1,23 @@
 <script setup lang="ts">
 import type { SocketState } from '@/api/ws'
+import type { MonitorViewMode } from '@/types'
 
 defineProps<{
   counts: { downloading: number; waiting: number; completed: number }
   connectionState: SocketState
   showDisconnectedBanner: boolean
+  viewMode: MonitorViewMode
+  /** Mobile forces kanban mode — the table/kanban toggle is hidden entirely. */
+  isMobile?: boolean
 }>()
+
+const emit = defineEmits<{
+  (e: 'update:viewMode', value: MonitorViewMode): void
+}>()
+
+function onViewModeUpdate(value: string | number | boolean): void {
+  if (value === 'table' || value === 'kanban') emit('update:viewMode', value)
+}
 </script>
 
 <template>
@@ -23,6 +35,20 @@ defineProps<{
         }"
         :title="connectionState"
       />
+      <el-radio-group
+        v-if="!isMobile"
+        :model-value="viewMode"
+        size="small"
+        class="monitor-header__view-toggle"
+        @update:model-value="onViewModeUpdate"
+      >
+        <el-radio-button label="table">
+          📋 表格
+        </el-radio-button>
+        <el-radio-button label="kanban">
+          🃏 看板
+        </el-radio-button>
+      </el-radio-group>
     </div>
     <div class="monitor-header__badges">
       <el-tag
@@ -87,6 +113,10 @@ defineProps<{
 
 .monitor-header__dot--closed {
   background: var(--el-color-danger);
+}
+
+.monitor-header__view-toggle {
+  flex-shrink: 0;
 }
 
 .monitor-header__badges {

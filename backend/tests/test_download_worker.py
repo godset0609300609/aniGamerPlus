@@ -603,6 +603,57 @@ def test_worker_passes_none_custom_name_when_not_set(tmp_path: pathlib.Path) -> 
     assert download_calls[0].get('custom_name') is None
 
 
+def test_task_info_carries_language_tag(tmp_path: pathlib.Path) -> None:
+    """TaskInfo stores language_tag and it defaults to None."""
+    info_with = TaskInfo(sn=1, tag='', mode='single', language_tag='中')
+    assert info_with.language_tag == '中'
+
+    info_without = TaskInfo(sn=2, tag='', mode='single')
+    assert info_without.language_tag is None
+
+
+def test_worker_passes_language_tag_to_anime_download(tmp_path: pathlib.Path) -> None:
+    """Worker forwards TaskInfo.language_tag to anime.download() as a kwarg."""
+    fake_anime = FakeAnime(
+        sn=92,
+        download_result=DownloadResult(
+            success=True,
+            file_path=tmp_path / 'a.mp4',
+            size_mb=500,
+        ),
+    )
+    h = _build(tmp_path, fake_anime=fake_anime)
+    h.queue.add(92, TaskInfo(sn=92, tag='', mode='single', language_tag='中'))
+    h.queue.mark_processing(92)
+
+    h.worker.run(92)
+
+    download_calls = [kw for name, kw in fake_anime.calls if name == 'download']
+    assert len(download_calls) == 1
+    assert download_calls[0].get('language_tag') == '中'
+
+
+def test_worker_passes_none_language_tag_when_not_set(tmp_path: pathlib.Path) -> None:
+    """When TaskInfo.language_tag is None, anime.download receives language_tag=None."""
+    fake_anime = FakeAnime(
+        sn=93,
+        download_result=DownloadResult(
+            success=True,
+            file_path=tmp_path / 'a.mp4',
+            size_mb=500,
+        ),
+    )
+    h = _build(tmp_path, fake_anime=fake_anime)
+    h.queue.add(93, TaskInfo(sn=93, tag='', mode='single'))
+    h.queue.mark_processing(93)
+
+    h.worker.run(93)
+
+    download_calls = [kw for name, kw in fake_anime.calls if name == 'download']
+    assert len(download_calls) == 1
+    assert download_calls[0].get('language_tag') is None
+
+
 # ---------------------------------------------------------------------------
 # notify_event_send integration tests
 # ---------------------------------------------------------------------------

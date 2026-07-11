@@ -47,6 +47,34 @@ describe('HttpClient', () => {
     expect(options.headers).toEqual({ 'Content-Type': 'text/plain; charset=utf-8' })
   })
 
+  it('patchJson sends JSON body with correct method and Content-Type', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse({ status: 'ok' }))
+    globalThis.fetch = fetchMock as never
+
+    const http = new HttpClient('/api')
+    await http.patchJson('/bt/feeds/1', { enabled: false })
+
+    const [url, options] = fetchMock.mock.calls[0]!
+    expect(url).toBe('/api/bt/feeds/1')
+    expect(options.method).toBe('PATCH')
+    expect(options.body).toBe(JSON.stringify({ enabled: false }))
+    expect(options.headers).toEqual({ 'Content-Type': 'application/json' })
+  })
+
+  it('deleteJson sends a DELETE request with credentials', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse({ status: 'ok' }))
+    globalThis.fetch = fetchMock as never
+
+    const http = new HttpClient('/api')
+    const result = await http.deleteJson('/bt/feeds/1')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/bt/feeds/1', {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    expect(result).toEqual({ status: 'ok' })
+  })
+
   it('throws ApiError on non-2xx responses', async () => {
     const fetchMock = vi
       .fn()

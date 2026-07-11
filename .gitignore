@@ -115,9 +115,14 @@ bangumi/
 cookies.txt
 cookie.txt
 invalid_cookie.txt
+bilibili_cookie.txt
+putio_token.txt
 config.json
 sn_list.txt
 aniGamer.db
+aniGamer.db-wal
+aniGamer.db-shm
+aniGamer.db-journal
 .idea/aniGamerPlus-Git.iml
 .idea/inspectionProfiles/
 .idea/misc.xml
@@ -132,6 +137,7 @@ cookie2.txt
 */*.iml
 **/.DS_Store
 ffmpeg.exe
+ffprobe.exe
 
 .claude/
 
@@ -146,3 +152,11 @@ frontend/blob-report/
 # Mutation testing output
 backend/mutants/
 frontend/reports/mutation/
+
+# Redis persistence (dramatiq broker bind mount)
+redis-data/
+*.rdb
+*.aof
+
+# stray dev copy created by local sqlite dump script
+backend/_dbcopy.db

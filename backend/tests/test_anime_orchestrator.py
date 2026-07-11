@@ -893,6 +893,53 @@ def test_resolution_updated_on_stream_selection(tmp_path: pathlib.Path) -> None:
     assert entry.resolution == '1080p', f"Expected resolution '1080p' in progress entry, got {entry.resolution!r}"
 
 
+# ---------------------------------------------------------------------------
+# language_tag threading (bilingual 中文配音 support)
+# ---------------------------------------------------------------------------
+
+
+def test_download_threads_language_tag_to_filename_builder(tmp_path: pathlib.Path) -> None:
+    """Anime.download(language_tag=...) must reach FilenameBuilder.build()."""
+    harness = _build_harness(tmp_path)
+
+    build_calls: list[dict[str, Any]] = []
+    orig_build = harness.anime._filename_builder.build
+
+    def _recording_build(*args: Any, **kwargs: Any) -> str:
+        build_calls.append(kwargs)
+        return orig_build(*args, **kwargs)
+
+    harness.anime._filename_builder.build = _recording_build  # type: ignore[method-assign]
+
+    result = harness.anime.download(resolution='1080', classify=False, language_tag='中')
+
+    assert result.success is True
+    assert build_calls, 'FilenameBuilder.build() was never called'
+    assert build_calls[0].get('language_tag') == '中'
+    assert result.file_path is not None
+    assert '[中]' in result.file_path.name
+
+
+def test_download_without_language_tag_defaults_to_none(tmp_path: pathlib.Path) -> None:
+    """Default language_tag=None must reach FilenameBuilder.build() unchanged."""
+    harness = _build_harness(tmp_path)
+
+    build_calls: list[dict[str, Any]] = []
+    orig_build = harness.anime._filename_builder.build
+
+    def _recording_build(*args: Any, **kwargs: Any) -> str:
+        build_calls.append(kwargs)
+        return orig_build(*args, **kwargs)
+
+    harness.anime._filename_builder.build = _recording_build  # type: ignore[method-assign]
+
+    result = harness.anime.download(resolution='1080', classify=False)
+
+    assert result.success is True
+    assert build_calls, 'FilenameBuilder.build() was never called'
+    assert build_calls[0].get('language_tag') is None
+
+
 def test_resolution_updated_when_fallback_resolution_picked(tmp_path: pathlib.Path) -> None:
     """When the requested resolution is unavailable and a fallback is selected,
     update_resolution must be called with the FALLBACK resolution label.

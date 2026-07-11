@@ -83,6 +83,29 @@ function onDiscard(): void {
   background: var(--el-bg-color-overlay, #ffffff);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
   z-index: 100;
+  max-width: calc(100vw - 24px);
+  box-sizing: border-box;
+}
+
+/* Narrow phones: the pill-shaped layout with 3 "size=large" children can
+   exceed a 375px viewport. Drop to a rounded rectangle that wraps and
+   shrinks its buttons instead of clipping off-screen. */
+@media (max-width: 767px) {
+  .ag-fab {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    transform: none;
+    max-width: none;
+    border-radius: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+  .ag-fab :deep(.el-button--large) {
+    padding: 10px 16px;
+    min-height: 44px;
+  }
 }
 
 .ag-fab-enter-active,
@@ -93,5 +116,16 @@ function onDiscard(): void {
 .ag-fab-leave-to {
   opacity: 0;
   transform: translateX(-50%) translateY(12px);
+}
+
+/* Mobile .ag-fab is no longer horizontally centered via transform (it's
+   pinned via left/right instead) — the enter/leave slide must drop the
+   matching translateX(-50%) or the fab visibly jumps sideways as the
+   transition starts/ends. */
+@media (max-width: 767px) {
+  .ag-fab-enter-from,
+  .ag-fab-leave-to {
+    transform: translateY(12px);
+  }
 }
 </style>

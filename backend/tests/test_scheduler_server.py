@@ -7,6 +7,7 @@ import pathlib
 import tempfile
 import types
 from typing import Any
+from unittest import mock
 
 import fastapi.testclient
 import pytest
@@ -168,6 +169,46 @@ def test_health_has_required_fields(scheduler_client: fastapi.testclient.TestCli
 
 
 # ---------------------------------------------------------------------------
+# _lifespan() ghost-task reconciliation
+# ---------------------------------------------------------------------------
+
+
+def test_lifespan_awaits_bt_progress_reconciler(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: reconcile_on_boot is async; the lifespan must await it.
+
+    A previous version of ``_lifespan`` called
+    ``bt_progress_reconciler.reconcile_on_boot()`` without ``await``. That
+    creates the coroutine object, immediately discards it, and the
+    reconciliation body never actually runs. Python only surfaces this as a
+    ``RuntimeWarning`` ("coroutine ... was never awaited") emitted later
+    (source ``<sys>:0``), which slips past the ``contextlib.suppress
+    (Exception)`` wrapping around the call (a RuntimeWarning is not an
+    Exception) and is easy to miss in test output.
+
+    This drives the app through its real ASGI lifespan (the
+    ``TestClient`` context manager) with an ``AsyncMock`` reconciler and
+    asserts the coroutine was actually awaited — not just constructed —
+    so a future regression to a bare (non-awaited) call fails loudly.
+    """
+    monkeypatch.setenv('ANIGAMERPLUS_INTERNAL_SECRET', _TEST_SECRET)
+    monkeypatch.setattr(scheduler_server_module, '_RESOLVED_SECRET', None)
+
+    fake_aps = _FakeApsScheduler()
+    monkeypatch.setattr('app.scheduler.aps_scheduler.ApsScheduler', lambda settings_repo: fake_aps)
+
+    container = _fake_container()
+    mock_reconciler = mock.Mock()
+    mock_reconciler.reconcile_on_boot = mock.AsyncMock(return_value=(0, 0))
+    container.bt_progress_reconciler = mock_reconciler
+
+    app = build_scheduler_app(container)  # type: ignore[arg-type]
+    with fastapi.testclient.TestClient(app, raise_server_exceptions=True):
+        pass
+
+    mock_reconciler.reconcile_on_boot.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # serve() host/port env var resolution
 # ---------------------------------------------------------------------------
 
@@ -257,3 +298,56 @@ def test_serve_passes_custom_port_to_uvicorn(monkeypatch: pytest.MonkeyPatch) ->
     scheduler_server_module.serve()
 
     assert captured.get('port') == 9999
+
+
+# ---------------------------------------------------------------------------
+# serve() WebSocket keepalive-ping env var resolution
+# ---------------------------------------------------------------------------
+
+
+def _serve_with_mocked_uvicorn(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Run ``serve()`` with uvicorn.run mocked out; return the captured kwargs."""
+    import types as _types
+
+    monkeypatch.setenv('ANIGAMERPLUS_INTERNAL_SECRET', _TEST_SECRET)
+    monkeypatch.setattr(scheduler_server_module, '_RESOLVED_SECRET', None)
+
+    captured: dict[str, Any] = {}
+
+    def _fake_uvicorn_run(app: Any, **kwargs: Any) -> None:  # noqa: ARG001
+        captured.update(kwargs)
+
+    fake_container = _fake_container()
+
+    monkeypatch.setattr(scheduler_server_module, 'build_container', lambda: fake_container)
+    monkeypatch.setattr(scheduler_server_module.uvicorn, 'run', _fake_uvicorn_run)
+
+    import app.persistence.paths as _paths_mod
+
+    fake_paths = _types.SimpleNamespace(logs_dir=pathlib.Path(tempfile.gettempdir()))
+    monkeypatch.setattr(_paths_mod.WorkspacePaths, 'detect', staticmethod(lambda: fake_paths))
+
+    scheduler_server_module.serve()
+    return captured
+
+
+def test_uvicorn_config_reads_ws_ping_interval_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ANIGAMERPLUS_WS_PING_INTERVAL/TIMEOUT must be forwarded to uvicorn.run."""
+    monkeypatch.setenv('ANIGAMERPLUS_WS_PING_INTERVAL', '45')
+    monkeypatch.setenv('ANIGAMERPLUS_WS_PING_TIMEOUT', '90')
+
+    captured = _serve_with_mocked_uvicorn(monkeypatch)
+
+    assert captured.get('ws_ping_interval') == 45.0
+    assert captured.get('ws_ping_timeout') == 90.0
+
+
+def test_uvicorn_config_defaults_to_30_ping_interval_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the env-vars unset, uvicorn.run gets the 30s/60s forgiving defaults."""
+    monkeypatch.delenv('ANIGAMERPLUS_WS_PING_INTERVAL', raising=False)
+    monkeypatch.delenv('ANIGAMERPLUS_WS_PING_TIMEOUT', raising=False)
+
+    captured = _serve_with_mocked_uvicorn(monkeypatch)
+
+    assert captured.get('ws_ping_interval') == 30.0
+    assert captured.get('ws_ping_timeout') == 60.0

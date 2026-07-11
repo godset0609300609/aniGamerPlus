@@ -2,7 +2,8 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ConfigApi } from '@/api/config'
-import { TasksApi, extractSn } from '@/api/tasks'
+import { TasksApi, detectSource, extractSn } from '@/api/tasks'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 import type { ManualDownloadMode, ManualTaskRequest, Resolution } from '@/types'
 
 const props = defineProps<{ modelValue: boolean }>()
@@ -10,12 +11,14 @@ const emit = defineEmits<{ (e: 'update:modelValue', value: boolean): void }>()
 
 const tasksApi = new TasksApi()
 const configApi = new ConfigApi()
+const { isMobile } = useBreakpoint()
 
 interface FormState {
   link: string
   mode: ManualDownloadMode
   resolution: Resolution
   classify: boolean
+  bilingual: boolean
   danmu: boolean
   thread: number
 }
@@ -25,6 +28,7 @@ const form = reactive<FormState>({
   mode: 'single',
   resolution: '1080',
   classify: true,
+  bilingual: false,
   danmu: false,
   thread: 1,
 })
@@ -44,6 +48,8 @@ const visible = computed({
   set: (v) => emit('update:modelValue', v),
 })
 
+const source = computed(() => detectSource(form.link))
+
 watch(visible, async (open) => {
   if (!open) return
   try {
@@ -55,19 +61,33 @@ watch(visible, async (open) => {
 })
 
 async function submit(): Promise<void> {
-  const sn = extractSn(form.link)
-  if (!sn) {
+  const result = extractSn(form.link)
+  if (!result) {
     ElMessage.error('請輸入合法的影片連結或 sn')
     return
   }
   submitting.value = true
-  const request: ManualTaskRequest = {
-    sn,
-    resolution: form.resolution,
-    mode: form.mode,
-    thread: form.thread,
-    classify: form.classify,
-    danmu: form.danmu,
+  let request: ManualTaskRequest
+  if (result.source === 'bilibili') {
+    request = {
+      sn: result.bvid,
+      source: 'bilibili',
+      resolution: form.resolution,
+      mode: 'single',
+      thread: 1,
+      classify: form.classify,
+      danmu: false,
+    }
+  } else {
+    request = {
+      sn: result.sn,
+      resolution: form.resolution,
+      mode: form.mode,
+      thread: form.thread,
+      classify: form.classify,
+      danmu: form.danmu,
+      bilingual: form.bilingual,
+    }
   }
   try {
     await tasksApi.submitManual(request)
@@ -85,16 +105,26 @@ async function submit(): Promise<void> {
   <el-dialog
     v-model="visible"
     title="手動新增任務"
-    width="640px"
+    :width="isMobile ? '100%' : '640px'"
+    :fullscreen="isMobile"
   >
     <el-form label-width="120px">
-      <el-form-item label="動畫連結或編號">
+      <el-form-item label="動畫瘋或 Bilibili">
         <el-input
           v-model="form.link"
-          placeholder="可貼上完整動畫瘋網址或直接輸入 sn 編號"
+          placeholder="動畫瘋或 Bilibili 連結"
         />
+        <div
+          v-if="source === 'bilibili'"
+          class="bilibili-hint"
+        >
+          偵測到 Bilibili 影片，將以單一影片模式下載。
+        </div>
       </el-form-item>
-      <el-form-item label="下載模式">
+      <el-form-item
+        v-if="source === 'animad'"
+        label="下載模式"
+      >
         <el-select v-model="form.mode">
           <el-option
             v-for="m in MODES"
@@ -117,7 +147,21 @@ async function submit(): Promise<void> {
       <el-form-item label="建立番劇資料夾">
         <el-switch v-model="form.classify" />
       </el-form-item>
-      <el-form-item label="下載彈幕">
+      <el-form-item
+        v-if="source === 'animad'"
+        label="雙語"
+      >
+        <el-tooltip
+          content="同時抓日文原音與中文配音（中文配音會加上 [中] 檔名標記）"
+          placement="top"
+        >
+          <el-switch v-model="form.bilingual" />
+        </el-tooltip>
+      </el-form-item>
+      <el-form-item
+        v-if="source === 'animad'"
+        label="下載彈幕"
+      >
         <el-switch v-model="form.danmu" />
       </el-form-item>
       <el-form-item label="最大同時下載數">
@@ -125,6 +169,7 @@ async function submit(): Promise<void> {
           v-model="form.thread"
           :min="1"
           :max="50"
+          :disabled="source === 'bilibili'"
         />
       </el-form-item>
     </el-form>

@@ -52,6 +52,7 @@ class FilenameBuilder:
         custom_name: str | None = None,
         include_resolution: bool = True,
         without_suffix: bool = False,
+        language_tag: str | None = None,
     ) -> str:
         """Render the full episode filename.
 
@@ -66,9 +67,13 @@ class FilenameBuilder:
 
         ``custom_name``, when non-empty, overrides ``meta.bangumi_name``
         for the name portion of the filename only.
+
+        ``language_tag``, when set, is appended immediately after the
+        episode marker (e.g. ``S01E01[中]``) so a 中文配音 variant does not
+        collide on disk with its 日文原音 counterpart.
         """
         episode = self._format_episode(meta, season=season)
-        name = self._compose_base(meta, episode, custom_name=custom_name)
+        name = self._compose_base(meta, episode, custom_name=custom_name, language_tag=language_tag)
 
         if include_resolution and self._settings.add_resolution_to_video_filename:
             name = f'{name} ({resolution}p)'
@@ -87,9 +92,22 @@ class FilenameBuilder:
         *,
         season: int = 1,
         custom_name: str | None = None,
+        language_tag: str | None = None,
     ) -> str:
-        """Filename used while the download is in flight."""
-        stem = self.build(meta, resolution, season=season, custom_name=custom_name, without_suffix=True)
+        """Filename used while the download is in flight.
+
+        ``language_tag`` is threaded through so two variants downloading
+        concurrently (e.g. ``bilingual=True``) don't collide on their
+        temp/merging filenames either, not just the final output name.
+        """
+        stem = self.build(
+            meta,
+            resolution,
+            season=season,
+            custom_name=custom_name,
+            without_suffix=True,
+            language_tag=language_tag,
+        )
         name = (
             f'{stem}{self._settings.customized_video_filename_suffix}'
             f'.{temp_suffix}.{self._settings.video_filename_extension}'
@@ -132,9 +150,19 @@ class FilenameBuilder:
         resolved = (custom_name or '').strip() or meta.bangumi_name
         return out / self.legalize(resolved)
 
-    @staticmethod
-    def legalize(name: str) -> str:
-        """Port of ``Config.legalize_filename`` — full-width the reserved chars."""
+    _ALL_DOTS_RE: T.ClassVar[re.Pattern[str]] = re.compile(r'^\.+$')
+
+    @classmethod
+    def legalize(cls, name: str) -> str:
+        """Port of ``Config.legalize_filename`` — full-width the reserved chars.
+
+        A name that, after substitution, is entirely dots (``.``, ``..``,
+        ``...``, ...) is replaced with ``_``: ``/`` and ``\\`` are already
+        neutralised above so a multi-segment traversal like ``../../etc``
+        can't survive this function, but a *single* path component equal to
+        ``..`` is still a valid (and dangerous) "parent directory" reference
+        to ``pathlib`` / the OS even with no separator character in sight.
+        """
         out = re.sub(r'\|+', '｜', name)
         out = re.sub(r'\?+', '？', out)
         out = re.sub(r'\*+', '＊', out)
@@ -144,6 +172,8 @@ class FilenameBuilder:
         out = re.sub(r':+', '：', out)
         out = re.sub(r'\\', '＼', out)
         out = re.sub(r'/', '／', out)
+        if cls._ALL_DOTS_RE.match(out):
+            out = '_'
         return out
 
     # ------------------------------------------------------------------ internals
@@ -205,8 +235,13 @@ class FilenameBuilder:
         episode: str,
         *,
         custom_name: str | None = None,
+        language_tag: str | None = None,
     ) -> str:
         settings = self._settings
+        # Append the language tag immediately after the episode marker (e.g.
+        # ``S01E01[中]``) so a 中文配音 variant never collides with its 日文
+        # counterpart, regardless of which branch below is taken.
+        episode_token = f'{episode}[{language_tag}]' if language_tag else episode
         # Plex naming already wraps the episode token in square-bracket Plex
         # notation (e.g. ``[S01E05]``); preserve legacy concatenation for that
         # path.  Standard (non-plex) path uses `` - `` as separator.
@@ -217,9 +252,9 @@ class FilenameBuilder:
                 f'{settings.customized_video_filename_prefix}'
                 f'{resolved_name}'
                 f'{settings.customized_bangumi_name_suffix}'
-                f'{separator}{episode}'
+                f'{separator}{episode_token}'
             )
-        return f'{settings.customized_video_filename_prefix}{episode}'
+        return f'{settings.customized_video_filename_prefix}{episode_token}'
 
     def _season_root_and_sub(self, meta: AnimeMetadata) -> tuple[str, str]:
         """Classify-season folder layout, taken from legacy ``download``."""

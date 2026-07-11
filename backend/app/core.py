@@ -14,6 +14,8 @@ from __future__ import annotations
 import collections.abc
 import dataclasses
 import functools
+import os
+import pathlib
 import typing as T
 
 import httpx
@@ -21,9 +23,13 @@ import redis
 import redis.asyncio
 
 from .auth.discord_oauth import DiscordOAuthClient
+from .bt_downloader.landing_worker import LandingWorker
+from .bt_downloader.putio_client import PutioClient
 from .downloader.anime import Anime
+from .downloader.bilibili.runner import BilibiliRunner
+from .downloader.bilibili.ytdlp_downloader import YtdlpDownloader
 from .downloader.danmu import DanmuRenderer
-from .downloader.ffmpeg import FFmpegRunner
+from .downloader.ffmpeg import FFmpegRunner, resolve_ffmpeg_path
 from .downloader.ffmpeg_downloader import FFmpegDownloader
 from .downloader.filename import FilenameBuilder
 from .downloader.http_client import AniGamerHttpClient
@@ -35,13 +41,22 @@ from .downloader.uploader_ftp import FtpUploader
 from .integrations.my_anime_export import MyAnimeExporter
 from .logging_ import Logger
 from .persistence.anime_list_repo import AnimeListEntryRepository
+from .persistence.bilibili_cookie_repo import BilibiliCookieRepository
+from .persistence.bt_feed_entry_repo import BtFeedEntryRepository
+from .persistence.bt_feed_repo import BtFeedRepository
+from .persistence.bt_filter_repo import BtFilterRepository
 from .persistence.cookie_repo import CookieRepository
 from .persistence.db import Database
 from .persistence.paths import WorkspacePaths
+from .persistence.putio_token_repo import PutioTokenRepository
 from .persistence.repositories import AnimeRepository
 from .persistence.settings_repo import SettingsRepository
 from .persistence.sn_list_repo import SnListRepository
 from .persistence.task_history_repo import TaskHistoryRepository
+from .persistence.task_id_map_repo import TaskIdMapRepository
+from .persistence.tg_downloaded_media_repo import TgDownloadedMediaRepository
+from .persistence.tg_session_repo import TgSessionRepository
+from .persistence.tg_watched_chat_repo import TgWatchedChatRepository
 from .persistence.user_repo import UserRepository
 from .redis_state import MessageIdRegistry
 from .scheduler.cd_counter import DownloadCooldown
@@ -50,9 +65,14 @@ from .scheduler.queue_ import TaskQueue
 from .scheduler.signals import SignalHandler
 from .scheduler.update_loop import UpdateLoop
 from .scheduler.worker import DownloadWorker
+from .services.bt_downloader_service import BtDownloaderService
+from .services.bt_manual_dispatch_service import BtManualDispatchService
+from .services.bt_probe_service import BtProbeService
+from .services.bt_progress_reconciler import BtProgressReconciler
+from .services.bt_retention_service import BtRetentionService
 from .services.redis_progress_reader import RedisProgressReader
 from .services.telegram_live_menu import LiveMenuRegistry
-from .services.telegram_live_messages import LiveMessageRegistry
+from .services.telegram_live_messages import BtLiveMessageRegistry, LiveMessageRegistry
 
 if T.TYPE_CHECKING:
     from .models import AppSettings
@@ -61,6 +81,8 @@ if T.TYPE_CHECKING:
     from .services.telegram_commands import TelegramCommandDispatcher
     from .services.telegram_menu import MenuRenderer
     from .services.telegram_rate_limiter import TelegramRateLimiter
+    from .services.tg_service import TgService
+    from .tg_downloader.backfill import TgBackfillService
 
 
 @dataclasses.dataclass
@@ -74,13 +96,38 @@ class Container:
     settings_repo: SettingsRepository
     sn_list_repo: SnListRepository
     cookie_repo: CookieRepository
+    bilibili_cookie_repo: BilibiliCookieRepository
+    putio_token_repo: PutioTokenRepository
     database: Database
     anime_repo: AnimeRepository
     user_repo: UserRepository
     anime_list_entry_repo: AnimeListEntryRepository
     task_history_repo: TaskHistoryRepository
+    task_id_map_repo: TaskIdMapRepository
+    bt_feed_repo: BtFeedRepository
+    bt_filter_repo: BtFilterRepository
+    bt_feed_entry_repo: BtFeedEntryRepository
+    tg_session_repo: TgSessionRepository
+    tg_watched_chat_repo: TgWatchedChatRepository
+    tg_downloaded_media_repo: TgDownloadedMediaRepository
+    bt_downloader_service: BtDownloaderService
+    bt_manual_dispatch_service: BtManualDispatchService
+    bt_probe_service: BtProbeService
+    bt_landing_worker: LandingWorker
+    bt_retention_service: BtRetentionService
     oauth_client: DiscordOAuthClient
     progress_bus: ProgressBus
+    # Separate ProgressBus instance (in-memory state, shares the same Redis
+    # mirror as ``progress_bus`` so both feed the same WS-visible snapshot)
+    # feeding BT downloader/landing-worker live-monitor entries. Deliberately
+    # NOT the same instance as ``progress_bus``: BT already writes
+    # task_history directly (BtDownloaderService/LandingWorker's own
+    # task_history_repo calls), so wiring the shared, history_repo-backed
+    # ``progress_bus`` here would double-INSERT a task_history row per BT
+    # dispatch (once from the direct call, once from ProgressBus.start()'s
+    # own persistence). Constructed with ``history_repo=None`` to keep
+    # ProgressBus purely a live/in-memory + Redis-mirrored view for BT rows.
+    bt_progress_bus: ProgressBus
     http_client: AniGamerHttpClient
     metadata_extractor: MetadataExtractor
     m3u8_client: M3u8Client
@@ -94,6 +141,7 @@ class Container:
     cooldown: DownloadCooldown
     parse_cooldown: DownloadCooldown
     manual_runner: ManualRunner
+    bilibili_runner: BilibiliRunner
     my_anime_exporter: MyAnimeExporter
     signals: SignalHandler
     # Sync client used by RedisProgressMirror (must stay sync — called from
@@ -102,9 +150,15 @@ class Container:
     # Async client used by RedisProgressReader + MessageIdRegistry.
     redis_client_async: redis.asyncio.Redis | None = None
     redis_progress_reader: RedisProgressReader | None = None
+    # Boot-time ghost-task reconciliation — see the class docstring in
+    # bt_progress_reconciler.py. None when redis_progress_reader is None
+    # (no cross-process mirror = no ghost state to reconcile).
+    bt_progress_reconciler: BtProgressReconciler | None = None
     message_id_registry: MessageIdRegistry | None = None
     # Per-(sn, chat_id) live progress message tracker (Redis-backed).
     live_messages: LiveMessageRegistry | None = None
+    # Per-(entry_id, chat_id) live BT status message tracker (Redis-backed).
+    bt_live_messages: BtLiveMessageRegistry | None = None
     # None when bot_token is empty; instantiated by the API process only.
     telegram_client: TelegramClient | None = None
     # None when bot_token is empty; rate limiter + dispatcher for webhook commands.
@@ -114,6 +168,13 @@ class Container:
     live_menu: LiveMenuRegistry | None = None
     # Menu page renderer for /menu control panel; None when bot_token is empty.
     menu_renderer: MenuRenderer | None = None
+    # None when TG_API_ID/TG_API_HASH are not configured (the Telegram User
+    # API downloader feature is entirely opt-in via those env vars).
+    tg_service: TgService | None = None
+    # Runs a single chat's historical backfill scan (app.tasks.tg_backfill_tick
+    # dramatiq actor). Same opt-in gate as tg_service — None when
+    # TG_API_ID/TG_API_HASH are not configured.
+    tg_backfill_service: TgBackfillService | None = None
 
     def anime_factory(self, sn: int) -> Anime:
         """Build an :class:`Anime` orchestrator wired with this container's collaborators."""
@@ -228,6 +289,8 @@ def build_container() -> Container:
 
     sn_list_repo = SnListRepository(paths, logger)
     cookie_repo = CookieRepository(paths, logger)
+    bilibili_cookie_repo = BilibiliCookieRepository(paths)
+    putio_token_repo = PutioTokenRepository(paths)
 
     database = Database(f'sqlite:///{paths.db_path.as_posix()}', logger)
     database.run_baseline_migrations()
@@ -235,6 +298,13 @@ def build_container() -> Container:
     user_repo = UserRepository(database)
     anime_list_entry_repo = AnimeListEntryRepository(database)
     task_history_repo = TaskHistoryRepository(database)
+    task_id_map_repo = TaskIdMapRepository(database)
+    bt_feed_repo = BtFeedRepository(database)
+    bt_filter_repo = BtFilterRepository(database)
+    bt_feed_entry_repo = BtFeedEntryRepository(database)
+    tg_session_repo = TgSessionRepository(database)
+    tg_watched_chat_repo = TgWatchedChatRepository(database)
+    tg_downloaded_media_repo = TgDownloadedMediaRepository(database)
 
     # Discord OAuth client (shared async HTTP client lifetime = process).
     _oauth_http = httpx.AsyncClient()
@@ -248,6 +318,7 @@ def build_container() -> Container:
     redis_progress_reader = None
     message_id_registry = None
     live_messages = None
+    bt_live_messages = None
     live_menu = None
     try:
         redis_url = get_redis_url()
@@ -265,6 +336,7 @@ def build_container() -> Container:
         redis_progress_reader = RedisProgressReader(redis_client_async)
         message_id_registry = MessageIdRegistry(redis_client_async)
         live_messages = LiveMessageRegistry(redis_client_async)
+        bt_live_messages = BtLiveMessageRegistry(redis_client_async)
         live_menu = LiveMenuRegistry(redis_client_async)
     except Exception as exc:  # noqa: BLE001 — connection refused etc.
         logger.info(
@@ -277,6 +349,9 @@ def build_container() -> Container:
         redis_client_async = None
 
     progress_bus = ProgressBus(history_repo=task_history_repo, mirror=redis_progress_mirror)
+    # See the Container.bt_progress_bus field docstring for why this is a
+    # separate instance (history_repo=None) rather than reusing progress_bus.
+    bt_progress_bus = ProgressBus(mirror=redis_progress_mirror)
 
     http_client = AniGamerHttpClient(settings, cookie_repo, logger)
     metadata_extractor = MetadataExtractor(http_client, settings, logger)
@@ -346,6 +421,89 @@ def build_container() -> Container:
         anime_list_repo=anime_list_entry_repo,
     )
 
+    bangumi_dir = pathlib.Path(settings.bangumi_dir) if settings.bangumi_dir else paths.bangumi_dir_default
+    ytdlp_downloader = YtdlpDownloader(
+        progress_bus=progress_bus,
+        cookie_repo=bilibili_cookie_repo,
+        bangumi_dir=bangumi_dir,
+        logger=logger,
+        ffmpeg_location=resolve_ffmpeg_path(),
+    )
+    bilibili_runner = BilibiliRunner(
+        ytdlp_downloader=ytdlp_downloader,
+        progress_bus=progress_bus,
+        logger=logger,
+        settings=settings,
+        notify_event_send=_notify_event_send_for_manual,
+        anime_list_repo=anime_list_entry_repo,
+        task_id_map_repo=task_id_map_repo,
+    )
+
+    def _putio_client_factory(token: str) -> PutioClient:
+        return PutioClient(oauth_token=token)
+
+    bt_downloader_service = BtDownloaderService(
+        bt_feed_repo,
+        bt_filter_repo,
+        bt_feed_entry_repo,
+        _putio_client_factory,
+        putio_token_repo,
+        settings.bt_downloader,
+        logger=logger,
+        notify_event_send=_notify_event_send_for_manual,
+        task_history_repo=task_history_repo,
+        task_id_map_repo=task_id_map_repo,
+        progress_bus=bt_progress_bus,
+    )
+    bt_manual_dispatch_service = BtManualDispatchService(
+        bt_feed_entry_repo,
+        _putio_client_factory,
+        putio_token_repo,
+        bt_feed_repo=bt_feed_repo,
+        bt_filter_repo=bt_filter_repo,
+        notify_event_send=_notify_event_send_for_manual,
+        logger=logger,
+        task_history_repo=task_history_repo,
+        task_id_map_repo=task_id_map_repo,
+        progress_bus=bt_progress_bus,
+    )
+    bt_probe_service = BtProbeService()
+
+    bt_landing_dir = (
+        pathlib.Path(settings.bt_downloader.landing_dir)
+        if settings.bt_downloader.landing_dir
+        else paths.bangumi_dir_default
+    )
+    bt_landing_worker = LandingWorker(
+        _putio_client_factory(putio_token_repo.read()),
+        bt_feed_entry_repo,
+        bt_landing_dir,
+        bt_feed_repo=bt_feed_repo,
+        bt_filter_repo=bt_filter_repo,
+        notify_event_send=_notify_event_send_for_manual,
+        task_history_repo=task_history_repo,
+        task_id_map_repo=task_id_map_repo,
+        progress_bus=bt_progress_bus,
+        logger=logger,
+        settings_repo=settings_repo,
+    )
+    bt_retention_service = BtRetentionService(
+        bt_feed_entry_repo,
+        task_history_repo,
+        settings_repo,
+        logger=logger,
+    )
+    bt_progress_reconciler = BtProgressReconciler(
+        bt_feed_entry_repo,
+        tg_downloaded_media_repo,
+        task_id_map_repo,
+        bt_progress_bus,
+        progress_bus,
+        redis_progress_reader,
+        task_history_repo=task_history_repo,
+        logger=logger,
+    )
+
     if settings.telegram.bot_token:
         from .services.animelist_service import AnimeListService as _AnimeListService
         from .services.progress_service import ProgressService as _ProgressService
@@ -368,7 +526,7 @@ def build_container() -> Container:
             return _resolve_client(settings_repo.load().telegram.bot_token)
 
         _animelist_svc = _AnimeListService(sn_list_repo, anime_repo, anime_list_entry_repo, user_repo)
-        _progress_svc = _ProgressService(progress_bus, user_repo, None, redis_progress_reader)
+        _progress_svc = _ProgressService(progress_bus, user_repo, redis_progress_reader, bt_progress_bus)
         _task_svc = _TaskService(
             settings_repo,
             manual_runner,
@@ -401,24 +559,119 @@ def build_container() -> Container:
             live_menu=live_menu,
         )
 
+    # Telegram User API downloader (MTProto, via hydrogram) — entirely
+    # opt-in via TG_API_ID/TG_API_HASH. Imports are deferred into this
+    # block (matching the `if settings.telegram.bot_token:` block above)
+    # so processes that don't use the feature never pay hydrogram's import
+    # cost (see app/tg_downloader/__init__.py's docstring for why, unlike
+    # pyrogram, this no longer needs an event-loop compat shim).
+    tg_service = None
+    tg_backfill_service = None
+    _tg_api_id_raw = os.environ.get('TG_API_ID', '')
+    _tg_api_hash = os.environ.get('TG_API_HASH', '')
+    if _tg_api_id_raw and _tg_api_hash:
+        try:
+            _tg_api_id = int(_tg_api_id_raw)
+        except ValueError:
+            logger.error(
+                None, 'Bootstrap', f'TG_API_ID 不是合法整數: {_tg_api_id_raw!r}，Telegram User API 停用', display=False
+            )
+        else:
+            from .services.tg_service import TgService as _TgService
+            from .services.tg_service import resolve_bot_username as _resolve_bot_username
+            from .tg_downloader.backfill import TgBackfillService as _TgBackfillService
+            from .tg_downloader.client_pool import TgClientPool as _TgClientPool
+            from .tg_downloader.downloader import TgDownloadWatcher as _TgDownloadWatcher
+            from .tg_downloader.notification_binder import NotificationBinder as _NotificationBinder
+            from .tg_downloader.phone_login import PhoneLoginService as _PhoneLoginService
+            from .tg_downloader.qr_login import QrLoginService as _QrLoginService
+
+            _tg_client_pool = _TgClientPool(_tg_api_id, _tg_api_hash, tg_session_repo, logger=logger)
+            _tg_notification_binder = _NotificationBinder(
+                lambda: _resolve_bot_username(settings_repo.load), logger=logger
+            )
+            _tg_qr_login = _QrLoginService(
+                _tg_api_id, _tg_api_hash, tg_session_repo, notification_binder=_tg_notification_binder, logger=logger
+            )
+            _tg_phone_login = _PhoneLoginService(
+                _tg_api_id, _tg_api_hash, tg_session_repo, notification_binder=_tg_notification_binder, logger=logger
+            )
+            _tg_bangumi_dir = pathlib.Path(settings.bangumi_dir) if settings.bangumi_dir else paths.bangumi_dir_default
+            # HIGH-1 (security audit): every TG download must resolve inside
+            # this root — defaults to bangumi_dir (unchanged pre-fix
+            # behaviour) unless an operator opts into a dedicated root via
+            # ANIGAMERPLUS_TG_LANDING_ROOT (mirrors bt_downloader.landing_dir's
+            # "empty = use bangumi_dir" convention, just env-configurable
+            # instead of a settings.json field since it's a rarely-touched
+            # deployment-level knob).
+            _tg_landing_root_env = os.environ.get('ANIGAMERPLUS_TG_LANDING_ROOT', '')
+            _tg_landing_root = pathlib.Path(_tg_landing_root_env) if _tg_landing_root_env else _tg_bangumi_dir
+            _tg_watcher = _TgDownloadWatcher(
+                tg_watched_chat_repo,
+                tg_downloaded_media_repo,
+                _tg_bangumi_dir,
+                landing_root=_tg_landing_root,
+                task_history_repo=task_history_repo,
+                task_id_map_repo=task_id_map_repo,
+                progress_bus=progress_bus,
+                notify_event_send=_notify_event_send_for_manual,
+                logger=logger,
+            )
+            tg_service = _TgService(
+                tg_session_repo,
+                tg_watched_chat_repo,
+                tg_downloaded_media_repo,
+                _tg_client_pool,
+                _tg_qr_login,
+                _tg_phone_login,
+                _tg_notification_binder,
+                _tg_watcher,
+                logger=logger,
+            )
+            tg_backfill_service = _TgBackfillService(
+                _tg_client_pool,
+                tg_watched_chat_repo,
+                _tg_watcher,
+                logger=logger,
+            )
+
     container = Container(
         paths=paths,
         logger=logger,
         settings_repo=settings_repo,
         sn_list_repo=sn_list_repo,
         cookie_repo=cookie_repo,
+        bilibili_cookie_repo=bilibili_cookie_repo,
+        putio_token_repo=putio_token_repo,
         database=database,
         anime_repo=anime_repo,
         user_repo=user_repo,
         anime_list_entry_repo=anime_list_entry_repo,
         task_history_repo=task_history_repo,
+        task_id_map_repo=task_id_map_repo,
+        bt_feed_repo=bt_feed_repo,
+        bt_filter_repo=bt_filter_repo,
+        bt_feed_entry_repo=bt_feed_entry_repo,
+        tg_session_repo=tg_session_repo,
+        tg_watched_chat_repo=tg_watched_chat_repo,
+        tg_downloaded_media_repo=tg_downloaded_media_repo,
+        tg_service=tg_service,
+        tg_backfill_service=tg_backfill_service,
+        bt_downloader_service=bt_downloader_service,
+        bt_manual_dispatch_service=bt_manual_dispatch_service,
+        bt_probe_service=bt_probe_service,
+        bt_landing_worker=bt_landing_worker,
+        bt_retention_service=bt_retention_service,
         oauth_client=oauth_client,
         progress_bus=progress_bus,
+        bt_progress_bus=bt_progress_bus,
         redis_client_sync=redis_client_sync,
         redis_client_async=redis_client_async,
         redis_progress_reader=redis_progress_reader,
+        bt_progress_reconciler=bt_progress_reconciler,
         message_id_registry=message_id_registry,
         live_messages=live_messages,
+        bt_live_messages=bt_live_messages,
         http_client=http_client,
         metadata_extractor=metadata_extractor,
         m3u8_client=m3u8_client,
@@ -432,6 +685,7 @@ def build_container() -> Container:
         cooldown=cooldown,
         parse_cooldown=parse_cooldown,
         manual_runner=manual_runner,
+        bilibili_runner=bilibili_runner,
         my_anime_exporter=my_anime_exporter,
         signals=signals,
         telegram_client=telegram_client,

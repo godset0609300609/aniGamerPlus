@@ -14,6 +14,8 @@ All handlers are ``async def`` (memory: FastAPI routes are async).
 from __future__ import annotations
 
 import collections.abc
+import logging
+import os
 import secrets
 import typing as T
 
@@ -22,6 +24,7 @@ import fastapi
 import httpx
 import pydantic
 
+from .. import rate_limit
 from ..auth.deps import get_user_repo
 from ..auth.discord_oauth import DiscordOAuthClient
 from ..models import AppSettings
@@ -34,6 +37,75 @@ from ..services.telegram_webapp_auth import (
 )
 
 router = fastapi.APIRouter(prefix='/api/auth', tags=['auth'])
+
+_log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Discord allowlist gate (fix #16)
+# ---------------------------------------------------------------------------
+
+#: Comma-separated Discord guild (server) IDs. When set, a callback user must
+#: belong to at least one of these guilds (checked via the OAuth token's
+#: ``guilds`` scope) or the login is rejected with 403.
+DISCORD_ALLOWED_GUILDS_ENV_VAR = 'ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS'
+
+#: Comma-separated Discord user IDs. When set, a callback user whose id is in
+#: this set is always allowed in — a lighter-weight fallback for solo/small
+#: deployments that don't want to fuss with guild membership checks.
+DISCORD_ALLOWED_USER_IDS_ENV_VAR = 'ANIGAMERPLUS_DISCORD_ALLOWED_USER_IDS'
+
+
+def _env_id_set(var_name: str) -> frozenset[str]:
+    raw = os.environ.get(var_name, '')
+    return frozenset(part.strip() for part in raw.split(',') if part.strip())
+
+
+async def _enforce_discord_allowlist(
+    oauth: DiscordOAuthClient,
+    access_token: str,
+    discord_id: str,
+) -> None:
+    """Reject the login unless *discord_id* clears the configured allowlist.
+
+    Two independent gates, either one is sufficient to allow the login:
+
+    * ``ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS`` — *discord_id* must belong to
+      at least one of the listed guild IDs (fetched live via
+      ``GET /users/@me/guilds`` using the callback's access token).
+    * ``ANIGAMERPLUS_DISCORD_ALLOWED_USER_IDS`` — *discord_id* is directly
+      in the list.
+
+    When *neither* env var is set, every Discord user is allowed in (the
+    pre-existing default) but a warning is logged on every callback so an
+    operator notices the dashboard is wide open to anyone with a Discord
+    account.
+    """
+    allowed_guild_ids = _env_id_set(DISCORD_ALLOWED_GUILDS_ENV_VAR)
+    allowed_user_ids = _env_id_set(DISCORD_ALLOWED_USER_IDS_ENV_VAR)
+
+    if not allowed_guild_ids and not allowed_user_ids:
+        _log.warning('discord OAuth allowlist not configured — any discord user can log in')
+        return
+
+    if discord_id in allowed_user_ids:
+        return
+
+    if allowed_guild_ids:
+        try:
+            guilds = await oauth.fetch_user_guilds(access_token)
+        except httpx.HTTPStatusError as exc:
+            raise fastapi.HTTPException(
+                status_code=fastapi.status.HTTP_502_BAD_GATEWAY,
+                detail=f'Discord guilds fetch failed: {exc.response.status_code}',
+            ) from exc
+        guild_ids = {str(g.get('id')) for g in guilds}
+        if guild_ids & allowed_guild_ids:
+            return
+
+    raise fastapi.HTTPException(
+        status_code=fastapi.status.HTTP_403_FORBIDDEN,
+        detail='Discord account is not authorized to access this application',
+    )
 
 # ---------------------------------------------------------------------------
 # Dependency factories
@@ -70,6 +142,7 @@ get_settings_repo = container_bound(lambda c: c.settings_repo)
 
 
 @router.get('/login')
+@rate_limit.limiter.limit(rate_limit.auth_rate_limit)
 async def login(
     request: fastapi.Request,
     settings: T.Annotated[AppSettings, fastapi.Depends(get_settings)],
@@ -96,6 +169,7 @@ async def login(
 
 
 @router.get('/callback')
+@rate_limit.limiter.limit(rate_limit.auth_rate_limit)
 async def callback(
     request: fastapi.Request,
     code: str,
@@ -147,6 +221,9 @@ async def callback(
     username = str(user_info.get('username', ''))
     avatar_url_raw = user_info.get('avatar_url')
     avatar_url: str | None = str(avatar_url_raw) if avatar_url_raw is not None else None
+
+    # Allowlist gate (fix #16) — reject before the user row is ever touched.
+    await _enforce_discord_allowlist(oauth, access_token, discord_id)
 
     # Determine whether this user should be auto-promoted to admin.
     bootstrap_ids: list[str] = list(settings.auth.bootstrap_admin_ids)
@@ -230,6 +307,7 @@ async def me(
 
 
 @router.post('/telegram-webapp')
+@rate_limit.limiter.limit(rate_limit.auth_rate_limit)
 async def telegram_webapp_login(
     request: fastapi.Request,
     payload: TelegramWebAppLoginRequest,

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { formatEta, formatRelative } from '@/utils/format'
+import { formatEta, formatRelative, formatRelativeBare } from '@/utils/format'
 
 describe('formatEta', () => {
   it('returns empty string for null', () => {
@@ -79,5 +79,65 @@ describe('formatRelative', () => {
     const result = formatRelative(started)
     expect(result).toContain('開始於')
     expect(result).toContain('小時')
+  })
+
+  it('still returns the "開始於" prefix (TaskCard relies on this)', () => {
+    vi.useFakeTimers()
+    const now = new Date('2026-04-18T12:09:00Z')
+    vi.setSystemTime(now)
+    const started = new Date('2026-04-18T12:00:00Z').toISOString()
+    expect(formatRelative(started)).toBe(`開始於 ${formatRelativeBare(started)}`)
+  })
+})
+
+describe('formatRelativeBare', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('returns empty string for null', () => {
+    expect(formatRelativeBare(null)).toBe('')
+  })
+
+  it('returns empty string for undefined', () => {
+    expect(formatRelativeBare(undefined)).toBe('')
+  })
+
+  it('returns empty string for invalid date string', () => {
+    expect(formatRelativeBare('not-a-date')).toBe('')
+  })
+
+  it('formats seconds ago when < 60 seconds, with no "開始於" prefix', () => {
+    vi.useFakeTimers()
+    const now = new Date('2026-04-18T12:00:30Z')
+    vi.setSystemTime(now)
+    const started = new Date('2026-04-18T12:00:00Z').toISOString()
+    const result = formatRelativeBare(started)
+    expect(result).not.toContain('開始於')
+    expect(result).toContain('秒')
+  })
+
+  it('formats "N 分鐘前" for minutes ago', () => {
+    vi.useFakeTimers()
+    const now = new Date('2026-04-18T12:09:00Z')
+    vi.setSystemTime(now)
+    const started = new Date('2026-04-18T12:00:00Z').toISOString()
+    expect(formatRelativeBare(started)).toBe('9 分鐘前')
+  })
+
+  it('formats "N 小時前" for hours ago', () => {
+    vi.useFakeTimers()
+    const now = new Date('2026-04-18T14:00:00Z')
+    vi.setSystemTime(now)
+    const started = new Date('2026-04-18T12:00:00Z').toISOString()
+    expect(formatRelativeBare(started)).toBe('2 小時前')
+  })
+
+  it('formats "N 天前" for days ago', () => {
+    vi.useFakeTimers()
+    const now = new Date('2026-04-21T12:00:00Z')
+    vi.setSystemTime(now)
+    const started = new Date('2026-04-18T12:00:00Z').toISOString()
+    expect(formatRelativeBare(started)).toBe('3 天前')
   })
 })

@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Grid } from '@element-plus/icons-vue'
 import { AnimeListApi } from '@/api/animelist'
 import DirtyFab from '@/components/DirtyFab.vue'
+import BrowserExtensionDialog from '@/components/animeList/BrowserExtensionDialog.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 import type { AnimeListEntry, AnimeListMode } from '@/types'
+
+const extensionDialogOpen = ref(false)
 
 const api = new AnimeListApi()
 const { isAdmin, user } = useAuthStore()
+const { isMobile } = useBreakpoint()
 
 // --- Tag draft map ---
 // reactive(Map) — Vue 3 proxies get/has/set/delete so mutations trigger
@@ -58,6 +64,11 @@ function commitCustomNameDraft(row: AnimeListEntry): void {
 const entries = ref<AnimeListEntry[]>([])
 const original = ref<string>('[]')
 const loading = ref(false)
+// Tracks whether the very first load() has completed. Only the initial
+// fetch shows the skeleton placeholder — subsequent reloads (e.g. after
+// save()) keep the existing rows visible instead of flashing back to a
+// skeleton, matching the pattern used by MonitorView/SettingsView.
+const hasLoadedOnce = ref(false)
 const saving = ref(false)
 const activeGroups = ref<string[]>([])
 
@@ -253,6 +264,7 @@ async function load(): Promise<void> {
     ElMessage.error(`讀取追番清單失敗：${(err as Error).message}`)
   } finally {
     loading.value = false
+    hasLoadedOnce.value = true
   }
 }
 
@@ -290,10 +302,11 @@ async function discard(): Promise<void> {
 
 function addEntry(ownerSection?: UserSection): void {
   const ownerId = ownerSection?.userId ?? user.value?.id ?? null
-  const ownerUsername = ownerSection?.username ?? null
+  const ownerUsername = ownerSection?.username ?? user.value?.username ?? null
   const blank: AnimeListEntry = {
     sn: 0,
     enabled: true,
+    bilingual: false,
     mode: null,
     tag: '',
     season: 1,
@@ -394,266 +407,504 @@ onMounted(load)
       >
         新增項目
       </el-button>
+      <el-button @click="extensionDialogOpen = true">
+        <el-icon><Grid /></el-icon>
+        瀏覽器擴充
+      </el-button>
     </div>
+
+    <!-- Initial-load skeleton — avoids a blank content area while the
+         first fetch is in flight (subsequent reloads keep existing rows
+         visible instead of flashing back to this). -->
+    <el-skeleton
+      v-if="loading && !hasLoadedOnce"
+      :rows="6"
+      animated
+      class="ag-section"
+    />
 
     <!-- ====== Unified grouped-by-user view (admin + non-admin) ====== -->
-    <div
-      v-for="section in allSections"
-      :key="section.userId"
-      class="ag-user-section"
-    >
-      <!-- User section header -->
-      <div class="ag-user-header">
-        <span class="ag-user-icon">👤</span>
-        <span class="ag-user-name">{{ section.username }}</span>
-        <span
-          v-if="section.isSelf"
-          class="ag-user-self-badge"
-        >（我）</span>
-        <span class="ag-user-count">{{ section.totalCount }} 部作品</span>
-        <!-- Add button only in own section for non-admin; admin sees it on any section -->
-        <el-button
-          v-if="isAdmin || section.isSelf"
-          size="small"
-          class="ag-section-add-btn"
-          @click="addEntry(section)"
+    <template v-else>
+      <div
+        v-for="section in allSections"
+        :key="section.userId"
+        class="ag-user-section"
+      >
+        <!-- User section header -->
+        <div class="ag-user-header">
+          <span class="ag-user-icon">👤</span>
+          <span class="ag-user-name">{{ section.username }}</span>
+          <span
+            v-if="section.isSelf"
+            class="ag-user-self-badge"
+          >（我）</span>
+          <span class="ag-user-count">{{ section.totalCount }} 部作品</span>
+          <!-- Add button only in own section for non-admin; admin sees it on any section -->
+          <el-button
+            v-if="isAdmin || section.isSelf"
+            size="small"
+            class="ag-section-add-btn"
+            @click="addEntry(section)"
+          >
+            ＋
+          </el-button>
+        </div>
+
+        <!-- Tag sub-groups within this user -->
+        <el-collapse
+          v-model="activeSections"
+          class="ag-section"
         >
-          ＋
-        </el-button>
+          <el-collapse-item
+            v-for="group in section.tagGroups"
+            :key="sectionTagKey(section.userId, group.tag)"
+            :name="sectionTagKey(section.userId, group.tag)"
+            :title="`${groupLabel(group.tag)}（${group.rows.length}）`"
+          >
+            <el-table
+              v-if="!isMobile"
+              :data="group.rows"
+              stripe
+              size="small"
+              class="ag-anime-table"
+            >
+              <!-- Enable toggle -->
+              <el-table-column
+                label="啟用"
+                width="70"
+              >
+                <template #default="{ row }">
+                  <!-- Duplicate: show disabled toggle with tooltip -->
+                  <el-tooltip
+                    v-if="row.duplicate_of_entry_id != null"
+                    :content="duplicateTooltip(row)"
+                    placement="top"
+                  >
+                    <el-switch
+                      :model-value="false"
+                      disabled
+                      @change="onDuplicateToggleAttempt(row)"
+                    />
+                  </el-tooltip>
+                  <!-- Readonly row (not own): disabled toggle -->
+                  <el-switch
+                    v-else-if="!isOwnRow(row)"
+                    :model-value="row.enabled"
+                    disabled
+                  />
+                  <!-- Own row: fully interactive -->
+                  <el-switch
+                    v-else
+                    v-model="row.enabled"
+                  />
+                </template>
+              </el-table-column>
+
+              <!-- Bilingual toggle -->
+              <el-table-column
+                label="雙語"
+                width="70"
+              >
+                <template #header>
+                  <el-tooltip
+                    content="同時抓日文原音與中文配音（中文配音會加上 [中] 檔名標記）"
+                    placement="top"
+                  >
+                    <span>雙語</span>
+                  </el-tooltip>
+                </template>
+                <template #default="{ row }">
+                  <el-tooltip
+                    v-if="row.duplicate_of_entry_id != null"
+                    :content="duplicateTooltip(row)"
+                    placement="top"
+                  >
+                    <el-switch
+                      :model-value="row.bilingual"
+                      disabled
+                    />
+                  </el-tooltip>
+                  <el-switch
+                    v-else-if="!isOwnRow(row)"
+                    :model-value="row.bilingual"
+                    disabled
+                  />
+                  <el-switch
+                    v-else
+                    v-model="row.bilingual"
+                  />
+                </template>
+              </el-table-column>
+
+              <!-- Warning icon for duplicates -->
+              <el-table-column
+                width="30"
+              >
+                <template #default="{ row }">
+                  <el-tooltip
+                    v-if="row.duplicate_of_entry_id != null"
+                    :content="duplicateTooltip(row)"
+                    placement="top"
+                  >
+                    <span class="ag-dup-icon">⚠</span>
+                  </el-tooltip>
+                </template>
+              </el-table-column>
+
+              <!-- sn -->
+              <el-table-column
+                label="sn"
+                width="100"
+              >
+                <template #default="{ row }">
+                  <el-input-number
+                    v-model="row.sn"
+                    :min="0"
+                    :controls="false"
+                    :disabled="!isOwnRow(row)"
+                    size="small"
+                    class="ag-sn-input"
+                  />
+                </template>
+              </el-table-column>
+
+              <!-- Anime name -->
+              <el-table-column
+                label="番劇名稱"
+                min-width="180"
+              >
+                <template #default="{ row }">
+                  <el-tooltip
+                    v-if="row.anime_name"
+                    :content="row.anime_name"
+                    placement="top"
+                    :show-after="300"
+                  >
+                    <span class="ag-truncate">{{ row.anime_name }}</span>
+                  </el-tooltip>
+                  <span
+                    v-else
+                    class="ag-muted"
+                  >（尚未下載）</span>
+                </template>
+              </el-table-column>
+
+              <!-- Custom name -->
+              <el-table-column
+                label="自訂名稱"
+                width="160"
+              >
+                <template #default="{ row }">
+                  <el-input
+                    :model-value="getCustomNameValue(row)"
+                    placeholder="（預設使用抓到的名稱）"
+                    :disabled="!isOwnRow(row)"
+                    size="small"
+                    @update:model-value="setCustomNameDraft(row, $event)"
+                    @blur="commitCustomNameDraft(row)"
+                    @keyup.enter="commitCustomNameDraft(row)"
+                  />
+                </template>
+              </el-table-column>
+
+              <!-- Download mode -->
+              <el-table-column
+                label="下載模式"
+                width="160"
+              >
+                <template #default="{ row }">
+                  <el-select
+                    v-model="row.mode"
+                    placeholder="使用預設"
+                    clearable
+                    :disabled="!isOwnRow(row)"
+                    size="small"
+                  >
+                    <el-option
+                      v-for="m in MODES"
+                      :key="m.value"
+                      :label="m.label"
+                      :value="m.value"
+                    />
+                  </el-select>
+                </template>
+              </el-table-column>
+
+              <!-- Season -->
+              <el-table-column
+                label="季"
+                width="80"
+              >
+                <template #default="{ row }">
+                  <el-input-number
+                    v-model="row.season"
+                    :min="1"
+                    :step="1"
+                    :controls="false"
+                    :disabled="!isOwnRow(row)"
+                    size="small"
+                    class="ag-season-input"
+                  />
+                </template>
+              </el-table-column>
+
+              <!-- Comment -->
+              <el-table-column
+                label="註釋"
+                min-width="140"
+              >
+                <template #default="{ row }">
+                  <el-input
+                    v-model="row.comment"
+                    placeholder="（可空）"
+                    :disabled="!isOwnRow(row)"
+                    size="small"
+                  />
+                </template>
+              </el-table-column>
+
+              <!-- Episode count -->
+              <el-table-column
+                label="集數"
+                width="90"
+              >
+                <template #default="{ row }">
+                  <span class="ag-episode">{{ episodeText(row) }}</span>
+                </template>
+              </el-table-column>
+
+              <!-- Tag group -->
+              <el-table-column
+                label="群組"
+                width="140"
+              >
+                <template #default="{ row }">
+                  <el-input
+                    :model-value="getTagValue(row)"
+                    placeholder="（未分類）"
+                    :disabled="!isOwnRow(row)"
+                    size="small"
+                    @update:model-value="setTagDraft(row, $event)"
+                    @blur="commitTagDraft(row)"
+                    @keyup.enter="commitTagDraft(row)"
+                  />
+                </template>
+              </el-table-column>
+
+              <!-- Actions: delete only for own rows -->
+              <el-table-column
+                label="操作"
+                width="80"
+              >
+                <template #default="{ row }">
+                  <el-button
+                    v-if="isOwnRow(row)"
+                    size="small"
+                    type="danger"
+                    link
+                    @click="removeEntry(row)"
+                  >
+                    刪除
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <!-- Mobile: hide the table, render each row as a stacked card -->
+            <div
+              v-else
+              class="ag-anime-cards"
+            >
+              <div
+                v-for="(row, idx) in group.rows"
+                :key="idx"
+                class="ag-anime-card"
+              >
+                <div class="ag-anime-card__header">
+                  <el-tooltip
+                    v-if="row.anime_name"
+                    :content="row.anime_name"
+                    placement="top"
+                    :show-after="300"
+                  >
+                    <span class="ag-anime-card__name">{{ row.anime_name }}</span>
+                  </el-tooltip>
+                  <span
+                    v-else
+                    class="ag-anime-card__name ag-muted"
+                  >（尚未下載）</span>
+                  <el-tooltip
+                    v-if="row.duplicate_of_entry_id != null"
+                    :content="duplicateTooltip(row)"
+                    placement="top"
+                  >
+                    <span class="ag-dup-icon">⚠</span>
+                  </el-tooltip>
+                </div>
+
+                <div class="ag-anime-card__switches">
+                  <label class="ag-anime-card__switch-field">
+                    <span class="ag-anime-card__label">啟用</span>
+                    <el-tooltip
+                      v-if="row.duplicate_of_entry_id != null"
+                      :content="duplicateTooltip(row)"
+                      placement="top"
+                    >
+                      <el-switch
+                        :model-value="false"
+                        disabled
+                        @change="onDuplicateToggleAttempt(row)"
+                      />
+                    </el-tooltip>
+                    <el-switch
+                      v-else-if="!isOwnRow(row)"
+                      :model-value="row.enabled"
+                      disabled
+                    />
+                    <el-switch
+                      v-else
+                      v-model="row.enabled"
+                    />
+                  </label>
+                  <label class="ag-anime-card__switch-field">
+                    <span class="ag-anime-card__label">雙語</span>
+                    <el-tooltip
+                      v-if="row.duplicate_of_entry_id != null"
+                      :content="duplicateTooltip(row)"
+                      placement="top"
+                    >
+                      <el-switch
+                        :model-value="row.bilingual"
+                        disabled
+                      />
+                    </el-tooltip>
+                    <el-switch
+                      v-else-if="!isOwnRow(row)"
+                      :model-value="row.bilingual"
+                      disabled
+                    />
+                    <el-switch
+                      v-else
+                      v-model="row.bilingual"
+                    />
+                  </label>
+                </div>
+
+                <div class="ag-anime-card__field">
+                  <span class="ag-anime-card__label">sn</span>
+                  <el-input-number
+                    v-model="row.sn"
+                    :min="0"
+                    :controls="false"
+                    :disabled="!isOwnRow(row)"
+                    size="small"
+                    class="ag-anime-card__control"
+                  />
+                </div>
+
+                <div class="ag-anime-card__field">
+                  <span class="ag-anime-card__label">自訂名稱</span>
+                  <el-input
+                    :model-value="getCustomNameValue(row)"
+                    placeholder="（預設使用抓到的名稱）"
+                    :disabled="!isOwnRow(row)"
+                    size="small"
+                    class="ag-anime-card__control"
+                    @update:model-value="setCustomNameDraft(row, $event)"
+                    @blur="commitCustomNameDraft(row)"
+                    @keyup.enter="commitCustomNameDraft(row)"
+                  />
+                </div>
+
+                <div class="ag-anime-card__field">
+                  <span class="ag-anime-card__label">下載模式</span>
+                  <el-select
+                    v-model="row.mode"
+                    placeholder="使用預設"
+                    clearable
+                    :disabled="!isOwnRow(row)"
+                    size="small"
+                    class="ag-anime-card__control"
+                  >
+                    <el-option
+                      v-for="m in MODES"
+                      :key="m.value"
+                      :label="m.label"
+                      :value="m.value"
+                    />
+                  </el-select>
+                </div>
+
+                <div class="ag-anime-card__row">
+                  <div class="ag-anime-card__field ag-anime-card__field--inline">
+                    <span class="ag-anime-card__label">季</span>
+                    <el-input-number
+                      v-model="row.season"
+                      :min="1"
+                      :step="1"
+                      :controls="false"
+                      :disabled="!isOwnRow(row)"
+                      size="small"
+                      class="ag-anime-card__control"
+                    />
+                  </div>
+                  <div class="ag-anime-card__field ag-anime-card__field--inline">
+                    <span class="ag-anime-card__label">集數</span>
+                    <span class="ag-episode">{{ episodeText(row) }}</span>
+                  </div>
+                </div>
+
+                <div class="ag-anime-card__field">
+                  <span class="ag-anime-card__label">註釋</span>
+                  <el-input
+                    v-model="row.comment"
+                    placeholder="（可空）"
+                    :disabled="!isOwnRow(row)"
+                    size="small"
+                    class="ag-anime-card__control"
+                  />
+                </div>
+
+                <div class="ag-anime-card__field">
+                  <span class="ag-anime-card__label">群組</span>
+                  <el-input
+                    :model-value="getTagValue(row)"
+                    placeholder="（未分類）"
+                    :disabled="!isOwnRow(row)"
+                    size="small"
+                    class="ag-anime-card__control"
+                    @update:model-value="setTagDraft(row, $event)"
+                    @blur="commitTagDraft(row)"
+                    @keyup.enter="commitTagDraft(row)"
+                  />
+                </div>
+
+                <div
+                  v-if="isOwnRow(row)"
+                  class="ag-anime-card__footer"
+                >
+                  <el-button
+                    size="small"
+                    type="danger"
+                    link
+                    @click="removeEntry(row)"
+                  >
+                    刪除
+                  </el-button>
+                </div>
+              </div>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
       </div>
 
-      <!-- Tag sub-groups within this user -->
-      <el-collapse
-        v-model="activeSections"
-        class="ag-section"
+      <div
+        v-if="entries.length === 0"
+        class="ag-empty"
       >
-        <el-collapse-item
-          v-for="group in section.tagGroups"
-          :key="sectionTagKey(section.userId, group.tag)"
-          :name="sectionTagKey(section.userId, group.tag)"
-          :title="`${groupLabel(group.tag)}（${group.rows.length}）`"
-        >
-          <el-table
-            :data="group.rows"
-            stripe
-            size="small"
-            class="ag-anime-table"
-          >
-            <!-- Enable toggle -->
-            <el-table-column
-              label="啟用"
-              width="70"
-            >
-              <template #default="{ row }">
-                <!-- Duplicate: show disabled toggle with tooltip -->
-                <el-tooltip
-                  v-if="row.duplicate_of_entry_id != null"
-                  :content="duplicateTooltip(row)"
-                  placement="top"
-                >
-                  <el-switch
-                    :model-value="false"
-                    disabled
-                    @change="onDuplicateToggleAttempt(row)"
-                  />
-                </el-tooltip>
-                <!-- Readonly row (not own): disabled toggle -->
-                <el-switch
-                  v-else-if="!isOwnRow(row)"
-                  :model-value="row.enabled"
-                  disabled
-                />
-                <!-- Own row: fully interactive -->
-                <el-switch
-                  v-else
-                  v-model="row.enabled"
-                />
-              </template>
-            </el-table-column>
-
-            <!-- Warning icon for duplicates -->
-            <el-table-column
-              width="30"
-            >
-              <template #default="{ row }">
-                <el-tooltip
-                  v-if="row.duplicate_of_entry_id != null"
-                  :content="duplicateTooltip(row)"
-                  placement="top"
-                >
-                  <span class="ag-dup-icon">⚠</span>
-                </el-tooltip>
-              </template>
-            </el-table-column>
-
-            <!-- sn -->
-            <el-table-column
-              label="sn"
-              width="100"
-            >
-              <template #default="{ row }">
-                <el-input-number
-                  v-model="row.sn"
-                  :min="0"
-                  :controls="false"
-                  :disabled="!isOwnRow(row)"
-                  size="small"
-                  class="ag-sn-input"
-                />
-              </template>
-            </el-table-column>
-
-            <!-- Anime name -->
-            <el-table-column
-              label="番劇名稱"
-              min-width="180"
-            >
-              <template #default="{ row }">
-                <el-tooltip
-                  v-if="row.anime_name"
-                  :content="row.anime_name"
-                  placement="top"
-                  :show-after="300"
-                >
-                  <span class="ag-truncate">{{ row.anime_name }}</span>
-                </el-tooltip>
-                <span
-                  v-else
-                  class="ag-muted"
-                >（尚未下載）</span>
-              </template>
-            </el-table-column>
-
-            <!-- Custom name -->
-            <el-table-column
-              label="自訂名稱"
-              width="160"
-            >
-              <template #default="{ row }">
-                <el-input
-                  :model-value="getCustomNameValue(row)"
-                  placeholder="（預設使用抓到的名稱）"
-                  :disabled="!isOwnRow(row)"
-                  size="small"
-                  @update:model-value="setCustomNameDraft(row, $event)"
-                  @blur="commitCustomNameDraft(row)"
-                  @keyup.enter="commitCustomNameDraft(row)"
-                />
-              </template>
-            </el-table-column>
-
-            <!-- Download mode -->
-            <el-table-column
-              label="下載模式"
-              width="160"
-            >
-              <template #default="{ row }">
-                <el-select
-                  v-model="row.mode"
-                  placeholder="使用預設"
-                  clearable
-                  :disabled="!isOwnRow(row)"
-                  size="small"
-                >
-                  <el-option
-                    v-for="m in MODES"
-                    :key="m.value"
-                    :label="m.label"
-                    :value="m.value"
-                  />
-                </el-select>
-              </template>
-            </el-table-column>
-
-            <!-- Season -->
-            <el-table-column
-              label="季"
-              width="80"
-            >
-              <template #default="{ row }">
-                <el-input-number
-                  v-model="row.season"
-                  :min="1"
-                  :step="1"
-                  :controls="false"
-                  :disabled="!isOwnRow(row)"
-                  size="small"
-                  class="ag-season-input"
-                />
-              </template>
-            </el-table-column>
-
-            <!-- Comment -->
-            <el-table-column
-              label="註釋"
-              min-width="140"
-            >
-              <template #default="{ row }">
-                <el-input
-                  v-model="row.comment"
-                  placeholder="（可空）"
-                  :disabled="!isOwnRow(row)"
-                  size="small"
-                />
-              </template>
-            </el-table-column>
-
-            <!-- Episode count -->
-            <el-table-column
-              label="集數"
-              width="90"
-            >
-              <template #default="{ row }">
-                <span class="ag-episode">{{ episodeText(row) }}</span>
-              </template>
-            </el-table-column>
-
-            <!-- Tag group -->
-            <el-table-column
-              label="群組"
-              width="140"
-            >
-              <template #default="{ row }">
-                <el-input
-                  :model-value="getTagValue(row)"
-                  placeholder="（未分類）"
-                  :disabled="!isOwnRow(row)"
-                  size="small"
-                  @update:model-value="setTagDraft(row, $event)"
-                  @blur="commitTagDraft(row)"
-                  @keyup.enter="commitTagDraft(row)"
-                />
-              </template>
-            </el-table-column>
-
-            <!-- Actions: delete only for own rows -->
-            <el-table-column
-              label="操作"
-              width="80"
-            >
-              <template #default="{ row }">
-                <el-button
-                  v-if="isOwnRow(row)"
-                  size="small"
-                  type="danger"
-                  link
-                  @click="removeEntry(row)"
-                >
-                  刪除
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-collapse-item>
-      </el-collapse>
-    </div>
-
-    <div
-      v-if="!loading && entries.length === 0"
-      class="ag-empty"
-    >
-      目前追番清單為空，點擊上方「新增項目」開始追蹤。
-    </div>
+        目前追番清單為空，點擊上方「新增項目」開始追蹤。
+      </div>
+    </template>
 
     <DirtyFab
       :visible="dirty"
@@ -661,6 +912,8 @@ onMounted(load)
       @save="save"
       @discard="discard"
     />
+
+    <BrowserExtensionDialog v-model="extensionDialogOpen" />
   </div>
 </template>
 
@@ -677,6 +930,7 @@ onMounted(load)
 .ag-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -752,5 +1006,77 @@ onMounted(load)
 :deep(.ag-readonly-row) {
   background-color: rgba(0, 0, 0, 0.02);
   opacity: 0.92;
+}
+
+/* ---------------------------------------------------------------------
+   Mobile card mode — one card per row, replacing the (unusable-at-375px)
+   el-table. Field labels are laid out to the left of each control so the
+   card reads like a compact form rather than a shrunken table.
+   --------------------------------------------------------------------- */
+.ag-anime-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ag-anime-card {
+  border: 1px solid var(--el-border-color, #e4e7ed);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--el-bg-color, #fff);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ag-anime-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ag-anime-card__name {
+  font-weight: 600;
+  font-size: 15px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ag-anime-card__switches {
+  display: flex;
+  gap: 20px;
+}
+.ag-anime-card__switch-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ag-anime-card__field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ag-anime-card__field--inline {
+  flex: 1;
+  min-width: 0;
+}
+.ag-anime-card__row {
+  display: flex;
+  gap: 16px;
+}
+.ag-anime-card__label {
+  flex-shrink: 0;
+  width: 64px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.ag-anime-card__control {
+  flex: 1;
+  min-width: 0;
+}
+.ag-anime-card__footer {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--el-border-color-lighter, #ebeef5);
+  padding-top: 8px;
 }
 </style>

@@ -61,13 +61,11 @@ def _perm_app(fake_container: Any, monkeypatch: pytest.MonkeyPatch) -> fastapi.F
     from app.main import DashboardApp
     from app.services import (
         AnimeListService,
-        AuthService,
         ConfigService,
         ProgressService,
         SnListService,
         TaskService,
         get_animelist_service,
-        get_auth_service,
         get_config_service,
         get_progress_service,
         get_snlist_service,
@@ -89,7 +87,6 @@ def _perm_app(fake_container: Any, monkeypatch: pytest.MonkeyPatch) -> fastapi.F
     )
     task_service = TaskService(fake_container.settings_repo, fake_container.manual_runner)
     progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
-    auth_service = AuthService(fake_container.settings_repo)
     health_service = HealthService(fake_container.paths)
 
     app.dependency_overrides[get_config_service] = lambda: config_service
@@ -97,7 +94,6 @@ def _perm_app(fake_container: Any, monkeypatch: pytest.MonkeyPatch) -> fastapi.F
     app.dependency_overrides[get_animelist_service] = lambda: animelist_service
     app.dependency_overrides[get_task_service] = lambda: task_service
     app.dependency_overrides[get_progress_service] = lambda: progress_service
-    app.dependency_overrides[get_auth_service] = lambda: auth_service
     app.dependency_overrides[get_health_service] = lambda: health_service
 
     return app

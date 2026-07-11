@@ -35,6 +35,7 @@ class AnimeListEntryDTO:
     season: int = 1
     anime_name: str | None = None  # cached series name (populated by UpdateLoop)
     custom_name: str | None = None  # user override for the name used in filenames
+    bilingual: bool = False  # opt-in: download both 日文/中文配音 variants; dub gets [中] suffix
     comment: str = ''
     sort_order: int = 0
     user_id: str | None = None  # populated on read; ignored on write
@@ -53,6 +54,7 @@ def _to_dto(orm: AnimeListEntryRow) -> AnimeListEntryDTO:
         season=orm.season,
         anime_name=orm.anime_name,
         custom_name=orm.custom_name,
+        bilingual=orm.bilingual,
         comment=orm.comment,
         sort_order=orm.sort_order,
         user_id=orm.user_id,
@@ -109,6 +111,7 @@ class AnimeListEntryRepository:
                     season=entry.season,
                     anime_name=entry.anime_name,
                     custom_name=entry.custom_name,
+                    bilingual=entry.bilingual,
                     comment=entry.comment,
                     sort_order=entry.sort_order,
                     duplicate_of_entry_id=entry.duplicate_of_entry_id,

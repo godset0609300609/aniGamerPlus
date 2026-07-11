@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import collections.abc
 import datetime
+import re
 import time
 import typing as T
 
@@ -27,7 +28,7 @@ if T.TYPE_CHECKING:
     from ..models import TelegramSettings
     from ..persistence.user_repo import UserRepository
     from .telegram_client import TelegramClient
-    from .telegram_live_messages import LiveMessageRegistry
+    from .telegram_live_messages import BtLiveMessageRegistry, LiveMessageRegistry
 
 # Maximum inline retries on 429 when sending the 'started' DM (we need the
 # message_id back immediately and can't use the actor pathway for that).
@@ -44,12 +45,14 @@ class TelegramNotifier:
         user_repo: UserRepository,
         settings_provider: collections.abc.Callable[[], TelegramSettings],
         live_messages: LiveMessageRegistry | None,
+        bt_live_messages: BtLiveMessageRegistry | None,
         logger: Logger,
     ) -> None:
         self._client = client
         self._user_repo = user_repo
         self._settings_provider = settings_provider
         self._live_messages = live_messages
+        self._bt_live_messages = bt_live_messages
         self._logger = logger
 
     # ------------------------------------------------------------------ public
@@ -244,6 +247,226 @@ class TelegramNotifier:
             # No live message found → send a fresh DM.
             await self._send_via_actor(chat_id, text, uid, settings=settings)
 
+    # ------------------------------------------------------------------ BT downloader events
+
+    async def notify_bt_event(
+        self,
+        *,
+        event: T.Literal[
+            'bt_dispatched', 'bt_status_update', 'bt_landing_progress', 'bt_landed', 'bt_failed'
+        ],
+        title: str,
+        feed_name: str,
+        filter_name: str | None = None,
+        putio_transfer_id: int | None = None,
+        putio_status: str | None = None,
+        local_path: str | None = None,
+        error_message: str | None = None,
+        entry_id: int,
+        bytes_written: int | None = None,
+        total_bytes: int | None = None,
+        percent_done: int | None = None,
+        file_size_mb: int | None = None,
+        resolution: str | None = None,
+    ) -> None:
+        """Send/edit a BT downloader lifecycle event DM for every admin.
+
+        One Telegram message per (entry_id, chat_id), edited in place across
+        the entry's Put.io -> landing lifecycle — mirrors
+        :meth:`notify_download_event`'s 'started' -> 'completed/failed/cancelled'
+        in-place upgrade pattern, via :class:`~.telegram_live_messages.BtLiveMessageRegistry`
+        instead of :class:`~.telegram_live_messages.LiveMessageRegistry`:
+
+        * ``'bt_dispatched'`` — initial send, captures message_id (:meth:`_handle_bt_dispatched`).
+        * ``'bt_status_update'`` — intermediate Put.io status change
+          (IN_QUEUE/DOWNLOADING/COMPLETED-not-yet-landed/SEEDING-not-yet-landed).
+        * ``'bt_landing_progress'`` — throttled Put.io-to-local-disk landing
+          progress, emitted by ``LandingWorker`` (see its docstring for the
+          throttle rule). Routed through the same in-place-edit handler as
+          ``'bt_status_update'`` (:meth:`_handle_bt_intermediate`).
+        * ``'bt_landed'`` / ``'bt_failed'`` — terminal, edits the existing
+          message and clears the registry entry (:meth:`_handle_bt_terminal`).
+
+        BT filters are admin-global (no owning user), so there is no owner
+        DM to send — unlike :meth:`notify_download_event`, this always
+        targets the admin set resolved by :meth:`_admin_chat_ids`, which is
+        deliberately *not* gated by ``settings.admin_broadcast`` (that flag
+        only controls the supplementary admin CC on owner-scoped download
+        events; it has no meaning when there is no owner to begin with).
+        For the same reason this is not gated by ``settings.notify_on``
+        either — that list only enumerates the per-download owner events —
+        so BT events fire whenever the Telegram integration is enabled,
+        mirroring how ``settings.health_alerts`` bypasses ``notify_on``.
+
+        Put.io 404s (a stale/deleted transfer) are handled entirely upstream
+        in ``LandingWorker`` by silently resetting dispatch state — no event
+        reaches this method for that case, matching the state machine's
+        "NOT_FOUND -> no notification" row.
+        """
+        settings = self._settings_provider()
+        if not settings.enabled:
+            return
+
+        if event == 'bt_dispatched':
+            await self._handle_bt_dispatched(
+                entry_id=entry_id,
+                title=title,
+                feed_name=feed_name,
+                filter_name=filter_name,
+                putio_transfer_id=putio_transfer_id,
+                percent_done=percent_done,
+                file_size_mb=file_size_mb,
+                settings=settings,
+            )
+        elif event in ('bt_status_update', 'bt_landing_progress'):
+            await self._handle_bt_intermediate(
+                event=event,
+                entry_id=entry_id,
+                title=title,
+                feed_name=feed_name,
+                filter_name=filter_name,
+                putio_transfer_id=putio_transfer_id,
+                putio_status=putio_status,
+                bytes_written=bytes_written,
+                total_bytes=total_bytes,
+                percent_done=percent_done,
+                file_size_mb=file_size_mb,
+                settings=settings,
+            )
+        else:  # 'bt_landed' / 'bt_failed'
+            await self._handle_bt_terminal(
+                event=event,
+                entry_id=entry_id,
+                title=title,
+                feed_name=feed_name,
+                filter_name=filter_name,
+                putio_transfer_id=putio_transfer_id,
+                local_path=local_path,
+                error_message=error_message,
+                file_size_mb=file_size_mb,
+                resolution=resolution,
+                settings=settings,
+            )
+
+    async def _handle_bt_dispatched(
+        self,
+        *,
+        entry_id: int,
+        title: str,
+        feed_name: str,
+        filter_name: str | None,
+        putio_transfer_id: int | None,
+        percent_done: int | None,
+        file_size_mb: int | None,
+        settings: TelegramSettings,
+    ) -> None:
+        text = _format_bt_message(
+            event='bt_dispatched',
+            title=title,
+            feed_name=feed_name,
+            filter_name=filter_name,
+            putio_transfer_id=putio_transfer_id,
+            putio_status=None,
+            local_path=None,
+            error_message=None,
+            percent_done=percent_done,
+            file_size_mb=file_size_mb,
+        )
+        for uid, chat_id in await self._admin_chat_ids():
+            result = await self._send_with_429_retry(chat_id, text, uid)
+            if result is not None and self._bt_live_messages is not None:
+                msg_id = result.get('message_id')
+                if isinstance(msg_id, int):
+                    await self._bt_live_messages.set(
+                        entry_id, chat_id, message_id=msg_id, last_edit_at=time.monotonic()
+                    )
+
+    async def _handle_bt_intermediate(
+        self,
+        *,
+        event: str,
+        entry_id: int,
+        title: str,
+        feed_name: str,
+        filter_name: str | None,
+        putio_transfer_id: int | None,
+        putio_status: str | None,
+        bytes_written: int | None,
+        total_bytes: int | None,
+        percent_done: int | None,
+        file_size_mb: int | None,
+        settings: TelegramSettings,
+    ) -> None:
+        text = _format_bt_message(
+            event=event,
+            title=title,
+            feed_name=feed_name,
+            filter_name=filter_name,
+            putio_transfer_id=putio_transfer_id,
+            putio_status=putio_status,
+            local_path=None,
+            error_message=None,
+            bytes_written=bytes_written,
+            total_bytes=total_bytes,
+            percent_done=percent_done,
+            file_size_mb=file_size_mb,
+        )
+        for uid, chat_id in await self._admin_chat_ids():
+            if self._bt_live_messages is not None:
+                message_id = await self._bt_live_messages.get(entry_id, chat_id)
+                if message_id is not None:
+                    await self._edit_via_actor(chat_id, message_id, text, uid, settings=settings)
+                    continue
+
+            # No live message on record (e.g. the initial 'bt_dispatched' send
+            # failed to register, or the Redis TTL expired) — send a fresh DM
+            # and register it so subsequent edits have somewhere to land.
+            result = await self._send_with_429_retry(chat_id, text, uid)
+            if result is not None and self._bt_live_messages is not None:
+                msg_id = result.get('message_id')
+                if isinstance(msg_id, int):
+                    await self._bt_live_messages.set(
+                        entry_id, chat_id, message_id=msg_id, last_edit_at=time.monotonic()
+                    )
+
+    async def _handle_bt_terminal(
+        self,
+        *,
+        event: str,
+        entry_id: int,
+        title: str,
+        feed_name: str,
+        filter_name: str | None,
+        putio_transfer_id: int | None,
+        local_path: str | None,
+        error_message: str | None,
+        file_size_mb: int | None,
+        resolution: str | None,
+        settings: TelegramSettings,
+    ) -> None:
+        text = _format_bt_message(
+            event=event,
+            title=title,
+            feed_name=feed_name,
+            filter_name=filter_name,
+            putio_transfer_id=putio_transfer_id,
+            putio_status=None,
+            local_path=local_path,
+            error_message=error_message,
+            file_size_mb=file_size_mb,
+            resolution=resolution,
+        )
+        for uid, chat_id in await self._admin_chat_ids():
+            if self._bt_live_messages is not None:
+                message_id = await self._bt_live_messages.get(entry_id, chat_id)
+                if message_id is not None:
+                    await self._bt_live_messages.clear(entry_id, chat_id)
+                    await self._edit_via_actor(chat_id, message_id, text, uid, settings=settings)
+                    continue
+
+            # No live message found — send a fresh DM.
+            await self._send_via_actor(chat_id, text, uid, settings=settings)
+
     # ------------------------------------------------------------------ recipient resolution
 
     async def _recipient_chat_ids(
@@ -283,6 +506,27 @@ class TelegramNotifier:
                 seen_chat_ids.add(user.telegram_chat_id)
                 result.append((user.id, user.telegram_chat_id))
 
+        return result
+
+    async def _admin_chat_ids(self) -> list[tuple[str, int]]:
+        """Return [(user_id, chat_id), ...] for every bound, opted-in, unmuted admin.
+
+        Mirrors the admin filter in ``telegram_health_monitor._broadcast_to_admins``
+        — used for admin-only messages that have no owning user (health
+        alerts, and BT downloader lifecycle events).
+        """
+        all_users = self._user_repo.list_all()
+        result: list[tuple[str, int]] = []
+        for user in all_users:
+            if user.role != 'admin':
+                continue
+            if user.telegram_chat_id is None:
+                continue
+            if not user.telegram_notify_enabled:
+                continue
+            if self._is_muted(user):
+                continue
+            result.append((user.id, user.telegram_chat_id))
         return result
 
     # ------------------------------------------------------------------ send helpers
@@ -531,6 +775,131 @@ def _format_message(
         '',
         name_line,
     ]
+    return '\n'.join(lines)
+
+
+# Header line for every BT lifecycle event — mirrors _format_message's animad
+# headers (bold, MarkdownV2-escaped literal text). Keyed by 'bt_status_update'
+# putio_status for the transient (pre-landing) rows of the state machine.
+_BT_STATUS_HEADERS = {
+    'IN_QUEUE': '⏳ *Put\\.io 排隊中*',
+    'DOWNLOADING': '⬇️ *Put\\.io 下載中*',
+    'COMPLETED': '📦 *Put\\.io 完成，準備落地*',
+    'SEEDING': '📦 *Put\\.io Seeding，準備落地*',
+}
+
+# Resolution marker regex — first match wins; 4K/8K are upper-cased, every
+# other match (e.g. '1080p', '720i') is rendered exactly as it appears in
+# the title so we don't second-guess the uploader's own casing.
+_RESOLUTION_RE = re.compile(r'\b(\d{3,4}[pi]|4k|8k)\b', re.IGNORECASE)
+
+
+def _parse_resolution_from_title(title: str) -> str | None:
+    """Return the first resolution marker found in *title*, or ``None``.
+
+    Matches ``\\d{3,4}p``, ``\\d{3,4}i``, ``4K``, or ``8K`` (case-insensitive).
+    ``4K``/``8K`` are normalised to upper-case; other matches keep their
+    original casing from the title.
+    """
+    match = _RESOLUTION_RE.search(title)
+    if match is None:
+        return None
+    value = match.group(1)
+    if value.upper() in ('4K', '8K'):
+        return value.upper()
+    return value
+
+
+def _bt_header(event: str, putio_status: str | None) -> str:
+    """Resolve the bold header line for a BT lifecycle event.
+
+    ``event`` picks the dispatch/landing-progress/terminal headers directly;
+    for 'bt_status_update' the raw ``putio_status`` reported by Put.io picks
+    the transient header. An unrecognised ``putio_status`` (Put.io adds a
+    new value we don't know about yet) falls back to a generic "status
+    update" header carrying the raw value rather than silently rendering
+    nothing.
+    """
+    if event == 'bt_dispatched':
+        return '📥 *送出 Put\\.io*'
+    if event == 'bt_landing_progress':
+        return '⏬ *落地中*'
+    if event == 'bt_landed':
+        return '✅ *下載完成*'
+    if event == 'bt_failed':
+        return '❌ *下載失敗*'
+    # 'bt_status_update'
+    known = _BT_STATUS_HEADERS.get(putio_status or '')
+    if known is not None:
+        return known
+    label = escape_markdown_v2(putio_status or '狀態更新')
+    return f'⏳ *Put\\.io {label}*'
+
+
+def _format_bt_message(
+    *,
+    event: str,
+    title: str,
+    feed_name: str,
+    filter_name: str | None,
+    putio_transfer_id: int | None,  # kept for payload-shape symmetry with notify_bt_event; not rendered
+    putio_status: str | None = None,
+    local_path: str | None = None,
+    error_message: str | None = None,
+    bytes_written: int | None = None,
+    total_bytes: int | None = None,
+    percent_done: int | None = None,
+    file_size_mb: int | None = None,
+    resolution: str | None = None,
+) -> str:
+    """Build a MarkdownV2-escaped, single-message-per-entry BT status update.
+
+    One message per BT feed entry is edited in place across its Put.io ->
+    landing lifecycle (see ``TelegramNotifier.notify_bt_event``), mirroring
+    ``_format_message``'s animad layout exactly: a bold header line, a blank
+    line, then the (unbolded) title line, then key/value metadata lines —
+    instead of the old fixed ``[BT] {title}`` + "狀態:" line format:
+
+        {bold header}
+
+        {title}
+        過濾器: {filter_name}
+        來源: {feed_name}
+        ...event-specific lines...
+    """
+    lines = [_bt_header(event, putio_status), '', escape_markdown_v2(title)]
+
+    if filter_name is not None:
+        lines.append(f'過濾器: {escape_markdown_v2(filter_name)}')
+    lines.append(f'來源: {escape_markdown_v2(feed_name)}')
+
+    if event == 'bt_status_update':
+        if putio_status == 'DOWNLOADING' and percent_done is not None and percent_done > 0:
+            lines.append(f'Put\\.io 進度: {escape_markdown_v2(str(percent_done))}%')
+        if putio_status in ('COMPLETED', 'SEEDING') and file_size_mb is not None:
+            lines.append(f'檔案大小: {escape_markdown_v2(str(file_size_mb))} MB')
+
+    elif event == 'bt_landing_progress':
+        mb_done = int((bytes_written or 0) / (1024 * 1024))
+        mb_total = int((total_bytes or 0) / (1024 * 1024))
+        percent = int((bytes_written or 0) / total_bytes * 100) if total_bytes else 0
+        lines.append(
+            f'落地進度: {escape_markdown_v2(str(mb_done))}/{escape_markdown_v2(str(mb_total))} '
+            f'MB \\({escape_markdown_v2(str(percent))}%\\)'
+        )
+
+    elif event == 'bt_landed':
+        parsed_resolution = resolution or _parse_resolution_from_title(title)
+        if parsed_resolution is not None:
+            lines.append(f'解析度: {escape_markdown_v2(parsed_resolution)}')
+        if file_size_mb is not None:
+            lines.append(f'檔案大小: {escape_markdown_v2(str(file_size_mb))} MB')
+        if local_path is not None:
+            lines.append(f'落地路徑: {escape_markdown_v2(local_path)}')
+
+    elif event == 'bt_failed' and error_message is not None:
+        lines.append(f'原因: {escape_markdown_v2(error_message[:200])}')
+
     return '\n'.join(lines)
 
 

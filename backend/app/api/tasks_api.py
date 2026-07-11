@@ -7,9 +7,11 @@ import typing as T
 import anyio.to_thread
 import fastapi
 
+from .. import rate_limit
 from ..models import ManualTaskRequest, SimpleStatus, TaskHistoryEntryOut
 from ..persistence.task_history_repo import TaskHistoryEntry, TaskHistoryRepository
 from ..persistence.user_repo import UserRow
+from ..services.progress_service import ProgressService, get_progress_service
 from ..services.task_service import TaskService, get_task_service
 from .deps import require_any_user
 
@@ -44,11 +46,15 @@ def _entry_to_out(entry: TaskHistoryEntry) -> TaskHistoryEntryOut:
         started_at=entry.started_at.isoformat() if entry.started_at is not None else None,
         finished_at=entry.finished_at.isoformat() if entry.finished_at is not None else '',
         owner_id=entry.owner_id,
+        source=entry.source,
+        external_id=entry.external_id,
     )
 
 
 @router.post('/tasks/manual', response_model=SimpleStatus)
+@rate_limit.limiter.limit(rate_limit.tasks_manual_rate_limit, key_func=rate_limit.session_or_ip_key)
 async def manual_task(
+    request: fastapi.Request,  # required by slowapi's @limiter.limit decorator
     payload: ManualTaskRequest,
     user: T.Annotated[UserRow, fastapi.Depends(require_any_user)],
     service: T.Annotated[TaskService, fastapi.Depends(get_task_service)],
@@ -89,3 +95,25 @@ async def cancel_task(
     """
     await service.cancel_task(sn, user)
     return {'status': 'ok'}
+
+
+@router.post('/monitor/progress/{sn}/force-finish', response_model=SimpleStatus)
+@rate_limit.limiter.limit(rate_limit.tasks_manual_rate_limit, key_func=rate_limit.session_or_ip_key)
+async def dismiss_progress(
+    request: fastapi.Request,  # required by slowapi's @limiter.limit decorator
+    sn: int,
+    user: T.Annotated[UserRow, fastapi.Depends(require_any_user)],
+    progress: T.Annotated[ProgressService, fastapi.Depends(get_progress_service)],
+) -> SimpleStatus:
+    """Force-finish a stuck live-progress entry so it disappears from MonitorView.
+
+    Unlike ``DELETE /api/tasks/{sn}`` (which signals a *live* actor to stop),
+    this closes out the entry directly via ``ProgressBus.force_finish`` —
+    the only way to dismiss a ghost card whose owning process is already
+    dead (see ``BtProgressReconciler``'s module docstring). Downloader role
+    can only dismiss their own tasks; admin can dismiss any. Idempotent:
+    dismissing an already-terminal entry is a no-op. Returns 404 if the
+    task is not visible to the caller.
+    """
+    await progress.force_finish(sn, user, status='已取消')
+    return SimpleStatus()

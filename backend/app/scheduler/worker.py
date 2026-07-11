@@ -203,6 +203,7 @@ class DownloadWorker:
                 realtime_show_file_size=realtime_show_file_size,
                 classify=settings.classify_bangumi,
                 include_resolution_in_filename=False,  # auto-mode excludes resolution
+                language_tag=info.language_tag,
             )
         except exceptions.TaskCancelledError:
             # Not a retriable error — the user explicitly cancelled.

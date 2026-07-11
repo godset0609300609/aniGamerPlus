@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
+import shlex
 import typing as T
 
 import anyio.to_thread
@@ -38,7 +39,7 @@ _HELP_TEXT = (
     '/watch `<sn>` \\[選項\\] — 加入追番清單\n'
     '　　選項：`tag=系列名` `season=2` `mode=largest` `name=自訂名`\n'
     '　　例：`/watch 48613 tag=進擊系列 season=2 name=我的名字`\n'
-    '　　名稱含空格請用底線代替（e\\.g\\. `name=我的_名字`）\n'
+    '　　名稱含空格可用引號包住（e\\.g\\. `name="我的 名字"`）或底線代替（`name=我的_名字`）\n'
     '/help — 顯示此說明\n'
 )
 
@@ -197,11 +198,21 @@ class TelegramCommandDispatcher:
             await self._handle_url(chat_id, user, int(url_match.group(1)))
             return
 
-        parts = text.strip().split()
+        stripped = text.strip()
+        if not stripped:
+            await self._send(chat_id, escape_markdown_v2('/help 可查看可用指令。'))
+            return
+        try:
+            parts = shlex.split(stripped)
+        except ValueError:
+            await self._send(
+                chat_id,
+                escape_markdown_v2('⚠️ 引號未封閉，請確認 name="..." 或 name=\'...\' 成對出現'),
+            )
+            return
         if not parts:
             await self._send(chat_id, escape_markdown_v2('/help 可查看可用指令。'))
             return
-
         cmd = parts[0].lower()
         args = parts[1:]
 

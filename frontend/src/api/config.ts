@@ -26,6 +26,46 @@ export class ConfigApi {
   getCookieStatus(): Promise<{ configured: boolean }> {
     return this.http.getJson<{ configured: boolean }>('/config/cookie/status')
   }
+
+  /** Write the Bilibili cookie string (admin only). Never returns the old value. */
+  async setBilibiliCookie(raw: string): Promise<SimpleStatus> {
+    return this.http.putJson<SimpleStatus>('/config/bilibili-cookie', { cookie: raw })
+  }
+
+  /** Return whether a Bilibili cookie is currently configured. Never returns the value. */
+  getBilibiliCookieStatus(): Promise<{ configured: boolean }> {
+    return this.http.getJson<{ configured: boolean }>('/config/bilibili-cookie/status')
+  }
+
+  /** Write the Put.io OAuth token (admin only). Never returns the old value. */
+  setPutioToken(token: string): Promise<SimpleStatus> {
+    return this.http.putJson<SimpleStatus>('/config/putio-token', { token })
+  }
+
+  /** Return whether a Put.io token is currently configured. Never returns the value. */
+  getPutioTokenStatus(): Promise<{ configured: boolean }> {
+    return this.http.getJson<{ configured: boolean }>('/config/putio-token/status')
+  }
+
+  /** Write the Telegram bot token (admin only). Never returns the old value. */
+  setTelegramBotToken(botToken: string): Promise<SimpleStatus> {
+    return this.http.putJson<SimpleStatus>('/config/telegram-bot-token', { bot_token: botToken })
+  }
+
+  /** Return whether a Telegram bot token is currently configured. Never returns the value. */
+  getTelegramBotTokenStatus(): Promise<{ configured: boolean }> {
+    return this.http.getJson<{ configured: boolean }>('/config/telegram-bot-token/status')
+  }
+
+  /** Write the Telegram webhook secret (admin only). Never returns the old value. */
+  setTelegramWebhookSecret(webhookSecret: string): Promise<SimpleStatus> {
+    return this.http.putJson<SimpleStatus>('/config/telegram-webhook-secret', { webhook_secret: webhookSecret })
+  }
+
+  /** Return whether a Telegram webhook secret is currently configured. Never returns the value. */
+  getTelegramWebhookSecretStatus(): Promise<{ configured: boolean }> {
+    return this.http.getJson<{ configured: boolean }>('/config/telegram-webhook-secret/status')
+  }
 }
 
 // ---------------------------------------------------------------------------
