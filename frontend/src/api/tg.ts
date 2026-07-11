@@ -1,7 +1,7 @@
 import type { HttpClient } from './client'
 import { http as defaultHttp } from './client'
 import type {
-  TgAvailableChat,
+  TgAvailableChatsResponse,
   TgDownloadsPage,
   TgLoginStatusResponse,
   TgPhoneLoginResponse,
@@ -107,8 +107,11 @@ export class TgApi {
     return this.http.postJson<TgWatchedChat>(`/tg/chats/${id}/backfill/retry`, {})
   }
 
-  listAvailableChats(): Promise<TgAvailableChat[]> {
-    return this.http.getJson<TgAvailableChat[]>('/tg/chats/available')
+  // B-09/G-07 (security audit): limit is capped server-side (default/max
+  // 500/1000) — see TgAvailableChatsResponse.
+  listAvailableChats(limit?: number): Promise<TgAvailableChatsResponse> {
+    const query = limit != null ? `?limit=${limit}` : ''
+    return this.http.getJson<TgAvailableChatsResponse>(`/tg/chats/available${query}`)
   }
 
   // ---------------------------------------------------------------------

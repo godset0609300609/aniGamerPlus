@@ -23,6 +23,7 @@ from .. import rate_limit
 from ..models import (
     SimpleStatus,
     TgAvailableChat,
+    TgAvailableChatsResponse,
     TgCodeRequest,
     TgDownloadedMedia,
     TgDownloadsPage,
@@ -99,8 +100,11 @@ async def start_qr_login(
     service: T.Annotated[TgService | None, fastapi.Depends(get_tg_service)],
 ) -> TgQrLoginResponse:
     svc = _require_service(service)
-    login_token, qr_url, qr_png = await svc.start_qr_login(user.id)
-    return TgQrLoginResponse(login_token=login_token, qr_code_url=qr_url, qr_code_png_base64=qr_png)
+    # B-10: qr_url (the raw tg://login?token=... deep link) is intentionally
+    # discarded here — see TgQrLoginResponse's docstring. Only the rendered
+    # PNG is exposed to the client.
+    login_token, _qr_url, qr_png = await svc.start_qr_login(user.id)
+    return TgQrLoginResponse(login_token=login_token, qr_code_png_base64=qr_png)
 
 
 @router.get('/session/qr-login/{login_token}', response_model=TgLoginStatusResponse)
@@ -128,7 +132,7 @@ async def submit_qr_password(
     service: T.Annotated[TgService | None, fastapi.Depends(get_tg_service)],
 ) -> TgLoginStatusResponse:
     svc = _require_service(service)
-    result = await svc.submit_qr_password(login_token, payload.password, user.id)
+    result = await svc.submit_qr_password(login_token, payload.password.get_secret_value(), user.id)
     return TgLoginStatusResponse(
         status=result['status'], error=result.get('error'), telegram_handle=result.get('telegram_handle')
     )
@@ -162,7 +166,7 @@ async def submit_phone_code(
     service: T.Annotated[TgService | None, fastapi.Depends(get_tg_service)],
 ) -> TgLoginStatusResponse:
     svc = _require_service(service)
-    result = await svc.submit_phone_code(login_token, payload.code, user.id)
+    result = await svc.submit_phone_code(login_token, payload.code.get_secret_value(), user.id)
     return TgLoginStatusResponse(
         status=result['status'], error=result.get('error'), telegram_handle=result.get('telegram_handle')
     )
@@ -178,7 +182,7 @@ async def submit_phone_password(
     service: T.Annotated[TgService | None, fastapi.Depends(get_tg_service)],
 ) -> TgLoginStatusResponse:
     svc = _require_service(service)
-    result = await svc.submit_phone_password(login_token, payload.password, user.id)
+    result = await svc.submit_phone_password(login_token, payload.password.get_secret_value(), user.id)
     return TgLoginStatusResponse(
         status=result['status'], error=result.get('error'), telegram_handle=result.get('telegram_handle')
     )
@@ -358,21 +362,31 @@ async def retry_backfill(
     return result
 
 
-@router.get('/chats/available', response_model=list[TgAvailableChat])
+@router.get('/chats/available', response_model=TgAvailableChatsResponse)
 @rate_limit.limiter.limit(rate_limit.tg_chats_available_rate_limit, key_func=rate_limit.session_or_ip_key)
 async def list_available_chats(
     request: fastapi.Request,  # required by slowapi's @limiter.limit decorator
     user: T.Annotated[UserRow, fastapi.Depends(require_any_user)],
     service: T.Annotated[TgService | None, fastapi.Depends(get_tg_service)],
-) -> list[TgAvailableChat]:
+    limit: int = fastapi.Query(default=500, ge=1, le=1000),
+) -> TgAvailableChatsResponse:
+    """List the chats *user*'s Telegram account currently belongs to.
+
+    B-09/G-07 (security audit): capped at *limit* (default/max 500/1000) —
+    an account with an unusually large number of dialogs used to force an
+    unbounded live MTProto fetch and an unbounded JSON response on every
+    call. When more dialogs were available than *limit*, ``truncated=True``
+    is returned so the frontend can prompt the user to narrow down via the
+    picker's search box instead of silently only ever showing a prefix.
+    """
     svc = _require_service(service)
     watched = {w.chat_id for w in await svc.list_watched_chats(user.id)}
-    dialogs = await svc.list_available_chats(user.id)
-    out: list[TgAvailableChat] = []
+    dialogs, truncated = await svc.list_available_chats(user.id, limit=limit)
+    items: list[TgAvailableChat] = []
     for dialog in dialogs:
         chat = dialog.chat
         title = chat.title or chat.first_name or str(chat.id)
-        out.append(
+        items.append(
             TgAvailableChat(
                 chat_id=chat.id,
                 title=title,
@@ -380,7 +394,7 @@ async def list_available_chats(
                 already_watched=chat.id in watched,
             )
         )
-    return out
+    return TgAvailableChatsResponse(items=items, truncated=truncated, total_seen=len(dialogs))
 
 
 # ---------------------------------------------------------------------------

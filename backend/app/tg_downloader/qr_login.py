@@ -56,7 +56,8 @@ import hydrogram.session
 import hydrogram.types
 import qrcode
 
-from ._login_common import persist_login_success
+from ..security.log_scrub import scrub_exception_for_log
+from ._login_common import _sanitize_login_error, persist_login_success
 
 if T.TYPE_CHECKING:
     from ..logging_ import Logger
@@ -183,7 +184,7 @@ class QrLoginService:
             pending.status = 'awaiting_password'
             return self._status_payload(pending)
         except Exception as exc:  # noqa: BLE001 — surfaced to the caller as 'failed'
-            await self._fail(pending, str(exc))
+            await self._fail(pending, exc)
             return self._status_payload(pending)
 
         if isinstance(result, hydrogram.raw.types.auth.LoginTokenMigrateTo):
@@ -191,14 +192,17 @@ class QrLoginService:
             try:
                 await self._complete_migration(pending, result)
             except Exception as exc:  # noqa: BLE001 — surfaced to the caller as 'failed'
-                await self._fail(pending, str(exc))
+                await self._fail(pending, exc)
             finally:
                 pending.migrating = False
             return self._status_payload(pending)
 
         if isinstance(result, hydrogram.raw.types.auth.LoginTokenSuccess):
             user = hydrogram.types.User._parse(pending.client, result.authorization.user)
-            await self._succeed(pending, user)
+            try:
+                await self._succeed(pending, user)
+            except Exception as exc:  # noqa: BLE001 — e.g. session-persistence failure
+                await self._fail(pending, exc)
             return self._status_payload(pending)
 
         # Still a plain LoginToken — unscanned/unconfirmed. Unchanged state.
@@ -220,10 +224,13 @@ class QrLoginService:
         except hydrogram.errors.PasswordHashInvalid:
             return {'status': 'awaiting_password', 'error': '密碼錯誤，請再試一次'}
         except Exception as exc:  # noqa: BLE001
-            await self._fail(pending, str(exc))
+            await self._fail(pending, exc)
             return self._status_payload(pending)
 
-        await self._succeed(pending, user)
+        try:
+            await self._succeed(pending, user)
+        except Exception as exc:  # noqa: BLE001 — e.g. session-persistence failure
+            await self._fail(pending, exc)
         return self._status_payload(pending)
 
     # ------------------------------------------------------------------ internal
@@ -287,10 +294,23 @@ class QrLoginService:
         with contextlib.suppress(Exception):
             await pending.client.disconnect()
 
-    async def _fail(self, pending: _PendingQrLogin, error: str) -> None:
+    async def _fail(self, pending: _PendingQrLogin, error: Exception | str) -> None:
+        """Mark *pending* failed.
+
+        B-11 (security audit): *error* is either the raw exception that
+        caused the failure — logged in full (token-scrubbed, length-capped
+        via :func:`scrub_exception_for_log`) but exposed to the API caller
+        only as one of :func:`_sanitize_login_error`'s bounded, generic
+        strings — or an already-safe, hand-authored message (e.g. the
+        "needs sign-up" case) that's used verbatim either way.
+        """
         pending.status = 'failed'
-        pending.error = error
-        self._log_error(f'user_id={pending.user_id}: {error}')
+        if isinstance(error, Exception):
+            self._log_error(f'user_id={pending.user_id}: {scrub_exception_for_log(error)}')
+            pending.error = _sanitize_login_error(error)
+        else:
+            self._log_error(f'user_id={pending.user_id}: {error}')
+            pending.error = error
         with contextlib.suppress(Exception):
             await pending.client.disconnect()
 

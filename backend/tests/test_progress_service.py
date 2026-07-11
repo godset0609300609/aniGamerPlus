@@ -382,3 +382,122 @@ async def test_force_finish_routes_bt_sourced_sn_to_the_bt_bus() -> None:
 
     assert bt_bus.snapshot()[5006].status == '已取消'
     assert bus.snapshot() == {}, 'must not have touched the shared (non-BT) bus'
+
+
+# ---------------------------------------------------------------------------
+# force_finish — best-effort dramatiq_abort signal (live task vs. ghost)
+# ---------------------------------------------------------------------------
+
+
+class _FakeMessageIdRegistry:
+    """Stands in for MessageIdRegistry — mirrors its async ``get()`` API."""
+
+    def __init__(self, message_id: str | None) -> None:
+        self._message_id = message_id
+
+    async def get(self, sn: int) -> str | None:
+        return self._message_id
+
+
+@pytest.mark.anyio
+async def test_force_finish_calls_dramatiq_abort_when_message_id_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live task (message_id registered) must get a best-effort dramatiq_abort
+    signal before the mirror is closed, so the worker actually stops downloading
+    instead of later overwriting the mirror with a rosy '下載完成'."""
+    import dramatiq_abort
+    import dramatiq_abort.middleware
+
+    bus = ProgressBus()
+    bus.start(6001, 'ep01.mp4', status='正在下載', owner_id='admin-1')
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_abort(message_id: str, **kwargs: object) -> None:
+        calls.append((message_id, kwargs))
+
+    monkeypatch.setattr(dramatiq_abort, 'abort', _fake_abort)
+
+    registry = _FakeMessageIdRegistry('msg-abc')
+    svc = ProgressService(progress_bus=bus, user_repo=None, message_id_registry=registry)  # type: ignore[arg-type]
+    await svc.force_finish(6001, _admin(), status='已取消')
+
+    assert len(calls) == 1, 'dramatiq_abort.abort must be called exactly once'
+    message_id, kwargs = calls[0]
+    assert message_id == 'msg-abc'
+    assert kwargs['mode'] == dramatiq_abort.middleware.AbortMode.ABORT
+    assert kwargs['abort_timeout'] == 5000
+
+    entry = bus.snapshot()[6001]
+    assert entry.status == '已取消'
+    assert entry.finished_at is not None
+
+
+@pytest.mark.anyio
+async def test_force_finish_silently_skips_abort_when_no_message_id_in_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ghost task has no message_id left in the registry — abort must not be
+    called, but the mirror must still be force-finished so the card disappears."""
+    import dramatiq_abort
+
+    bus = ProgressBus()
+    bus.start(6002, 'ep02.mp4', status='正在下載', owner_id='admin-1')
+
+    called = False
+
+    def _fake_abort(*args: object, **kwargs: object) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(dramatiq_abort, 'abort', _fake_abort)
+
+    registry = _FakeMessageIdRegistry(None)
+    svc = ProgressService(progress_bus=bus, user_repo=None, message_id_registry=registry)  # type: ignore[arg-type]
+    await svc.force_finish(6002, _admin(), status='已取消')
+
+    assert called is False, 'no message_id means nothing to abort'
+    entry = bus.snapshot()[6002]
+    assert entry.status == '已取消'
+    assert entry.finished_at is not None
+
+
+@pytest.mark.anyio
+async def test_force_finish_swallows_abort_failure_and_still_closes_mirror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Redis blip / broker error during the abort attempt must not propagate —
+    the mirror cleanup is unconditional so the card still disappears either way."""
+    import dramatiq_abort
+
+    bus = ProgressBus()
+    bus.start(6003, 'ep03.mp4', status='正在下載', owner_id='admin-1')
+
+    def _raising_abort(*args: object, **kwargs: object) -> None:
+        raise RuntimeError('redis blip')
+
+    monkeypatch.setattr(dramatiq_abort, 'abort', _raising_abort)
+
+    registry = _FakeMessageIdRegistry('msg-xyz')
+    svc = ProgressService(progress_bus=bus, user_repo=None, message_id_registry=registry)  # type: ignore[arg-type]
+    await svc.force_finish(6003, _admin(), status='已取消')  # must not raise
+
+    entry = bus.snapshot()[6003]
+    assert entry.status == '已取消'
+    assert entry.finished_at is not None
+
+
+@pytest.mark.anyio
+async def test_force_finish_without_registry_dependency_still_works() -> None:
+    """Regression guard: constructing ProgressService without a message_id_registry
+    (as most call sites / tests do) must continue to force-finish normally."""
+    bus = ProgressBus()
+    bus.start(6004, 'ep04.mp4', status='正在下載', owner_id='admin-1')
+
+    svc = _make_service(bus)  # message_id_registry defaults to None
+    await svc.force_finish(6004, _admin(), status='已取消')
+
+    entry = bus.snapshot()[6004]
+    assert entry.status == '已取消'
+    assert entry.finished_at is not None

@@ -173,6 +173,41 @@ async def test_poll_success_persists_encrypted_session_and_binds_notification(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_poll_success_session_persist_failure_returns_sanitized_error(
+    anyio_backend: str, session_repo: TgSessionRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B-11 (security audit): a failure persisting the session (e.g. Fernet
+    misconfiguration) must not leak internal detail via ``result['error']``
+    — it gets the same bounded, generic treatment as any other login
+    failure, just mapped to the more specific 'session 儲存失敗' bucket."""
+    from app.security import crypto
+
+    login_token_result = raw.types.auth.LoginToken(expires=999999, token=b'token-bytes')
+    raw_user = _real_raw_user()
+    success_result = raw.types.auth.LoginTokenSuccess(authorization=raw.types.auth.Authorization(user=raw_user))
+    client = _stub_client(invoke_results=[login_token_result, success_result])
+
+    service = QrLoginService(API_ID, API_HASH, session_repo, client_factory=lambda **kw: client)
+    login_token, _url, _png = await service.start('user-1')
+
+    # Break the Fernet key so persist_login_success's encrypt_str() call
+    # (inside session_repo.upsert) raises FernetKeyMissingError.
+    monkeypatch.delenv(crypto.FERNET_KEY_ENV_VAR, raising=False)
+    crypto.reset_fernet_cache()
+    try:
+        result = await service.poll(login_token, 'user-1')
+    finally:
+        crypto.reset_fernet_cache()
+
+    assert result['status'] == 'failed'
+    assert result['error'] == 'session 儲存失敗'
+    assert crypto.FERNET_KEY_ENV_VAR not in result['error']
+    assert session_repo.get_by_user_id('user-1') is None
+    client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
 async def test_poll_success_persists_notification_bind_failure_reason(
     anyio_backend: str, session_repo: TgSessionRepository
 ) -> None:
@@ -384,6 +419,11 @@ async def test_dc_migration_preserves_notification_bind(
 async def test_migration_failure_at_import_raises_clean_error(
     anyio_backend: str, session_repo: TgSessionRepository
 ) -> None:
+    """B-11 (security audit): the API-facing ``error`` must be one of the
+    small set of sanitized, generic strings — never the raw exception text
+    (which could leak internal type names / protocol detail). The full
+    detail (still exercised here indirectly — this is the exact failure
+    that produces it) only reaches the log, not the response."""
     login_token_result = raw.types.auth.LoginToken(expires=999999, token=b'token-bytes')
     migrate_result = raw.types.auth.LoginTokenMigrateTo(dc_id=2, token=b'other-dc-token')
     # After a migration, ImportLoginToken is expected to resolve to
@@ -403,7 +443,8 @@ async def test_migration_failure_at_import_raises_clean_error(
         result = await service.poll(login_token, 'user-1')
 
     assert result['status'] == 'failed'
-    assert 'LoginToken' in result['error']
+    assert result['error'] == '認證失敗，請重新綁定'
+    assert 'LoginToken' not in result['error']  # never leak the raw type name
     assert '尚未支援' not in result['error']  # old hard-failure copy must be gone
     assert 'unexpected-again' not in result['error']  # never log the (migrated) token
     client.disconnect.assert_awaited_once()
@@ -432,7 +473,10 @@ async def test_dc_migration_repeated_after_import_fails_clean_error(
         result = await service.poll(login_token, 'user-1')
 
     assert result['status'] == 'failed'
-    assert 'LoginTokenMigrateTo' in result['error']
+    # B-11 (security audit): sanitized to the generic message — see
+    # test_migration_failure_at_import_raises_clean_error above.
+    assert result['error'] == '認證失敗，請重新綁定'
+    assert 'LoginTokenMigrateTo' not in result['error']
     assert client.invoke.await_count == 2  # no automatic re-chained migration attempt
 
 

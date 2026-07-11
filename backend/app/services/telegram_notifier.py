@@ -467,6 +467,37 @@ class TelegramNotifier:
             # No live message found — send a fresh DM.
             await self._send_via_actor(chat_id, text, uid, settings=settings)
 
+    # ------------------------------------------------------------------ TG User API downloader events
+
+    async def notify_tg_event(self, **kwargs: T.Any) -> None:
+        """Stub handler for ``tg_started``/``tg_progress``/``tg_landed``/``tg_failed``.
+
+        C-2 (security audit): these events (emitted by
+        ``app.tg_downloader.downloader.TgDownloadWatcher._emit``) used to
+        fall through to :meth:`notify_download_event` because
+        ``app.tasks.telegram._BT_EVENTS`` only listed the BT downloader's
+        event names — that method requires ``sn``/``bangumi_name`` keyword
+        arguments the TG payload never carries, so every TG lifecycle event
+        silently raised ``TypeError`` inside ``notify_event_actor`` (a
+        ``max_retries=0`` actor, so it was dropped with nothing but a
+        dramatiq-internal log entry; no user or admin was ever notified,
+        successfully or not). Routing here instead turns that crash into a
+        clean no-op.
+
+        TODO: wire full BT-style in-place message pattern for TG lifecycle
+        events (own live-message registry, owner-scoped DMs mirroring
+        :meth:`notify_download_event`'s 'started' -> terminal upgrade —
+        BT's is admin-broadcast-only and doesn't fit TG's per-owner model
+        as-is). Tracked as a follow-up; out of scope for this fix.
+        """
+        event = kwargs.get('event', '?')
+        self._logger.info(
+            None,
+            'TelegramNotifier',
+            f'TG event dropped: {event}（尚未實作即時通知，見 notify_tg_event TODO）',
+            display=False,
+        )
+
     # ------------------------------------------------------------------ recipient resolution
 
     async def _recipient_chat_ids(

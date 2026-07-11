@@ -40,6 +40,9 @@ const pickerVisible = ref(false)
 const pickerLoading = ref(false)
 const pickerError = ref<string | null>(null)
 const availableChats = ref<TgAvailableChat[]>([])
+// B-09/G-07 (security audit): true when the account has more chats than the
+// server-side cap (GET /api/tg/chats/available's limit) returned.
+const availableChatsTruncated = ref(false)
 
 // 回填歷史檔案 — applied to whichever chat is picked next.
 const pickerBackfillEnabled = ref(false)
@@ -119,9 +122,12 @@ async function openPicker(): Promise<void> {
   pickerVisible.value = true
   pickerError.value = null
   pickerLoading.value = true
+  availableChatsTruncated.value = false
   resetPickerFilters()
   try {
-    availableChats.value = await api.listAvailableChats()
+    const res = await api.listAvailableChats()
+    availableChats.value = res.items
+    availableChatsTruncated.value = res.truncated
   } catch (err) {
     pickerError.value = (err as Error).message
   } finally {
@@ -466,6 +472,17 @@ useAutoRefresh(5000, loadChats)
         </template>
       </el-alert>
 
+      <el-alert
+        v-if="!pickerLoading && !pickerError && availableChatsTruncated"
+        type="warning"
+        :closable="false"
+        class="ag-picker-truncated"
+      >
+        <template #title>
+          顯示前 500 個 chat，可用搜尋找更多
+        </template>
+      </el-alert>
+
       <div
         v-if="!pickerLoading && !pickerError && availableChats.length > 0"
         class="ag-picker-backfill"
@@ -699,6 +716,9 @@ useAutoRefresh(5000, loadChats)
   padding: 32px 0;
 }
 .ag-picker-error {
+  margin-bottom: 8px;
+}
+.ag-picker-truncated {
   margin-bottom: 8px;
 }
 .ag-picker-backfill {

@@ -354,6 +354,62 @@ def test_dismiss_progress_is_idempotent_on_already_terminal_entry(
     assert fake_container.progress_bus.snapshot()[891].status == '下載完成'
 
 
+class _FakeMessageIdRegistry:
+    """Stands in for MessageIdRegistry — mirrors its async ``get()`` API."""
+
+    def __init__(self, message_id: str | None) -> None:
+        self._message_id = message_id
+
+    async def get(self, sn: int) -> str | None:
+        return self._message_id
+
+
+def test_dismiss_progress_sends_dramatiq_abort_for_a_live_task(
+    client: fastapi.testclient.TestClient,
+    fake_container: FakeContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST .../force-finish on a genuinely live task (message_id still
+    registered) must best-effort signal dramatiq_abort so the worker actually
+    stops downloading, in addition to closing the mirror so the card
+    disappears. Regression guard for the fix where the dismiss endpoint only
+    touched the mirror and a still-running worker could later overwrite it
+    with a real '下載完成', making the dismissed card reappear."""
+    import dramatiq_abort
+    import dramatiq_abort.middleware
+
+    from app.services.progress_service import ProgressService, get_progress_service
+
+    _seed_progress(fake_container, sn=892, owner_id='__anonymous_admin__')
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_abort(message_id: str, **kwargs: object) -> None:
+        calls.append((message_id, kwargs))
+
+    monkeypatch.setattr(dramatiq_abort, 'abort', _fake_abort)
+
+    registry = _FakeMessageIdRegistry('msg-live-892')
+    progress_service = ProgressService(
+        fake_container.progress_bus,
+        fake_container.user_repo,
+        message_id_registry=registry,  # type: ignore[arg-type]
+    )
+    client.app.dependency_overrides[get_progress_service] = lambda: progress_service  # type: ignore[attr-defined]
+
+    r = client.post('/api/monitor/progress/892/force-finish')
+
+    assert r.status_code == 200
+    assert len(calls) == 1, 'dramatiq_abort.abort must be called exactly once'
+    message_id, kwargs = calls[0]
+    assert message_id == 'msg-live-892'
+    assert kwargs['mode'] == dramatiq_abort.middleware.AbortMode.ABORT
+
+    entry = fake_container.progress_bus.snapshot()[892]
+    assert entry.status == '已取消'
+    assert entry.finished_at is not None
+
+
 # ---------------------------------------------------------------------------
 # GET /api/tasks/history
 # ---------------------------------------------------------------------------

@@ -58,7 +58,15 @@ class TelegramSettings(pydantic.BaseModel):
     # from a user's newly-bound Telegram *User* API session, merging the
     # tg_downloader bind with the existing Bot-API notification binding
     # without the user having to do it manually a second time.
-    bot_username: str = ''
+    #
+    # B-08 (security audit): validated at write time so a malformed value
+    # can't silently sit in config.json until it fails at bind-time deep
+    # inside notification_binder.py. Optional '@' prefix (matches how
+    # app.tg_downloader.notification_binder.NotificationBinder.bind
+    # normalizes a stored value that's missing it) and empty string
+    # (unconfigured) are both allowed — same shape as _BOT_USERNAME_RE
+    # there, just permitting the bare (no '@') form too.
+    bot_username: str = pydantic.Field(default='', pattern=r'^(@?\w{4,32})?$')
     notify_on: list[str] = pydantic.Field(
         default_factory=lambda: ['started', 'completed', 'failed', 'cancelled', 'auto_enqueue'],
         min_length=1,
@@ -337,9 +345,14 @@ class PutioTokenUpdateRequest(pydantic.BaseModel):
 
     ``token`` is the raw Put.io OAuth bearer token. The backend writes it
     verbatim to ``putio_token.txt``; it is **never** echoed back.
+
+    D-4 (security audit): ``SecretStr`` keeps the token out of repr()/str()
+    by accident (e.g. an uncaught-exception traceback that includes local
+    variables) — the route handler must explicitly unwrap it via
+    ``.get_secret_value()`` to get the plaintext before writing it to disk.
     """
 
-    token: str = pydantic.Field(..., min_length=1, max_length=8192)
+    token: pydantic.SecretStr = pydantic.Field(..., min_length=1, max_length=8192)
 
 
 # ---------------------------------------------------------------------------
@@ -533,10 +546,19 @@ class TgSessionStatus(pydantic.BaseModel):
 
 
 class TgQrLoginResponse(pydantic.BaseModel):
-    """Response body for POST /api/tg/session/qr-login."""
+    """Response body for POST /api/tg/session/qr-login.
+
+    B-10 (security audit): the raw ``tg://login?token=...`` deep link
+    (``qr_code_url``) used to be echoed back alongside the rendered PNG.
+    That link *is* the login credential — anyone who opens it while already
+    signed in to Telegram on another device completes the bind — so
+    returning it as plaintext JSON (logged by proxies, browser devtools,
+    etc.) needlessly widened its exposure. The frontend only ever rendered
+    the PNG (``qr_code_png_base64``), never this field, so it's dropped
+    entirely rather than kept for a hypothetical consumer.
+    """
 
     login_token: str
-    qr_code_url: str
     qr_code_png_base64: str  # data:image/png;base64,... rendered server-side
 
 
@@ -556,11 +578,29 @@ class TgLoginStatusResponse(pydantic.BaseModel):
 
 
 class TgPasswordRequest(pydantic.BaseModel):
-    password: str = pydantic.Field(..., min_length=1, max_length=256)
+    # D-4 (security audit): SecretStr keeps the 2FA password out of repr()/
+    # str()/logging by accident (e.g. an uncaught-exception traceback that
+    # includes local variables) — callers must explicitly unwrap it via
+    # ``.get_secret_value()`` to get the plaintext.
+    password: pydantic.SecretStr = pydantic.Field(..., min_length=1, max_length=256)
 
 
 class TgPhoneLoginRequest(pydantic.BaseModel):
+    # B-07 (security audit): E.164 — '+' followed by 7-15 digits, no leading
+    # zero. Rejects free-form garbage before it ever reaches hydrogram's
+    # send_code (which would otherwise surface a much less friendly
+    # PhoneNumberInvalid error several network round-trips later). The
+    # pattern is enforced by the field_validator below (not a bare
+    # ``Field(pattern=...)``) so the 422 carries a clear Traditional-Chinese
+    # message instead of pydantic's generic "String should match pattern ...".
     phone: str = pydantic.Field(..., min_length=3, max_length=32)
+
+    @pydantic.field_validator('phone')
+    @classmethod
+    def _validate_phone_format(cls, v: str) -> str:
+        if not re.fullmatch(r'\+[1-9]\d{6,14}', v):
+            raise ValueError('phone 格式錯誤，須為 E.164 格式（例如 +886912345678，開頭 + 後接 7-15 位數字）')
+        return v
 
 
 class TgPhoneLoginResponse(pydantic.BaseModel):
@@ -569,13 +609,25 @@ class TgPhoneLoginResponse(pydantic.BaseModel):
 
 
 class TgCodeRequest(pydantic.BaseModel):
-    code: str = pydantic.Field(..., min_length=1, max_length=32)
+    # D-4 (security audit): see TgPasswordRequest.password above.
+    code: pydantic.SecretStr = pydantic.Field(..., min_length=1, max_length=32)
 
 
 #: One of 'pending' / 'running' / 'done' / 'failed', or ``None`` if a
 #: backfill has never been requested for the chat. See
 #: ``app.tg_downloader.backfill.TgBackfillService``.
 TgBackfillStatus = T.Literal['pending', 'running', 'done', 'failed']
+
+#: B-05 (security audit): the closed vocabulary ``app.tg_downloader.downloader``
+#: actually understands (see its ``_MEDIA_TYPE_...`` mapping) — was a bare
+#: ``list[str]``, silently accepting (and persisting) any garbage string
+#: that would then just never match any downloaded message.
+TgMediaType = T.Literal['video', 'photo', 'document', 'audio']
+
+#: B-06 (security audit): per-item length cap for ``format_whitelist``
+#: entries — a file-extension whitelist has no legitimate reason to hold an
+#: entry longer than a handful of characters (``mp4``, ``mkv``, ...).
+_FormatWhitelistItem = T.Annotated[str, pydantic.StringConstraints(max_length=10)]
 
 
 class TgWatchedChat(pydantic.BaseModel):
@@ -626,10 +678,12 @@ def _reject_save_path_traversal(v: str | None) -> str | None:
 class TgWatchedChatCreate(pydantic.BaseModel):
     chat_id: int
     chat_title: str = pydantic.Field(..., min_length=1)
-    media_types: list[str] = pydantic.Field(default_factory=lambda: ['video'], min_length=1)
+    media_types: list[TgMediaType] = pydantic.Field(default_factory=lambda: ['video'], min_length=1)
     size_min_mb: int | None = pydantic.Field(default=None, ge=0)
     size_max_mb: int | None = pydantic.Field(default=None, ge=0)
-    format_whitelist: list[str] | None = None
+    # B-06: capped at 20 entries, 10 chars each — an unbounded list/item
+    # length had no practical use and let a request body balloon for free.
+    format_whitelist: list[_FormatWhitelistItem] | None = pydantic.Field(default=None, max_length=20)
     save_path: str | None = None
     enabled: bool = True
     backfill_enabled: bool = False
@@ -645,10 +699,10 @@ class TgWatchedChatUpdate(pydantic.BaseModel):
     """Partial update — only fields explicitly present are applied."""
 
     chat_title: str | None = None
-    media_types: list[str] | None = None
+    media_types: list[TgMediaType] | None = None
     size_min_mb: int | None = None
     size_max_mb: int | None = None
-    format_whitelist: list[str] | None = None
+    format_whitelist: list[_FormatWhitelistItem] | None = pydantic.Field(default=None, max_length=20)
     save_path: str | None = None
     enabled: bool | None = None
     backfill_enabled: bool | None = None
@@ -667,6 +721,29 @@ class TgAvailableChat(pydantic.BaseModel):
     title: str
     type: str  # 'private' | 'group' | 'supergroup' | 'channel' | 'bot'
     already_watched: bool = False
+
+
+class TgAvailableChatsResponse(pydantic.BaseModel):
+    """Response body for GET /api/tg/chats/available.
+
+    B-09/G-07 (security audit): a Telegram account can be a member of an
+    unbounded number of chats — returning every one of them in a single
+    response was an easy way to force a large live MTProto fetch and a
+    large JSON payload. The listing is now capped server-side at *limit*
+    (default/max enforced by the ``limit`` query param on the route); when
+    more were available, ``truncated`` is set and the frontend prompts the
+    user to narrow down via the picker's search box instead.
+    """
+
+    items: list[TgAvailableChat]
+    truncated: bool = False
+    #: Always equal to ``len(items)`` — kept as its own field (rather than
+    #: making the client compute it) so the "顯示前 N 個" copy has an
+    #: explicit count to interpolate. When ``truncated`` is True this is a
+    #: lower bound on the account's true total dialog count, not an exact
+    #: count (fetching the exact total would defeat the point of capping
+    #: the fetch).
+    total_seen: int = 0
 
 
 class TgDownloadedMedia(pydantic.BaseModel):

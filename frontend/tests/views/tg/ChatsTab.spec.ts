@@ -94,12 +94,18 @@ beforeEach(() => {
   vi.clearAllMocks()
   isMobileRef.value = false
   mockListChats.mockResolvedValue([])
-  mockListAvailableChats.mockResolvedValue([
-    makeAvailableChat({ chat_id: 1, title: 'Anime Fansub Group', type: 'supergroup' }),
-    makeAvailableChat({ chat_id: 2, title: 'Release Bot', type: 'bot' }),
-    makeAvailableChat({ chat_id: 3, title: 'Personal Notes', type: 'private' }),
-    makeAvailableChat({ chat_id: 4, title: 'Announcements', type: 'channel' }),
-  ])
+  // B-09/G-07 (security audit): GET /api/tg/chats/available now returns an
+  // { items, truncated, total_seen } envelope rather than a bare array.
+  mockListAvailableChats.mockResolvedValue({
+    items: [
+      makeAvailableChat({ chat_id: 1, title: 'Anime Fansub Group', type: 'supergroup' }),
+      makeAvailableChat({ chat_id: 2, title: 'Release Bot', type: 'bot' }),
+      makeAvailableChat({ chat_id: 3, title: 'Personal Notes', type: 'private' }),
+      makeAvailableChat({ chat_id: 4, title: 'Announcements', type: 'channel' }),
+    ],
+    truncated: false,
+    total_seen: 4,
+  })
 })
 
 async function openPickerDialog(wrapper: ReturnType<typeof mountView>) {
@@ -224,6 +230,29 @@ describe('ChatsTab — picker dialog search + category filter', () => {
     await openPickerDialog(wrapper)
 
     expect(wrapper.findAll('.ag-picker-item')).toHaveLength(4)
+  })
+})
+
+describe('ChatsTab — picker dialog truncation notice (B-09/G-07)', () => {
+  it('shows a truncation alert when the server reports truncated: true', async () => {
+    mockListAvailableChats.mockResolvedValue({
+      items: [makeAvailableChat({ chat_id: 1, title: 'Anime Fansub Group', type: 'supergroup' })],
+      truncated: true,
+      total_seen: 500,
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await openPickerDialog(wrapper)
+
+    expect(wrapper.text()).toContain('顯示前 500 個 chat，可用搜尋找更多')
+  })
+
+  it('does not show a truncation alert when truncated: false', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await openPickerDialog(wrapper)
+
+    expect(wrapper.text()).not.toContain('顯示前 500 個 chat')
   })
 })
 

@@ -797,6 +797,56 @@ def test_notify_bt_event_no_admins_bound_sends_nothing(tmp_path: pathlib.Path) -
 
 
 # ---------------------------------------------------------------------------
+# C-2 (security audit) — TG User API downloader event routing (stub)
+# ---------------------------------------------------------------------------
+
+
+def test_notify_tg_event_is_a_clean_no_op(tmp_path: pathlib.Path) -> None:
+    """notify_tg_event must never raise and must never dispatch any DM —
+    it's a logging-only stub until a real TG live-message registry exists
+    (see its docstring's TODO)."""
+    client = FakeTelegramClient()
+    repo = FakeUserRepo()
+    repo.add('owner', chat_id=100)
+    repo.add('admin1', role='admin', chat_id=200)
+
+    n = _notifier(client, repo, _settings(), tmp_path)
+    _run(
+        n.notify_tg_event(
+            event='tg_landed',
+            chat_title='測試頻道',
+            chat_id=-100999,
+            message_id=42,
+            file_name='ep01.mp4',
+            file_size=100,
+            local_path='/data/tg/ep01.mp4',
+        )
+    )
+
+    assert _actor_calls == []
+    assert client.send_calls == []
+
+
+def test_notify_event_actor_dispatch_table_routes_tg_events_to_notify_tg_event() -> None:
+    """Wiring check for the notify_event_actor dispatch table itself — a TG
+    event must land on notify_tg_event, not notify_download_event (which
+    requires sn/bangumi_name the TG payload never carries and would raise
+    TypeError — the exact bug this fix addresses). Exercises the actual
+    dispatch branches directly rather than through
+    ``notify_event_actor`` itself, which — being a dramatiq async actor —
+    requires the AsyncIO middleware's event-loop thread to invoke at all
+    (not set up in this unit-test process)."""
+    from app.tasks import telegram as tg_tasks
+
+    assert 'tg_failed' not in tg_tasks._BT_EVENTS
+    assert 'tg_failed' in tg_tasks._TG_EVENTS
+    for bt_event in tg_tasks._BT_EVENTS:
+        assert bt_event not in tg_tasks._TG_EVENTS
+    for tg_event in tg_tasks._TG_EVENTS:
+        assert tg_event not in tg_tasks._BT_EVENTS
+
+
+# ---------------------------------------------------------------------------
 # BT lifecycle — in-place message editing (mirrors 'started'/terminal below)
 # ---------------------------------------------------------------------------
 

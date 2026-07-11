@@ -29,6 +29,7 @@ import hydrogram.handlers
 import hydrogram.types
 
 from ..downloader.filename import FilenameBuilder
+from ..security.log_scrub import scrub_exception_for_log
 
 if T.TYPE_CHECKING:
     import collections.abc
@@ -262,7 +263,8 @@ class TgDownloadWatcher:
         except TgSavePathEscapesLandingRootError as exc:
             self._log_error(
                 f'watched chat 的 save_path 逃逸 landing root，已跳過下載 '
-                f'user_id={user_id} chat_id={message.chat.id} message_id={message.id}: {exc}'
+                f'user_id={user_id} chat_id={message.chat.id} message_id={message.id}: '
+                f'{scrub_exception_for_log(exc)}'
             )
             return False
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -278,7 +280,8 @@ class TgDownloadWatcher:
             # own belt-and-suspenders re-check at its actual write site.
             self._log_error(
                 f'解析後的下載路徑逃逸 landing root，已跳過下載 '
-                f'user_id={user_id} chat_id={message.chat.id} message_id={message.id}: {exc}'
+                f'user_id={user_id} chat_id={message.chat.id} message_id={message.id}: '
+                f'{scrub_exception_for_log(exc)}'
             )
             return False
 
@@ -295,7 +298,10 @@ class TgDownloadWatcher:
                     progress=self._make_progress_callback(sn, watched, media, message),
                 )
         except Exception as exc:  # noqa: BLE001 — surfaced via notify/history, loop keeps running
-            self._log_error(f'下載失敗 user_id={user_id} chat_id={message.chat.id} message_id={message.id}: {exc}')
+            self._log_error(
+                f'下載失敗 user_id={user_id} chat_id={message.chat.id} message_id={message.id}: '
+                f'{scrub_exception_for_log(exc)}'
+            )
             self._emit('tg_failed', watched, media, message, error_message=str(exc))
             self._finish_history(history_row_id, final_status='下載失敗')
             self._finish_progress(sn, status='失敗')

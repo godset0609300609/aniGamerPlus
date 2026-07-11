@@ -224,12 +224,13 @@ class ProgressService:
                 message_id = await self._message_id_registry.get(sn)
                 if message_id is not None:
                     import dramatiq_abort
+                    import dramatiq_abort.middleware
 
                     await anyio.to_thread.run_sync(
                         functools.partial(
                             dramatiq_abort.abort,
                             message_id,
-                            mode=dramatiq_abort.AbortMode.ABORT,
+                            mode=dramatiq_abort.middleware.AbortMode.ABORT,
                             abort_timeout=5000,
                         )
                     )

@@ -118,7 +118,7 @@ async def put_putio_token(
     repo: T.Annotated[PutioTokenRepository, fastapi.Depends(get_putio_token_repo)],
 ) -> SimpleStatus:
     """Set the Put.io OAuth bearer token.  Admin only.  Never returned back."""
-    token = payload.token
+    token = payload.token.get_secret_value()
     await anyio.to_thread.run_sync(lambda: repo.write(token))
     return SimpleStatus()
 

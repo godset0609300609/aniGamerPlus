@@ -21,7 +21,8 @@ import hydrogram
 import hydrogram.errors
 import hydrogram.types
 
-from ._login_common import persist_login_success
+from ..security.log_scrub import scrub_exception_for_log
+from ._login_common import _sanitize_login_error, persist_login_success
 
 if T.TYPE_CHECKING:
     from ..logging_ import Logger
@@ -122,7 +123,7 @@ class PhoneLoginService:
         except hydrogram.errors.PhoneCodeExpired:
             return self._retry(pending, 'awaiting_code', '驗證碼已過期，請重新取得驗證碼')
         except Exception as exc:  # noqa: BLE001
-            await self._fail(pending, str(exc))
+            await self._fail(pending, exc)
             return self._status_payload(pending)
 
         if not isinstance(result, hydrogram.types.User):
@@ -133,7 +134,10 @@ class PhoneLoginService:
             await self._fail(pending, '此帳號需要先在官方 App 完成註冊/接受服務條款')
             return self._status_payload(pending)
 
-        await self._succeed(pending, result)
+        try:
+            await self._succeed(pending, result)
+        except Exception as exc:  # noqa: BLE001 — e.g. session-persistence failure
+            await self._fail(pending, exc)
         return self._status_payload(pending)
 
     async def submit_password(self, login_token: str, password: str, user_id: str) -> dict[str, T.Any]:
@@ -149,10 +153,13 @@ class PhoneLoginService:
         except hydrogram.errors.PasswordHashInvalid:
             return self._retry(pending, 'awaiting_password', '密碼錯誤，請重新輸入')
         except Exception as exc:  # noqa: BLE001
-            await self._fail(pending, str(exc))
+            await self._fail(pending, exc)
             return self._status_payload(pending)
 
-        await self._succeed(pending, user)
+        try:
+            await self._succeed(pending, user)
+        except Exception as exc:  # noqa: BLE001 — e.g. session-persistence failure
+            await self._fail(pending, exc)
         return self._status_payload(pending)
 
     # ------------------------------------------------------------------ internal
@@ -173,10 +180,23 @@ class PhoneLoginService:
         with contextlib.suppress(Exception):
             await pending.client.disconnect()
 
-    async def _fail(self, pending: _PendingPhoneLogin, error: str) -> None:
+    async def _fail(self, pending: _PendingPhoneLogin, error: Exception | str) -> None:
+        """Mark *pending* failed.
+
+        B-11 (security audit): *error* is either the raw exception that
+        caused the failure — logged in full (token-scrubbed, length-capped
+        via :func:`scrub_exception_for_log`) but exposed to the API caller
+        only as one of :func:`_sanitize_login_error`'s bounded, generic
+        strings — or an already-safe, hand-authored message (e.g. the
+        "needs sign-up" case) that's used verbatim either way.
+        """
         pending.status = 'failed'
-        pending.error = error
-        self._log_error(f'user_id={pending.user_id}: {error}')
+        if isinstance(error, Exception):
+            self._log_error(f'user_id={pending.user_id}: {scrub_exception_for_log(error)}')
+            pending.error = _sanitize_login_error(error)
+        else:
+            self._log_error(f'user_id={pending.user_id}: {error}')
+            pending.error = error
         with contextlib.suppress(Exception):
             await pending.client.disconnect()
 

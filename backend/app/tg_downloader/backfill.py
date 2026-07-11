@@ -26,6 +26,8 @@ import contextlib
 import datetime
 import typing as T
 
+from ..security.log_scrub import scrub_exception_for_log
+
 if T.TYPE_CHECKING:
     from ..logging_ import Logger
     from ..persistence.tg_watched_chat_repo import TgWatchedChatRepository
@@ -130,7 +132,7 @@ class TgBackfillService:
                             user_id, watched.id, scanned_count=scanned, matched_count=matched
                         )
         except Exception as exc:  # noqa: BLE001 — surfaced via backfill_status; dramatiq logs the traceback
-            self._log_error(f'user_id={user_id} chat_id={chat_id} 回填失敗: {exc}')
+            self._log_error(f'user_id={user_id} chat_id={chat_id} 回填失敗: {scrub_exception_for_log(exc)}')
             self._watched_chat_repo.mark_backfill_progress(
                 user_id, watched.id, scanned_count=scanned, matched_count=matched
             )

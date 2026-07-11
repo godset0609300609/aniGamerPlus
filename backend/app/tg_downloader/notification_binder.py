@@ -26,6 +26,8 @@ import typing as T
 
 import hydrogram.errors
 
+from ..security.log_scrub import scrub_exception_for_log
+
 if T.TYPE_CHECKING:
     import collections.abc
 
@@ -94,20 +96,20 @@ class NotificationBinder:
         try:
             await client.send_message(handle, '/start')
         except hydrogram.errors.FloodWait as exc:
-            self._log_error(f'/start 送出失敗 (bot={handle}): flood wait — {exc}')
+            self._log_error(f'/start 送出失敗 (bot={handle}): flood wait — {scrub_exception_for_log(exc)}')
             return NotificationBindOutcome(NotificationBindResult.FLOOD_WAIT, detail=str(exc))
         except (
             hydrogram.errors.UsernameInvalid,
             hydrogram.errors.UsernameNotOccupied,
             hydrogram.errors.PeerIdInvalid,
         ) as exc:
-            self._log_error(f'/start 送出失敗 (bot={handle}): 找不到 bot — {exc}')
+            self._log_error(f'/start 送出失敗 (bot={handle}): 找不到 bot — {scrub_exception_for_log(exc)}')
             return NotificationBindOutcome(NotificationBindResult.BOT_NOT_FOUND, detail=str(exc))
         except hydrogram.errors.RPCError as exc:
-            self._log_error(f'/start 送出失敗 (bot={handle}): {exc}')
+            self._log_error(f'/start 送出失敗 (bot={handle}): {scrub_exception_for_log(exc)}')
             return NotificationBindOutcome(NotificationBindResult.TELEGRAM_ERROR, detail=str(exc))
         except Exception as exc:  # noqa: BLE001 — best-effort, never fatal
-            self._log_error(f'/start 送出失敗 (bot={handle}): 未知錯誤 — {exc}')
+            self._log_error(f'/start 送出失敗 (bot={handle}): 未知錯誤 — {scrub_exception_for_log(exc)}')
             return NotificationBindOutcome(NotificationBindResult.UNKNOWN_ERROR, detail=str(exc))
         return NotificationBindOutcome(NotificationBindResult.SUCCESS)
 

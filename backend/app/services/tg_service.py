@@ -18,6 +18,8 @@ import typing as T
 
 import anyio.to_thread
 
+from ..security.log_scrub import scrub_exception_for_log
+
 if T.TYPE_CHECKING:
     import hydrogram
 
@@ -278,15 +280,49 @@ class TgService:
         )
         return updated if updated is not None else watched
 
-    async def list_available_chats(self, user_id: str) -> list[hydrogram.types.Dialog]:
-        """Live-query the chats *user_id*'s Telegram account is currently a member of."""
+    async def list_available_chats(
+        self, user_id: str, *, limit: int = 500
+    ) -> tuple[list[hydrogram.types.Dialog], bool]:
+        """Live-query the chats *user_id*'s Telegram account is currently a member of.
+
+        Returns ``(dialogs, truncated)`` — *dialogs* holds at most *limit*
+        entries; *truncated* is ``True`` when more were available than that
+        (B-09/G-07 of the security audit: an unbounded fetch here let an
+        account with a huge dialog list force an unbounded live MTProto
+        walk + an unbounded JSON response on every call).
+
+        Also guards against a crash the blocker fix in this same change
+        addresses: ``client.get_dialogs()`` raises ``AttributeError`` deep
+        inside hydrogram when one of the account's dialogs is a channel the
+        user was kicked from or is otherwise restricted from (Telegram
+        represents it as the raw ``ChannelForbidden`` type, which
+        ``hydrogram.types.Chat._parse_channel_chat`` can't fully parse — it
+        unconditionally reads attributes, e.g. ``channel.verified``, that
+        only exist on the regular ``Channel`` type). Telegram's
+        ``messages.getDialogs`` is paginated in batches of up to 100 and
+        hydrogram builds each batch's ``Dialog`` objects before yielding
+        any of them, so once a batch fails to parse there is no way to skip
+        past just the one bad dialog and resume — the whole generator is
+        left unusable. Rather than 500 the entire listing, this returns
+        whatever dialogs were already fetched from earlier batches (the
+        user can't monitor a chat they don't have access to anyway).
+        """
         client = await self._client_pool.get(user_id)
         if client is None:
-            return []
+            return [], False
         dialogs: list[hydrogram.types.Dialog] = []
-        async for dialog in client.get_dialogs():
-            dialogs.append(dialog)
-        return dialogs
+        try:
+            async for dialog in client.get_dialogs(limit=limit + 1):
+                dialogs.append(dialog)
+        except AttributeError as exc:
+            self._log_warning(
+                f'user_id={user_id} 略過無法解析的 dialog（可能是 ChannelForbidden）: '
+                f'{scrub_exception_for_log(exc)}'
+            )
+        truncated = len(dialogs) > limit
+        if truncated:
+            dialogs = dialogs[:limit]
+        return dialogs, truncated
 
     # ------------------------------------------------------------------ downloads
 
@@ -296,6 +332,16 @@ class TgService:
         return await anyio.to_thread.run_sync(
             functools.partial(self._downloaded_media_repo.list_by_user, user_id, page=page, size=size)
         )
+
+    # ------------------------------------------------------------------ logging
+
+    def _log_warning(self, message: str) -> None:
+        """Log at warning-ish severity — ``Logger`` has no ``.warning``, so this
+        is ``.error`` with ``display=False`` (never surfaced to the CLI/dashboard
+        as an error banner, only written to the log file), matching the
+        ``_log_error`` convention used throughout ``app.tg_downloader.*``."""
+        if self._logger is not None:
+            self._logger.error(None, _LOG_TAG, message, display=False)
 
 
 def resolve_bot_username(settings_provider: T.Callable[[], T.Any]) -> str | None:

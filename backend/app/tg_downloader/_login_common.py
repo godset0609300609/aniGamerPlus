@@ -13,11 +13,40 @@ from __future__ import annotations
 import contextlib
 import typing as T
 
+import sqlalchemy.exc
+
+from ..security.crypto import FernetKeyMissingError
+
 if T.TYPE_CHECKING:
     import hydrogram
 
     from ..persistence.tg_session_repo import TgSessionRepository
     from .notification_binder import NotificationBinder
+
+#: B-11 (security audit): the small, bounded set of strings a login-failure
+#: response's ``TgLoginStatusResponse.error`` may ever contain. Never the
+#: raw ``str(exc)`` — hydrogram/MTProto exceptions (and, in principle, a
+#: sqlite/OS error surfacing from the session-persistence step) can include
+#: internal file paths or transport-layer detail that has no business
+#: leaving the server. The raw, unsanitized detail still reaches the log
+#: file (scrubbed for token-shaped substrings — see
+#: ``app.security.log_scrub.scrub_exception_for_log``), just not the API.
+_GENERIC_LOGIN_ERROR = '認證失敗，請重新綁定'
+_SESSION_PERSIST_ERROR = 'session 儲存失敗'
+
+
+def _sanitize_login_error(exc: Exception) -> str:
+    """Map *exc* to one of a small set of safe, user-facing error strings.
+
+    ``sqlalchemy.exc.SQLAlchemyError`` / ``FernetKeyMissingError`` / plain
+    ``OSError`` cover the ways :func:`persist_login_success` below (session
+    upsert + Fernet-encrypt) can fail — everything else (hydrogram RPC
+    errors, the flow's own protocol-shape ``RuntimeError``s, ...) falls
+    back to the generic auth-failure message.
+    """
+    if isinstance(exc, (sqlalchemy.exc.SQLAlchemyError, FernetKeyMissingError, OSError)):
+        return _SESSION_PERSIST_ERROR
+    return _GENERIC_LOGIN_ERROR
 
 
 async def persist_login_success(

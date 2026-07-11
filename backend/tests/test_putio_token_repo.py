@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
+import platform
 
 import pytest
 
@@ -62,3 +64,14 @@ def test_exists_and_nonempty_false_when_file_is_blank(repo: PutioTokenRepository
     paths.putio_token_path.parent.mkdir(parents=True, exist_ok=True)
     paths.putio_token_path.write_text('', encoding='utf-8')
     assert repo.exists_and_nonempty() is False
+
+
+@pytest.mark.skipif(platform.system() == 'Windows', reason='POSIX mode bits do not apply on Windows')
+def test_write_sets_0600_permissions(repo: PutioTokenRepository, paths: WorkspacePaths) -> None:
+    """D-3 (security audit): mirrors test_cookie_repo.py's
+    test_atomic_write_sets_0600_permissions — putio_token.txt is a bearer
+    token and must not be readable by other local users."""
+    repo.write('secret-oauth-token')
+
+    mode = os.stat(paths.putio_token_path).st_mode & 0o777
+    assert mode == 0o600, f'expected 0600, got {oct(mode)}'

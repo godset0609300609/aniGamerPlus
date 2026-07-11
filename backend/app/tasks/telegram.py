@@ -32,6 +32,13 @@ _setup.init_broker()
 _BT_EVENTS = frozenset(
     {'bt_dispatched', 'bt_status_update', 'bt_landing_progress', 'bt_landed', 'bt_failed'}
 )
+#: C-2 (security audit): these fell through to notify_download_event before
+#: this frozenset existed — that method requires sn/bangumi_name kwargs the
+#: TG payload never carries, so every one of these silently raised
+#: TypeError inside this max_retries=0 actor. See
+#: TelegramNotifier.notify_tg_event's docstring for the routing + the
+#: still-open follow-up (a real TG live-message registry).
+_TG_EVENTS = frozenset({'tg_started', 'tg_progress', 'tg_landed', 'tg_failed'})
 
 
 def _retry_when_429(retries_so_far: int, exc: Exception) -> bool:
@@ -138,7 +145,10 @@ async def notify_event_actor(**kwargs: T.Any) -> None:
     ``event`` picks the payload shape: 'bt_dispatched' / 'bt_status_update' /
     'bt_landing_progress' / 'bt_landed' / 'bt_failed' carry BT-specific
     kwargs (title/feed_name/... — no owner_id/sn) and route to
-    ``notify_bt_event``; everything else is a per-download owner event
+    ``notify_bt_event``; 'tg_started' / 'tg_progress' / 'tg_landed' /
+    'tg_failed' carry TG User API downloader kwargs (chat_title/chat_id/
+    message_id/... — also no owner_id/sn) and route to the stub
+    ``notify_tg_event``; everything else is a per-download owner event
     routed to ``notify_download_event``.
     """
     from ..core import build_container
@@ -147,8 +157,11 @@ async def notify_event_actor(**kwargs: T.Any) -> None:
     notifier = _build_notifier(container)
     if notifier is None:
         return
-    if kwargs.get('event') in _BT_EVENTS:
+    event = kwargs.get('event')
+    if event in _BT_EVENTS:
         await notifier.notify_bt_event(**kwargs)
+    elif event in _TG_EVENTS:
+        await notifier.notify_tg_event(**kwargs)
     else:
         await notifier.notify_download_event(**kwargs)
 

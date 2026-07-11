@@ -87,7 +87,8 @@ beforeEach(() => {
   // Non-immediate watch on `modelValue` means startQrFlow is never actually
   // invoked when the dialog mounts already-open in these specs, but stub it
   // defensively in case that assumption ever changes.
-  mockStartQrLogin.mockResolvedValue({ login_token: 'qr-token', qr_code_url: 'tg://x', qr_code_png_base64: 'data:x' })
+  // B-10 (security audit): qr_code_url no longer round-trips in the response.
+  mockStartQrLogin.mockResolvedValue({ login_token: 'qr-token', qr_code_png_base64: 'data:x' })
 })
 
 describe('TgBindDialog — phone flow, wrong/expired code retry (awaiting_code)', () => {

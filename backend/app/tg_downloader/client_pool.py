@@ -14,6 +14,8 @@ import typing as T
 
 import hydrogram
 
+from ..security.log_scrub import scrub_exception_for_log
+
 if T.TYPE_CHECKING:
     from ..logging_ import Logger
     from ..persistence.tg_session_repo import TgSessionRepository
@@ -74,7 +76,9 @@ class TgClientPool:
             try:
                 await client.connect()
             except Exception as exc:  # noqa: BLE001 — reconnect failure, not our bug to raise
-                self._log_error(f'user_id={user_id} 連線失敗，標記 session 為 expired: {exc}')
+                self._log_error(
+                    f'user_id={user_id} 連線失敗，標記 session 為 expired: {scrub_exception_for_log(exc)}'
+                )
                 self._session_repo.mark_expired(user_id)
                 return None
 

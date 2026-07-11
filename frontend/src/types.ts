@@ -276,7 +276,9 @@ export type TgBindStatus = TgSession
 
 export interface TgQrLoginResponse {
   login_token: string
-  qr_code_url: string
+  // B-10 (security audit): the raw tg://login?token=... deep link is the
+  // login credential itself and no longer round-trips through the API —
+  // only the rendered PNG (qr_code_png_base64) is exposed.
   qr_code_png_base64: string
 }
 
@@ -325,6 +327,14 @@ export interface TgAvailableChat {
   title: string
   type: string
   already_watched: boolean
+}
+
+// B-09/G-07 (security audit): GET /api/tg/chats/available now returns a
+// capped, envelope-wrapped list rather than an unbounded bare array.
+export interface TgAvailableChatsResponse {
+  items: TgAvailableChat[]
+  truncated: boolean
+  total_seen: number
 }
 
 export interface TgDownloadedMedia {

@@ -190,7 +190,10 @@ def test_start_qr_login_returns_token_and_qr(
     assert r.status_code == 200
     body = r.json()
     assert body['login_token'] == 'qr-token-for-__anonymous_admin__'
-    assert body['qr_code_url'].startswith('tg://login?token=')
+    # B-10 (security audit): the raw tg://login?token=... deep link is the
+    # login credential itself — it must never round-trip through the API
+    # response, only the rendered PNG.
+    assert 'qr_code_url' not in body
     assert body['qr_code_png_base64'].startswith('data:image/png;base64,')
     assert qr.started == ['__anonymous_admin__']
 
@@ -913,11 +916,14 @@ def test_list_available_chats(client: fastapi.testclient.TestClient, fake_contai
 
     assert r.status_code == 200
     body = r.json()
-    assert len(body) == 1
-    assert body[0]['chat_id'] == -100999
-    assert body[0]['title'] == '新的頻道'
-    assert body[0]['type'] == 'channel'
-    assert body[0]['already_watched'] is False
+    assert body['truncated'] is False
+    assert body['total_seen'] == 1
+    items = body['items']
+    assert len(items) == 1
+    assert items[0]['chat_id'] == -100999
+    assert items[0]['title'] == '新的頻道'
+    assert items[0]['type'] == 'channel'
+    assert items[0]['already_watched'] is False
 
 
 def test_list_available_chats_marks_already_watched(
@@ -933,7 +939,40 @@ def test_list_available_chats_marks_already_watched(
 
     r = client.get('/api/tg/chats/available')
 
-    assert r.json()[0]['already_watched'] is True
+    assert r.json()['items'][0]['already_watched'] is True
+
+
+def test_list_available_chats_truncates_at_default_cap(
+    client: fastapi.testclient.TestClient, fake_container: FakeContainer
+) -> None:
+    """B-09/G-07: an account with more dialogs than the cap gets a truncated,
+    not unbounded, response."""
+    dialogs = [_fake_dialog(chat_id=-100000 - i, title=f'頻道{i}') for i in range(501)]
+    pool = _FakeClientPool({'__anonymous_admin__'}, dialogs=dialogs)
+    service = _make_tg_service(fake_container, client_pool=pool)
+    _bind_service(client, service, fake_container)
+
+    r = client.get('/api/tg/chats/available')
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body['truncated'] is True
+    assert len(body['items']) == 500
+    assert body['total_seen'] == 500
+
+
+def test_list_available_chats_limit_query_param_is_capped(
+    client: fastapi.testclient.TestClient, fake_container: FakeContainer
+) -> None:
+    """The ``limit`` query param itself is bounded server-side — a caller can't
+    request an unbounded fetch just by passing a huge ``limit``."""
+    pool = _FakeClientPool({'__anonymous_admin__'}, dialogs=[_fake_dialog()])
+    service = _make_tg_service(fake_container, client_pool=pool)
+    _bind_service(client, service, fake_container)
+
+    r = client.get('/api/tg/chats/available?limit=100000')
+
+    assert r.status_code == 422
 
 
 def test_chats_available_rate_limited(
