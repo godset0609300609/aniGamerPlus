@@ -30,6 +30,33 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Undo hydrogram's import-time global uvloop event-loop-policy hijack.
+
+    hydrogram/__init__.py sets uvloop as the process-wide asyncio event loop
+    policy at import time. On Linux CI (uvloop present) this silently swaps
+    the loop implementation for the entire test session the moment any TG
+    test module is collected, which made an async test elsewhere hang for
+    24+ min. Reset to the stdlib default here — after collection has imported
+    every test module (so hydrogram has already run) but before any test
+    body executes — so the suite runs under the same deterministic default
+    loop as local dev (Windows has no uvloop, so it always did).
+
+    Passing ``None`` (rather than constructing ``asyncio.DefaultEventLoopPolicy``
+    directly) clears the explicit policy so ``get_event_loop_policy()`` lazily
+    recreates the platform default on next use. This sidesteps a second,
+    narrower Python 3.14 deprecation: unlike ``set_event_loop_policy`` itself
+    (already ignored below because hydrogram triggers it too),
+    ``asyncio.DefaultEventLoopPolicy`` has no matching ``ignore:`` entry in
+    ``filterwarnings``, and with ``filterwarnings = ["error", ...]`` that
+    warning would abort collection with an INTERNALERROR instead of just
+    resetting the policy.
+    """
+    import asyncio
+
+    asyncio.set_event_loop_policy(None)
+
+
 @pytest.fixture(autouse=True)
 def _stub_url_guard_dns(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub the SSRF guard's DNS resolution so tests never depend on real network.

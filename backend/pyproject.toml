@@ -111,6 +111,7 @@ dev = [
     "mypy>=1.20.1",
     "types-requests>=2.33.0.20260408",
     "pytest-cov>=6.0",
+    "pytest-timeout>=2.3",
     "coverage[toml]>=7.0",
     "ruff>=0.15.11",
     "mutmut>=2.5",
@@ -121,6 +122,8 @@ dev = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-ra --cov=app --cov-report=term-missing --cov-report=html --cov-report=xml"
+timeout = 120
+timeout_method = "thread"
 filterwarnings = [
     "error",
     "ignore::coverage.exceptions.CoverageWarning",
