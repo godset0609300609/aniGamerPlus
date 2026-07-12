@@ -130,6 +130,10 @@ filterwarnings = [
     # favour of inspect.iscoroutinefunction. Nothing on our side to fix — this
     # fires from inside slowapi/extension.py, not our code.
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
+    # uvloop (transitive via hydrogram) accesses asyncio.AbstractEventLoopPolicy
+    # which is deprecated in Python 3.14 (removal in 3.16). Not something we
+    # can fix — needs upstream uvloop update. Silencing until upstream ships.
+    "ignore:'asyncio\\.AbstractEventLoopPolicy' is deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.run]
