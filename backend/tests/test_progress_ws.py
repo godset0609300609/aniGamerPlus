@@ -88,9 +88,7 @@ def test_ws_connection_cap_frees_slot_on_disconnect(client: fastapi.testclient.T
 
 def test_ws_rejects_disallowed_origin(client: fastapi.testclient.TestClient) -> None:
     try:
-        with client.websocket_connect(
-            '/api/ws/tasks_progress', headers={'origin': 'http://evil.example'}
-        ) as ws:
+        with client.websocket_connect('/api/ws/tasks_progress', headers={'origin': 'http://evil.example'}) as ws:
             ws.receive_text()
     except starlette.testclient.WebSocketDisconnect as exc:
         assert exc.code == 1008
@@ -99,8 +97,6 @@ def test_ws_rejects_disallowed_origin(client: fastapi.testclient.TestClient) -> 
 
 
 def test_ws_accepts_allowed_origin(client: fastapi.testclient.TestClient) -> None:
-    with client.websocket_connect(
-        '/api/ws/tasks_progress', headers={'origin': 'http://localhost:5173'}
-    ) as ws:
+    with client.websocket_connect('/api/ws/tasks_progress', headers={'origin': 'http://localhost:5173'}) as ws:
         message = ws.receive_text()
         assert json.loads(message) == {}

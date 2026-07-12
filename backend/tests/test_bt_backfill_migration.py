@@ -93,9 +93,7 @@ def test_backfill_converts_simplified_titles_and_leaves_traditional_ones_untouch
 
     expected_title = opencc.OpenCC('s2t').convert(simplified_title)
     with engine.connect() as conn:
-        rows = dict(
-            conn.execute(sqlalchemy.text('SELECT guid, title FROM bt_feed_entry')).fetchall()
-        )
+        rows = dict(conn.execute(sqlalchemy.text('SELECT guid, title FROM bt_feed_entry')).fetchall())
 
     assert rows['guid-simplified'] == expected_title
     assert rows['guid-simplified'] != simplified_title  # sanity: the seed data really was 簡體

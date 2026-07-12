@@ -51,9 +51,7 @@ class FakeLogger:
 def test_prune_stale_uses_configured_retention_days() -> None:
     entry_repo = FakeBtFeedEntryRepo(deleted=3)
     history_repo = FakeTaskHistoryRepo(deleted=5)
-    settings_repo = FakeSettingsRepo(
-        BtDownloaderSettings(entry_retention_days=42, task_history_retention_days=99)
-    )
+    settings_repo = FakeSettingsRepo(BtDownloaderSettings(entry_retention_days=42, task_history_retention_days=99))
 
     service = BtRetentionService(entry_repo, history_repo, settings_repo)
     deleted_entries, deleted_history = service.prune_stale()

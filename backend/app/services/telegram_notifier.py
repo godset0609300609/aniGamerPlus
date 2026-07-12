@@ -252,9 +252,7 @@ class TelegramNotifier:
     async def notify_bt_event(
         self,
         *,
-        event: T.Literal[
-            'bt_dispatched', 'bt_status_update', 'bt_landing_progress', 'bt_landed', 'bt_failed'
-        ],
+        event: T.Literal['bt_dispatched', 'bt_status_update', 'bt_landing_progress', 'bt_landed', 'bt_failed'],
         title: str,
         feed_name: str,
         filter_name: str | None = None,

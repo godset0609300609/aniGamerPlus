@@ -175,9 +175,7 @@ class WebSettings(pydantic.BaseModel):
     parse_sn_cd: int = pydantic.Field(default=5, ge=0)
     parse_cd: int = pydantic.Field(default=3, ge=0)
     telegram: TelegramSettingsPublic = pydantic.Field(default_factory=TelegramSettingsPublic)
-    bt_downloader: BtDownloaderSettings = pydantic.Field(
-        default_factory=BtDownloaderSettings, alias='bt-downloader'
-    )
+    bt_downloader: BtDownloaderSettings = pydantic.Field(default_factory=BtDownloaderSettings, alias='bt-downloader')
 
 
 # ---------------------------------------------------------------------------
@@ -678,7 +676,9 @@ def _reject_save_path_traversal(v: str | None) -> str | None:
 class TgWatchedChatCreate(pydantic.BaseModel):
     chat_id: int
     chat_title: str = pydantic.Field(..., min_length=1)
-    media_types: list[TgMediaType] = pydantic.Field(default_factory=lambda: ['video'], min_length=1)
+    media_types: list[TgMediaType] = pydantic.Field(
+        default_factory=lambda: T.cast('list[TgMediaType]', ['video']), min_length=1
+    )
     size_min_mb: int | None = pydantic.Field(default=None, ge=0)
     size_max_mb: int | None = pydantic.Field(default=None, ge=0)
     # B-06: capped at 20 entries, 10 chars each — an unbounded list/item
@@ -874,9 +874,7 @@ class AppSettings(pydantic.BaseModel):
     telegram: TelegramSettings = pydantic.Field(default_factory=TelegramSettings)
 
     # BT downloader (v17.5+)
-    bt_downloader: BtDownloaderSettings = pydantic.Field(
-        default_factory=BtDownloaderSettings, alias='bt-downloader'
-    )
+    bt_downloader: BtDownloaderSettings = pydantic.Field(default_factory=BtDownloaderSettings, alias='bt-downloader')
 
     # Versions (no range — legacy values may be older after migration reads them)
     config_version: float = 17.2

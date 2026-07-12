@@ -148,10 +148,7 @@ class YtdlpDownloader:
                 elif status == 'finished':
                     self._progress_bus.update_status(task_sn, '下載完成')
 
-        outtmpl = str(
-            self._bangumi_dir
-            / '《%(playlist_title,title)s》%(playlist_index& - p{0}|)s.%(ext)s'
-        )
+        outtmpl = str(self._bangumi_dir / '《%(playlist_title,title)s》%(playlist_index& - p{0}|)s.%(ext)s')
 
         opts = self._base_opts()
         opts.update(
@@ -187,9 +184,7 @@ class YtdlpDownloader:
         height = None
         if resolved_info:
             rd_list = resolved_info.get('requested_downloads')
-            height = resolved_info.get('height') or (
-                rd_list[0].get('height') if rd_list else None
-            )
+            height = resolved_info.get('height') or (rd_list[0].get('height') if rd_list else None)
         if height:
             self._progress_bus.update_metadata(task_sn, resolution=f'{height}P')
 

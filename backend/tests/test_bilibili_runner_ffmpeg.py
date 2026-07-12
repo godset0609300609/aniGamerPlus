@@ -15,7 +15,6 @@ from app.downloader.progress import ProgressBus
 from app.logging_ import Logger
 from app.persistence.paths import WorkspacePaths
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -71,9 +70,7 @@ def test_resolve_ffmpeg_path_prefers_path(monkeypatch: pytest.MonkeyPatch) -> No
     assert result == '/usr/bin/ffmpeg'
 
 
-def test_resolve_ffmpeg_path_falls_back_to_cwd(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_ffmpeg_path_falls_back_to_cwd(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr('app.downloader.ffmpeg.shutil.which', lambda _: None)
     monkeypatch.setattr('app.downloader.ffmpeg.os.name', 'nt')
     candidate = tmp_path / 'ffmpeg.exe'
@@ -176,8 +173,8 @@ def test_ytdlp_downloader_passes_ffmpeg_location_to_opts(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When ffmpeg_location is supplied, _base_opts must include it."""
-    from app.persistence.bilibili_cookie_repo import BilibiliCookieRepository
     from app.logging_ import Logger
+    from app.persistence.bilibili_cookie_repo import BilibiliCookieRepository
 
     log = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
     bus = ProgressBus()
@@ -199,8 +196,8 @@ def test_ytdlp_downloader_passes_ffmpeg_location_to_opts(
 def test_ytdlp_downloader_no_ffmpeg_location_key_when_none(
     tmp_path: pathlib.Path,
 ) -> None:
-    from app.persistence.bilibili_cookie_repo import BilibiliCookieRepository
     from app.logging_ import Logger
+    from app.persistence.bilibili_cookie_repo import BilibiliCookieRepository
 
     log = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
     bus = ProgressBus()

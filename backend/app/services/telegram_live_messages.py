@@ -165,7 +165,7 @@ class BtLiveMessageRegistry:
         }
         try:
             message_id = int(data['message_id'])
-        except (KeyError, ValueError):
+        except KeyError, ValueError:
             return None
         try:
             last_edit_at = float(json.loads(data.get('last_edit_at', '0')))

@@ -793,9 +793,7 @@ def test_telegram_webhook_secret_status_returns_configured_true(
 ) -> None:
     """GET /config/telegram-webhook-secret/status returns configured=true once set."""
     current = fake_container.settings_repo.load()
-    updated = current.model_copy(
-        update={'telegram': current.telegram.model_copy(update={'webhook_secret': 'sec'})}
-    )
+    updated = current.model_copy(update={'telegram': current.telegram.model_copy(update={'webhook_secret': 'sec'})})
     fake_container.settings_repo.save(updated)
 
     r = client.get('/api/config/telegram-webhook-secret/status')

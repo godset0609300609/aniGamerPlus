@@ -236,8 +236,14 @@ def test_no_token_still_fetches_and_inserts_but_skips_dispatch() -> None:
         return FakePutioClient()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, factory, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        factory,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
 
@@ -263,8 +269,14 @@ def test_second_iteration_does_not_reinsert_or_redispatch_same_entry() -> None:
     putio_client = FakePutioClient()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
     service.run_iteration()
@@ -291,8 +303,14 @@ def test_matched_entry_is_dispatched_to_putio() -> None:
     putio_client = FakePutioClient()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
 
@@ -313,8 +331,14 @@ def test_unmatched_entry_is_inserted_but_not_dispatched() -> None:
     putio_client = FakePutioClient()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
 
@@ -334,8 +358,14 @@ def test_empty_filter_list_never_calls_add_transfer() -> None:
     putio_client = FakePutioClient()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
 
@@ -361,8 +391,14 @@ def test_feed_fetch_error_skips_that_feed_but_continues_with_others() -> None:
     matcher = FakeFilterMatcher(set())
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: FakePutioClient(), token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: FakePutioClient(),
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()  # must not raise
 
@@ -376,18 +412,26 @@ def test_putio_auth_error_stops_further_dispatch_but_keeps_fetching() -> None:
     filter_repo = FakeFilterRepo([BtFilter(id=1, name='f1', keywords=['Show'])])
     entry_repo = FakeFeedEntryRepo()
     token_repo = FakePutioTokenRepo('bad-token')
-    fetcher = FakeFeedFetcher({
-        feed.url: [
-            _entry_dict('g1', 'Some Show - 01', 'link1'),
-            _entry_dict('g2', 'Some Show - 02', 'link2'),
-        ]
-    })
+    fetcher = FakeFeedFetcher(
+        {
+            feed.url: [
+                _entry_dict('g1', 'Some Show - 01', 'link1'),
+                _entry_dict('g2', 'Some Show - 02', 'link2'),
+            ]
+        }
+    )
     matcher = FakeFilterMatcher({'Some Show - 01', 'Some Show - 02'})
     putio_client = FakePutioClient(raise_error=PutioAuthError('token rejected'))
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
 
@@ -413,8 +457,15 @@ def test_dispatched_event_fired_after_successful_add_transfer() -> None:
         events.append(kwargs)
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher, notify_event_send=notify_event_send,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        notify_event_send=notify_event_send,
     )
     service.run_iteration()
 
@@ -443,8 +494,15 @@ def test_failed_event_fired_when_add_transfer_raises_putio_auth_error() -> None:
         events.append(kwargs)
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher, notify_event_send=notify_event_send,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        notify_event_send=notify_event_send,
     )
     service.run_iteration()
 
@@ -472,8 +530,15 @@ def test_failed_event_fired_when_add_transfer_raises_putio_client_error() -> Non
         events.append(kwargs)
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher, notify_event_send=notify_event_send,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        notify_event_send=notify_event_send,
     )
     service.run_iteration()
 
@@ -494,8 +559,14 @@ def test_no_notify_event_send_wired_does_not_raise() -> None:
     putio_client = FakePutioClient()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()  # must not raise
 
@@ -508,12 +579,14 @@ def test_putio_client_error_skips_entry_but_continues_dispatching_others() -> No
     filter_repo = FakeFilterRepo([BtFilter(id=1, name='f1', keywords=['Show'])])
     entry_repo = FakeFeedEntryRepo()
     token_repo = FakePutioTokenRepo('tok')
-    fetcher = FakeFeedFetcher({
-        feed.url: [
-            _entry_dict('g1', 'Some Show - 01', 'link1'),
-            _entry_dict('g2', 'Some Show - 02', 'link2'),
-        ]
-    })
+    fetcher = FakeFeedFetcher(
+        {
+            feed.url: [
+                _entry_dict('g1', 'Some Show - 01', 'link1'),
+                _entry_dict('g2', 'Some Show - 02', 'link2'),
+            ]
+        }
+    )
     matcher = FakeFilterMatcher({'Some Show - 01', 'Some Show - 02'})
 
     class FlakyPutioClient(FakePutioClient):
@@ -526,8 +599,14 @@ def test_putio_client_error_skips_entry_but_continues_dispatching_others() -> No
     putio_client = FlakyPutioClient()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
 
@@ -546,9 +625,7 @@ class FakeLogger:
     def __init__(self) -> None:
         self.error_messages: list[str] = []
 
-    def error(
-        self, sn: object, tag: str, detail: str = '', *, display: bool = True, display_time: bool = True
-    ) -> None:
+    def error(self, sn: object, tag: str, detail: str = '', *, display: bool = True, display_time: bool = True) -> None:
         self.error_messages.append(detail)
 
 
@@ -568,8 +645,15 @@ def test_dispatch_cap_defers_excess_matches_and_next_tick_picks_them_up() -> Non
     logger = FakeLogger()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher, logger=logger,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        logger=logger,
     )
     service.run_iteration()
 
@@ -604,8 +688,14 @@ def test_dispatch_cap_pending_drain_happens_before_new_matches() -> None:
     fetcher = FakeFeedFetcher({feed.url: tick1_entries})
     matcher = FakeFilterMatcher(set(tick1_titles))
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
     assert len(entry_repo.dispatched) == 20
@@ -646,8 +736,14 @@ def test_rescan_matches_entry_after_filter_added_on_next_iteration() -> None:
     putio_client = FakePutioClient()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
 
@@ -686,8 +782,15 @@ def test_rescan_matched_entry_fires_dispatched_notification() -> None:
         events.append(kwargs)
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher, notify_event_send=notify_event_send,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        notify_event_send=notify_event_send,
     )
     service.run_iteration()
     assert events == []  # nothing matched yet — no notification
@@ -725,8 +828,14 @@ def test_rescan_respects_shared_dispatch_cap_with_new_entries() -> None:
     matcher = FakeFilterMatcher(set())  # tick 1: no filters, matcher irrelevant
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
     assert len(entry_repo.inserted) == 15
@@ -764,8 +873,14 @@ def test_no_rescan_when_putio_token_missing() -> None:
     matcher = FakeFilterMatcher(set())
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: FakePutioClient(), token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: FakePutioClient(),
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
 
@@ -792,8 +907,14 @@ def test_no_rescan_after_auth_failure_in_pending_dispatch_drain() -> None:
     entry_repo.mark_matched(pending_entry.id, 1)
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
 
@@ -820,9 +941,14 @@ def test_insert_converts_title_when_hanzi_convert_true() -> None:
     matcher = FakeFilterMatcher(set())
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: FakePutioClient(), token_repo,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: FakePutioClient(),
+        token_repo,
         _settings(hanzi_convert=True),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
 
@@ -844,9 +970,14 @@ def test_insert_preserves_title_when_hanzi_convert_false() -> None:
     matcher = FakeFilterMatcher(set())
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: FakePutioClient(), token_repo,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: FakePutioClient(),
+        token_repo,
         _settings(hanzi_convert=False),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()
 
@@ -894,9 +1025,16 @@ def test_dispatched_records_task_history_start_row() -> None:
     task_id_map_repo = FakeTaskIdMapRepo()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
-        task_history_repo=task_history_repo, task_id_map_repo=task_id_map_repo,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        task_history_repo=task_history_repo,
+        task_id_map_repo=task_id_map_repo,
     )
     service.run_iteration()
 
@@ -925,9 +1063,16 @@ def test_task_history_write_failure_does_not_break_dispatch() -> None:
     task_id_map_repo = FakeTaskIdMapRepo()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
-        task_history_repo=task_history_repo, task_id_map_repo=task_id_map_repo,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        task_history_repo=task_history_repo,
+        task_id_map_repo=task_id_map_repo,
     )
     service.run_iteration()  # must not raise
 
@@ -960,9 +1105,16 @@ def test_dispatched_publishes_to_progress_bus_with_bt_sn() -> None:
     task_id_map_repo = FakeTaskIdMapRepo()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
-        progress_bus=progress_bus, task_id_map_repo=task_id_map_repo,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        progress_bus=progress_bus,
+        task_id_map_repo=task_id_map_repo,
     )
     service.run_iteration()
 
@@ -990,9 +1142,16 @@ def test_dispatched_progress_bus_falls_back_to_feed_name_when_no_filter_name() -
     task_id_map_repo = FakeTaskIdMapRepo()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
-        progress_bus=progress_bus, task_id_map_repo=task_id_map_repo,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        progress_bus=progress_bus,
+        task_id_map_repo=task_id_map_repo,
     )
     service.run_iteration()
 
@@ -1011,8 +1170,14 @@ def test_no_progress_bus_wired_does_not_raise() -> None:
     putio_client = FakePutioClient()
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
     )
     service.run_iteration()  # must not raise
 
@@ -1045,8 +1210,15 @@ def test_status_update_payload_includes_percent_done_and_size_from_transfer() ->
         events.append(kwargs)
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher, notify_event_send=notify_event_send,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        notify_event_send=notify_event_send,
     )
     service.run_iteration()
 
@@ -1073,8 +1245,15 @@ def test_dispatched_payload_omits_percent_done_and_size_when_absent_from_transfe
         events.append(kwargs)
 
     service = BtDownloaderService(
-        feed_repo, filter_repo, entry_repo, lambda _tok: putio_client, token_repo, _settings(),
-        feed_fetcher=fetcher, filter_matcher=matcher, notify_event_send=notify_event_send,
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        notify_event_send=notify_event_send,
     )
     service.run_iteration()
 

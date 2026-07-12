@@ -236,9 +236,7 @@ class ProgressService:
                     )
 
         # Phase 2: unconditional mirror close so the card disappears either way.
-        await anyio.to_thread.run_sync(
-            functools.partial(bus.force_finish, sn, status=status, filename=entry.filename)
-        )
+        await anyio.to_thread.run_sync(functools.partial(bus.force_finish, sn, status=status, filename=entry.filename))
 
 
 get_progress_service = container_bound(

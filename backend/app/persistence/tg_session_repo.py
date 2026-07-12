@@ -200,8 +200,6 @@ class TgSessionRepository:
     def touch_last_active(self, user_id: str) -> None:
         with self._db.session() as session:
             stmt = (
-                sqlalchemy.update(TgSessionRow)
-                .where(TgSessionRow.user_id == user_id)
-                .values(last_active_at=_now_iso())
+                sqlalchemy.update(TgSessionRow).where(TgSessionRow.user_id == user_id).values(last_active_at=_now_iso())
             )
             session.execute(stmt)

@@ -191,9 +191,7 @@ class FakeBtLiveMessages:
         self._last_edit_at: dict[tuple[int, int], float] = {}
         self.cleared: list[tuple[int, int]] = []
 
-    async def set(
-        self, entry_id: int, chat_id: int, *, message_id: int, last_edit_at: float | None = None
-    ) -> None:
+    async def set(self, entry_id: int, chat_id: int, *, message_id: int, last_edit_at: float | None = None) -> None:
         self._store[(entry_id, chat_id)] = message_id
         self._last_edit_at[(entry_id, chat_id)] = last_edit_at if last_edit_at is not None else 0.0
 

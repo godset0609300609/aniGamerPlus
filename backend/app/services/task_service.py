@@ -205,8 +205,11 @@ class TaskService:
                 ) from exc
 
         external_id = bvid if bvid is not None else raw
+        # Bind the (already-narrowed) repo to a local name so mypy sees the non-None
+        # type inside the lambda — the closure loses the outer `is not None` narrowing.
+        task_id_map_repo = self._task_id_map_repo
         task_sn = await anyio.to_thread.run_sync(
-            lambda: self._task_id_map_repo.allocate(source='bilibili', external_id=external_id)
+            lambda: task_id_map_repo.allocate(source='bilibili', external_id=external_id)
         )
 
         # Dramatiq path.

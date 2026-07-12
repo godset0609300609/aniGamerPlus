@@ -29,9 +29,7 @@ if T.TYPE_CHECKING:
 
 _setup.init_broker()
 
-_BT_EVENTS = frozenset(
-    {'bt_dispatched', 'bt_status_update', 'bt_landing_progress', 'bt_landed', 'bt_failed'}
-)
+_BT_EVENTS = frozenset({'bt_dispatched', 'bt_status_update', 'bt_landing_progress', 'bt_landed', 'bt_failed'})
 #: C-2 (security audit): these fell through to notify_download_event before
 #: this frozenset existed — that method requires sn/bangumi_name kwargs the
 #: TG payload never carries, so every one of these silently raised

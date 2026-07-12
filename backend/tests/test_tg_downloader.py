@@ -363,9 +363,7 @@ async def test_progress_callback_updates_progress_bus(
     assert watched is not None
     from app.tg_downloader.downloader import _MatchedMedia
 
-    media = _MatchedMedia(
-        media_type='video', file_id='f', file_unique_id='u', file_name='episode01.mp4', file_size=100
-    )
+    media = _MatchedMedia(media_type='video', file_id='f', file_unique_id='u', file_name='episode01.mp4', file_size=100)
     message = _message(video=_real_video())
     progress_bus.start(1, 'episode01.mp4', owner_id=USER_ID)
 
@@ -394,9 +392,7 @@ async def test_download_progress_publishes_rate_speed_eta_to_progress_bus(
     assert watched is not None
     from app.tg_downloader.downloader import _MatchedMedia
 
-    media = _MatchedMedia(
-        media_type='video', file_id='f', file_unique_id='u', file_name='episode01.mp4', file_size=100
-    )
+    media = _MatchedMedia(media_type='video', file_id='f', file_unique_id='u', file_name='episode01.mp4', file_size=100)
     message = _message(video=_real_video())
     progress_bus.start(1, 'episode01.mp4', owner_id=USER_ID)
 
@@ -432,9 +428,7 @@ async def test_download_progress_throttled_to_5s_or_5pct_jump(
     assert watched is not None
     from app.tg_downloader.downloader import _MatchedMedia
 
-    media = _MatchedMedia(
-        media_type='video', file_id='f', file_unique_id='u', file_name='episode01.mp4', file_size=100
-    )
+    media = _MatchedMedia(media_type='video', file_id='f', file_unique_id='u', file_name='episode01.mp4', file_size=100)
     message = _message(video=_real_video())
 
     callback = watcher._make_progress_callback(1, watched, media, message)  # noqa: SLF001
@@ -504,9 +498,7 @@ async def test_register_and_unregister_wire_hydrogram_handler(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
-async def test_register_with_no_watched_chats_registers_nothing(
-    anyio_backend: str, watcher: TgDownloadWatcher
-) -> None:
+async def test_register_with_no_watched_chats_registers_nothing(anyio_backend: str, watcher: TgDownloadWatcher) -> None:
     client = hydrogram.Client('test-watcher-client-2', api_id=1, api_hash='a' * 32, in_memory=True)
 
     watcher.register(USER_ID, client)
@@ -667,9 +659,7 @@ async def test_concurrent_downloads_capped_per_user(
     max_active = 0
     state_lock = asyncio.Lock()
 
-    async def _fake_download_media(
-        _message: object, *, file_name: str, progress: object = None
-    ) -> str:
+    async def _fake_download_media(_message: object, *, file_name: str, progress: object = None) -> str:
         nonlocal active, max_active
         async with state_lock:
             active += 1

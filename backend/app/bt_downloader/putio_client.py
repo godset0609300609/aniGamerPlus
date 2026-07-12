@@ -233,7 +233,7 @@ def _parse_retry_after(raw: str | None) -> int:
         return seconds if seconds > 0 else _DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS
     try:
         parsed = email.utils.parsedate_to_datetime(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return _DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS
     if parsed is None:
         return _DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS

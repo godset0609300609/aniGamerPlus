@@ -225,9 +225,7 @@ class BilibiliRunner:
         for idx in range(1, n + 1):
             external_id = f'{bvid}_p{idx}'
             if self._task_id_map_repo is not None:
-                child_sn = self._task_id_map_repo.allocate(
-                    source='bilibili', external_id=external_id
-                )
+                child_sn = self._task_id_map_repo.allocate(source='bilibili', external_id=external_id)
             else:
                 child_sn = parent_sn * 1000 + idx
             child_sns.append(child_sn)

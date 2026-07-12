@@ -99,9 +99,7 @@ def test_429_response_raises_putio_rate_limit_error_with_integer_retry_after() -
 
 
 def test_429_response_with_http_date_retry_after_is_parsed() -> None:
-    future = email.utils.format_datetime(
-        datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=45)
-    )
+    future = email.utils.format_datetime(datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=45))
 
     def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
         return httpx.Response(429, headers={'retry-after': future}, content=b'{}')
@@ -366,7 +364,8 @@ def test_download_file_invokes_on_progress_callback_per_chunk(tmp_path: pathlib.
     chunk = b'x' * (1024 * 1024)  # exactly _DOWNLOAD_CHUNK_SIZE (1 MiB)
     content = chunk * 3
     client = PutioClient(
-        _TOKEN, transport=httpx.MockTransport(_download_handler_with_content_length(content))  # type: ignore[arg-type]
+        _TOKEN,
+        transport=httpx.MockTransport(_download_handler_with_content_length(content)),  # type: ignore[arg-type]
     )
 
     calls: list[tuple[int, int]] = []

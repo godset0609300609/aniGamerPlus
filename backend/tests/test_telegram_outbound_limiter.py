@@ -75,9 +75,7 @@ async def test_acquire_allows_calls_under_the_limit_without_waiting(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
-async def test_acquire_paces_when_global_limit_hit(
-    anyio_backend: str, client: fakeredis.aioredis.FakeRedis
-) -> None:
+async def test_acquire_paces_when_global_limit_hit(anyio_backend: str, client: fakeredis.aioredis.FakeRedis) -> None:
     """A call beyond the global cap waits (fake-sleeps) until the window rolls over."""
     clock = FakeClock()
     limiter = TelegramOutboundRateLimiter(

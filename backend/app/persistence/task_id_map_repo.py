@@ -35,8 +35,10 @@ class TaskIdMapRepository:
         """
         now_iso = datetime.datetime.now(datetime.UTC).isoformat()
         with self._db.session() as session:
+            # SQLAlchemy's stub does not expose `dialects.sqlite` as an attribute;
+            # it's a lazy submodule available at runtime.
             stmt = (
-                sqlalchemy.dialects.sqlite.insert(TaskIdMapRow)
+                sqlalchemy.dialects.sqlite.insert(TaskIdMapRow)  # type: ignore[attr-defined]
                 .values(source=source, external_id=external_id, created_at=now_iso)
                 .on_conflict_do_update(
                     index_elements=['source', 'external_id'],
@@ -44,5 +46,7 @@ class TaskIdMapRepository:
                 )
             )
             result = session.execute(stmt)
-            row_id: int = result.inserted_primary_key[0]
+            # `inserted_primary_key` is only defined on Result[InsertResult]; the
+            # stub types the return of session.execute(insert) as Result[Any].
+            row_id: int = result.inserted_primary_key[0]  # type: ignore[attr-defined]
         return BASE_OFFSET + row_id

@@ -175,9 +175,7 @@ def test_list_paginated_page_2_skips_first_50(repo: BtFeedEntryRepository, db: D
     assert [e.id for e in items] == list(reversed(ids))[50:60]
 
 
-def test_list_paginated_q_filter_ilike_substring_case_insensitive(
-    repo: BtFeedEntryRepository, feed_id: int
-) -> None:
+def test_list_paginated_q_filter_ilike_substring_case_insensitive(repo: BtFeedEntryRepository, feed_id: int) -> None:
     repo.insert_if_new(feed_id, 'guid-1', 'Attack on Titan - 01', 'https://link/1')
     repo.insert_if_new(feed_id, 'guid-2', 'One Piece - 900', 'https://link/2')
 
@@ -259,9 +257,7 @@ def test_list_paginated_unassigned_only_takes_precedence_over_putio_status(
 # ---------------------------------------------------------------------------
 
 
-def test_list_pending_landing_excludes_entries_without_a_transfer(
-    repo: BtFeedEntryRepository, feed_id: int
-) -> None:
+def test_list_pending_landing_excludes_entries_without_a_transfer(repo: BtFeedEntryRepository, feed_id: int) -> None:
     repo.insert_if_new(feed_id, 'guid-1', 'A', 'https://link/a')
     assert repo.list_pending_landing() == []
 
@@ -277,9 +273,7 @@ def test_list_pending_landing_includes_dispatched_entries_without_local_path(
     assert [e.id for e in result] == [entry.id]
 
 
-def test_list_pending_landing_excludes_entries_that_already_landed(
-    repo: BtFeedEntryRepository, feed_id: int
-) -> None:
+def test_list_pending_landing_excludes_entries_that_already_landed(repo: BtFeedEntryRepository, feed_id: int) -> None:
     entry = repo.insert_if_new(feed_id, 'guid-1', 'A', 'https://link/a')
     assert entry is not None
     repo.mark_dispatched(entry.id, filter_id=1, transfer_id=555)
@@ -314,9 +308,7 @@ def test_list_stale_in_flight_ghosts_returns_old_dispatched_unlanded_entry(
     assert [e.id for e in result] == [entry.id]
 
 
-def test_list_stale_in_flight_ghosts_excludes_entries_within_cutoff(
-    repo: BtFeedEntryRepository, feed_id: int
-) -> None:
+def test_list_stale_in_flight_ghosts_excludes_entries_within_cutoff(repo: BtFeedEntryRepository, feed_id: int) -> None:
     """A recently-dispatched entry (still within the cutoff window) is not yet a ghost."""
     entry = repo.insert_if_new(feed_id, 'guid-1', 'Fresh', 'https://link/a')
     assert entry is not None
@@ -542,9 +534,7 @@ def test_delete_stale_returns_zero_when_nothing_to_delete(repo: BtFeedEntryRepos
 # ---------------------------------------------------------------------------
 
 
-def test_list_unmatched_within_returns_unmatched_entries_in_window(
-    repo: BtFeedEntryRepository, feed_id: int
-) -> None:
+def test_list_unmatched_within_returns_unmatched_entries_in_window(repo: BtFeedEntryRepository, feed_id: int) -> None:
     entry = repo.insert_if_new(feed_id, 'guid-1', 'Unmatched Recent', 'https://link/1')
     assert entry is not None
 
@@ -593,9 +583,7 @@ def test_list_unmatched_within_orders_oldest_first(repo: BtFeedEntryRepository, 
     assert [e.id for e in result] == [older.id, newer.id]
 
 
-def test_list_unmatched_within_returns_empty_when_nothing_unmatched(
-    repo: BtFeedEntryRepository, feed_id: int
-) -> None:
+def test_list_unmatched_within_returns_empty_when_nothing_unmatched(repo: BtFeedEntryRepository, feed_id: int) -> None:
     entry = repo.insert_if_new(feed_id, 'guid-1', 'Dispatched', 'https://link/1')
     assert entry is not None
     repo.mark_dispatched(entry.id, filter_id=1, transfer_id=100)

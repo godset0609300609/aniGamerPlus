@@ -198,7 +198,17 @@ class QrLoginService:
             return self._status_payload(pending)
 
         if isinstance(result, hydrogram.raw.types.auth.LoginTokenSuccess):
+            # AuthorizationSignUpRequired means the phone number has no Telegram
+            # account yet — we do not implement sign-up here; fail cleanly.
+            if isinstance(result.authorization, hydrogram.raw.types.auth.AuthorizationSignUpRequired):
+                await self._fail(pending, '認證失敗，請重新綁定')
+                return self._status_payload(pending)
             user = hydrogram.types.User._parse(pending.client, result.authorization.user)
+            # User._parse is stubbed as Optional even though a real Authorization
+            # always carries a user; guard for stub tightness.
+            if user is None:
+                await self._fail(pending, '認證失敗，請重新綁定')
+                return self._status_payload(pending)
             try:
                 await self._succeed(pending, user)
             except Exception as exc:  # noqa: BLE001 — e.g. session-persistence failure
@@ -236,9 +246,11 @@ class QrLoginService:
     # ------------------------------------------------------------------ internal
 
     async def _export_login_token(self, client: hydrogram.Client) -> hydrogram.raw.base.auth.LoginToken:
-        return await client.invoke(
+        # client.invoke is stubbed as returning Any.
+        result: hydrogram.raw.base.auth.LoginToken = await client.invoke(
             hydrogram.raw.functions.auth.ExportLoginToken(api_id=self._api_id, api_hash=self._api_hash, except_ids=[])
         )
+        return result
 
     async def _complete_migration(
         self, pending: _PendingQrLogin, migrate: hydrogram.raw.types.auth.LoginTokenMigrateTo
@@ -259,6 +271,11 @@ class QrLoginService:
         await client.storage.dc_id(migrate.dc_id)
         new_dc_id = await client.storage.dc_id()
         test_mode = await client.storage.test_mode()
+        # MTProto peer is known-set at this point: we just wrote dc_id above, and
+        # test_mode is set in Client.__init__. hydrogram's storage stubs return
+        # Optional; safety asserts for mypy.
+        assert new_dc_id is not None, 'dc_id was set immediately above'
+        assert test_mode is not None, 'test_mode is set in Client.__init__'
         new_auth_key = await hydrogram.session.Auth(client, new_dc_id, test_mode).create()
         await client.storage.auth_key(new_auth_key)
 
@@ -278,7 +295,12 @@ class QrLoginService:
                 f'（auth.ImportLoginToken 回傳非預期型別：{type(imported).__name__}）'
             )
 
+        # Same union/Optional guards as the poll() success branch above.
+        if isinstance(imported.authorization, hydrogram.raw.types.auth.AuthorizationSignUpRequired):
+            raise RuntimeError('認證失敗，請重新綁定')
         user = hydrogram.types.User._parse(client, imported.authorization.user)
+        if user is None:
+            raise RuntimeError('認證失敗，請重新綁定')
         await self._succeed(pending, user)
 
     async def _succeed(self, pending: _PendingQrLogin, user: hydrogram.types.User) -> None:

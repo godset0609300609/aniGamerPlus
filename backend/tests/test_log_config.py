@@ -1070,9 +1070,7 @@ def test_emit_rolls_over_to_suffixed_file_once_cap_exceeded(
     assert 'second line' not in base_path.read_text(encoding='utf-8')
 
 
-def test_emit_keeps_rolling_over_across_multiple_caps(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_emit_keeps_rolling_over_across_multiple_caps(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Repeated overflow keeps incrementing the suffix: .1, .2, .3, ..."""
     handler = _daily_handler(tmp_path)
     monkeypatch.setattr(_lc.DailyLogFileHandler, '_MAX_BYTES', 5)

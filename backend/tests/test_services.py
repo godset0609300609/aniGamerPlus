@@ -656,9 +656,7 @@ async def test_task_service_b23_link_defers_resolution_off_request_path(
     resolve_event = threading.Event()
 
     class FakeBilibiliRunner:
-        def run(
-            self, task_sn: int, *, bvid: str, resolution: str, classify: bool, owner_id: str | None = None
-        ) -> None:
+        def run(self, task_sn: int, *, bvid: str, resolution: str, classify: bool, owner_id: str | None = None) -> None:
             bilibili_run_calls.append({'task_sn': task_sn, 'bvid': bvid, 'resolution': resolution})
 
     user = _admin_user('b23-user')
@@ -689,9 +687,7 @@ async def test_task_service_b23_link_defers_resolution_off_request_path(
         resolve_event.wait(timeout=2.0)
         return 'BV1yy422d8nE', 280002, False
 
-    with unittest.mock.patch(
-        'app.downloader.bilibili.url_parser.parse_bilibili_input', side_effect=_blocking_parse
-    ):
+    with unittest.mock.patch('app.downloader.bilibili.url_parser.parse_bilibili_input', side_effect=_blocking_parse):
         await service.enqueue(request, user)
 
         # enqueue() returned already, but resolve_event hasn't been set yet —

@@ -91,9 +91,7 @@ def test_detect_env_overrides_are_independent(tmp_path: pathlib.Path, monkeypatc
     assert paths.config_path == workspace_dir.resolve() / 'config.json'
 
 
-def test_detect_no_env_override_uses_workspace_default(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_detect_no_env_override_uses_workspace_default(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv('ANIGAMERPLUS_LOGS_DIR', raising=False)
     monkeypatch.delenv('ANIGAMERPLUS_BANGUMI_DIR', raising=False)
 

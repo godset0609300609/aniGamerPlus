@@ -90,8 +90,8 @@ def _safe_int(value: object) -> int | None:
     if value is None:
         return None
     try:
-        return int(value)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
+        return int(value)  # type: ignore[call-overload,no-any-return]
+    except TypeError, ValueError:
         return None
 
 
@@ -151,9 +151,7 @@ class LandingWorker:
             except PutioRateLimitError as exc:
                 self._handle_rate_limit_and_retry_once(row, exc)
             except Exception as exc:  # noqa: BLE001 — any failure fires bt_failed, loop continues
-                self._log_error(
-                    f'處理 entry_id={row.id} (transfer_id={row.putio_transfer_id}) 時發生未預期錯誤: {exc}'
-                )
+                self._log_error(f'處理 entry_id={row.id} (transfer_id={row.putio_transfer_id}) 時發生未預期錯誤: {exc}')
                 self._emit('bt_failed', row, error_message=str(exc))
                 self._finish_task_history(row, final_status='下載失敗')
                 self._finish_progress(row, status='失敗')
@@ -179,9 +177,7 @@ class LandingWorker:
         try:
             self._process_row(row)
         except PutioRateLimitError as exc2:
-            self._log_error(
-                f'重試後仍為 Put.io rate limit（entry_id={row.id}），延後至下個 tick 再處理: {exc2}'
-            )
+            self._log_error(f'重試後仍為 Put.io rate limit（entry_id={row.id}），延後至下個 tick 再處理: {exc2}')
         except Exception as exc2:  # noqa: BLE001 — mirrors run_iteration's own outer handler
             self._log_error(f'重試處理 entry_id={row.id} 時發生未預期錯誤: {exc2}')
             self._emit('bt_failed', row, error_message=str(exc2))
@@ -403,10 +399,7 @@ class LandingWorker:
             # (or a large retro-cleanup backlog) in the same tick can still
             # fire more than 20 deletions here; this note just makes that
             # visible in the logs.
-            self._log_info(
-                f'本次已觸發 {self._deletes_this_iteration} 次遠端刪除，'
-                'Put.io API 呼叫量偏高，留意速率限制'
-            )
+            self._log_info(f'本次已觸發 {self._deletes_this_iteration} 次遠端刪除，Put.io API 呼叫量偏高，留意速率限制')
 
     def run_remote_refresh_iteration(self, batch_size: int = _DEFAULT_REMOTE_REFRESH_BATCH_SIZE) -> None:
         """Periodic pass over landed-but-not-remote-cleared entries.
@@ -436,9 +429,7 @@ class LandingWorker:
         """
         rows = self._feed_entry_repo.list_landed_pending_remote_check(limit=batch_size)
         if len(rows) == batch_size:
-            self._log_info(
-                f'本次 remote refresh 批次已滿（{batch_size} 筆），仍有更多待檢查項目將於下次排程處理'
-            )
+            self._log_info(f'本次 remote refresh 批次已滿（{batch_size} 筆），仍有更多待檢查項目將於下次排程處理')
         for row in rows:
             if row.putio_transfer_id is None:
                 continue

@@ -144,8 +144,10 @@ class TgDownloadedMediaRepository:
     ) -> tuple[list[TgDownloadedMediaEntry], int]:
         """Paginated, newest-first. Returns ``(items, total)``."""
         with self._db.session() as session:
-            count_stmt = sqlalchemy.select(sqlalchemy.func.count()).select_from(TgDownloadedMediaRow).where(
-                TgDownloadedMediaRow.user_id == user_id
+            count_stmt = (
+                sqlalchemy.select(sqlalchemy.func.count())
+                .select_from(TgDownloadedMediaRow)
+                .where(TgDownloadedMediaRow.user_id == user_id)
             )
             total = session.scalar(count_stmt) or 0
 

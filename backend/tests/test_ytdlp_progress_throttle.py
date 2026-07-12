@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import pathlib
-import time
 import typing as T
 import unittest.mock
 
 import pytest
 import yt_dlp
 
-from app.downloader.bilibili.ytdlp_downloader import YtdlpDownloader, _THROTTLE_INTERVAL, _sanitize_title
+from app.downloader.bilibili.ytdlp_downloader import _THROTTLE_INTERVAL, YtdlpDownloader, _sanitize_title
 from app.downloader.progress import ProgressBus
 from app.logging_ import Logger
 from app.persistence.paths import WorkspacePaths
@@ -63,51 +63,48 @@ def test_progress_hook_throttles_updates(tmp_path: pathlib.Path, logger: Logger)
 
     fake_times = [0.0, 0.1, 0.2, 0.26, 0.3, 0.52]
     time_iter = iter(fake_times)
-    last_update: dict[str, float] = {'t': 0.0}
 
     def fake_monotonic() -> float:
         return next(time_iter)
 
-    with unittest.mock.patch.object(progress_bus, 'update_rate', side_effect=tracking_update_rate):
-        with unittest.mock.patch('app.downloader.bilibili.ytdlp_downloader.time.monotonic', side_effect=fake_monotonic):
-            hook_calls = [
-                {'status': 'downloading', 'downloaded_bytes': 100, 'total_bytes': 1000},
-                {'status': 'downloading', 'downloaded_bytes': 200, 'total_bytes': 1000},
-                {'status': 'downloading', 'downloaded_bytes': 300, 'total_bytes': 1000},
-                {'status': 'downloading', 'downloaded_bytes': 400, 'total_bytes': 1000},
-                {'status': 'downloading', 'downloaded_bytes': 500, 'total_bytes': 1000},
-                {'status': 'downloading', 'downloaded_bytes': 600, 'total_bytes': 1000},
-            ]
+    with (
+        unittest.mock.patch.object(progress_bus, 'update_rate', side_effect=tracking_update_rate),
+        unittest.mock.patch('app.downloader.bilibili.ytdlp_downloader.time.monotonic', side_effect=fake_monotonic),
+    ):
+        hook_calls = [
+            {'status': 'downloading', 'downloaded_bytes': 100, 'total_bytes': 1000},
+            {'status': 'downloading', 'downloaded_bytes': 200, 'total_bytes': 1000},
+            {'status': 'downloading', 'downloaded_bytes': 300, 'total_bytes': 1000},
+            {'status': 'downloading', 'downloaded_bytes': 400, 'total_bytes': 1000},
+            {'status': 'downloading', 'downloaded_bytes': 500, 'total_bytes': 1000},
+            {'status': 'downloading', 'downloaded_bytes': 600, 'total_bytes': 1000},
+        ]
 
-            with unittest.mock.patch('yt_dlp.YoutubeDL') as mock_ydl_cls:
-                mock_ydl_instance = unittest.mock.MagicMock()
-                mock_ydl_cls.return_value.__enter__ = unittest.mock.Mock(return_value=mock_ydl_instance)
-                mock_ydl_cls.return_value.__exit__ = unittest.mock.Mock(return_value=False)
+        with unittest.mock.patch('yt_dlp.YoutubeDL') as mock_ydl_cls:
+            mock_ydl_instance = unittest.mock.MagicMock()
+            mock_ydl_cls.return_value.__enter__ = unittest.mock.Mock(return_value=mock_ydl_instance)
+            mock_ydl_cls.return_value.__exit__ = unittest.mock.Mock(return_value=False)
 
-                captured_hooks: list[T.Callable] = []
+            captured_hooks: list[T.Callable] = []
 
-                def capture_opts(opts: dict[str, T.Any]) -> None:
-                    hooks = opts.get('progress_hooks', [])
-                    captured_hooks.extend(hooks)
+            def capture_opts(opts: dict[str, T.Any]) -> None:
+                hooks = opts.get('progress_hooks', [])
+                captured_hooks.extend(hooks)
 
-                original_init = mock_ydl_cls.side_effect
+            def patched_init(opts: dict[str, T.Any]) -> T.Any:
+                capture_opts(opts)
+                return mock_ydl_cls.return_value
 
-                def patched_init(opts: dict[str, T.Any]) -> T.Any:
-                    capture_opts(opts)
-                    return mock_ydl_cls.return_value
+            mock_ydl_cls.side_effect = patched_init
+            mock_ydl_instance.extract_info.return_value = None
 
-                mock_ydl_cls.side_effect = patched_init
-                mock_ydl_instance.extract_info.return_value = None
+            with contextlib.suppress(Exception):
+                downloader.download(1, 'BV1xx411c7mD', resolution='1080', classify=True)
 
-                try:
-                    downloader.download(1, 'BV1xx411c7mD', resolution='1080', classify=True)
-                except Exception:
-                    pass
-
-                if captured_hooks:
-                    hook = captured_hooks[0]
-                    for call in hook_calls:
-                        hook(call)
+            if captured_hooks:
+                hook = captured_hooks[0]
+                for call in hook_calls:
+                    hook(call)
 
     assert len(update_rate_calls) < len(hook_calls)
 
@@ -137,10 +134,8 @@ def test_cancel_raises_download_cancelled(tmp_path: pathlib.Path, logger: Logger
         mock_ydl_cls.side_effect = patched_init
         mock_ydl_instance.extract_info.return_value = None
 
-        try:
+        with contextlib.suppress(Exception):
             downloader.download(2, 'BV1xx411c7mD', resolution='1080', classify=True)
-        except Exception:
-            pass
 
         if captured_hooks:
             hook = captured_hooks[0]
@@ -201,7 +196,7 @@ def test_base_opts_retry_sleep_exponential_capped(tmp_path: pathlib.Path, logger
     http_sleep = opts['retry_sleep_functions']['http']
 
     values = [http_sleep(n) for n in range(1, 11)]
-    for prev, curr in zip(values, values[1:]):
+    for prev, curr in zip(values, values[1:], strict=False):
         assert curr >= prev
     assert max(values) <= 30
 
@@ -235,10 +230,8 @@ def _capture_opts(tmp_path: pathlib.Path, logger: Logger, task_sn: int = 3) -> d
         mock_ydl_cls.side_effect = patched_init
         mock_ydl_instance.extract_info.return_value = None
 
-        try:
+        with contextlib.suppress(Exception):
             downloader.download(task_sn, 'BV1xx411c7mD', resolution='1080', classify=True)
-        except Exception:
-            pass
 
     assert captured_opts, 'YoutubeDL was never instantiated'
     return captured_opts[0]
@@ -304,10 +297,8 @@ def _capture_hook(tmp_path: pathlib.Path, logger: Logger, task_sn: int = 10) -> 
         mock_ydl_cls.side_effect = patched_init
         mock_ydl_instance.extract_info.return_value = None
 
-        try:
+        with contextlib.suppress(Exception):
             downloader.download(task_sn, 'BV1xx411c7mD', resolution='1080', classify=True)
-        except Exception:
-            pass
 
     assert captured_hooks
     return captured_hooks[0]
@@ -332,10 +323,8 @@ def test_progress_hook_finished_sets_rate_100(tmp_path: pathlib.Path, logger: Lo
         mock_ydl_cls.side_effect = patched_init
         mock_ydl_instance.extract_info.return_value = None
 
-        try:
+        with contextlib.suppress(Exception):
             downloader.download(10, 'BV1xx411c7mD', resolution='1080', classify=True)
-        except Exception:
-            pass
 
     assert captured_hooks
     hook = captured_hooks[0]
@@ -369,10 +358,8 @@ def test_progress_hook_downloading_rate_uses_0_100_scale(tmp_path: pathlib.Path,
         mock_ydl_cls.side_effect = patched_init
         mock_ydl_instance.extract_info.return_value = None
 
-        try:
+        with contextlib.suppress(Exception):
             downloader.download(11, 'BV1xx411c7mD', resolution='1080', classify=True)
-        except Exception:
-            pass
 
     assert captured_hooks
     hook = captured_hooks[0]
@@ -402,10 +389,8 @@ def test_progress_hook_downloading_rate_not_fractional(tmp_path: pathlib.Path, l
         mock_ydl_cls.side_effect = patched_init
         mock_ydl_instance.extract_info.return_value = None
 
-        try:
+        with contextlib.suppress(Exception):
             downloader.download(12, 'BV1xx411c7mD', resolution='1080', classify=True)
-        except Exception:
-            pass
 
     assert captured_hooks
     hook = captured_hooks[0]
@@ -448,10 +433,8 @@ def _capture_both_hooks(
         mock_ydl_cls.side_effect = patched_init
         mock_ydl_instance.extract_info.return_value = None
 
-        try:
+        with contextlib.suppress(Exception):
             downloader.download(task_sn, 'BV1xx411c7mD', resolution='1080', classify=True)
-        except Exception:
-            pass
 
     assert captured_progress, 'progress_hooks not captured'
     assert captured_pp, 'postprocessor_hooks not captured'
@@ -514,19 +497,21 @@ def test_download_no_postprocessor_still_sets_下載完成(tmp_path: pathlib.Pat
         status_calls.append((sn, status))
         original_update_status(sn, status)
 
-    with unittest.mock.patch.object(progress_bus, 'update_status', side_effect=tracking_status):
-        with unittest.mock.patch('yt_dlp.YoutubeDL') as mock_ydl_cls:
-            mock_ydl_instance = unittest.mock.MagicMock()
-            mock_ydl_cls.return_value.__enter__ = unittest.mock.Mock(return_value=mock_ydl_instance)
-            mock_ydl_cls.return_value.__exit__ = unittest.mock.Mock(return_value=False)
+    with (
+        unittest.mock.patch.object(progress_bus, 'update_status', side_effect=tracking_status),
+        unittest.mock.patch('yt_dlp.YoutubeDL') as mock_ydl_cls,
+    ):
+        mock_ydl_instance = unittest.mock.MagicMock()
+        mock_ydl_cls.return_value.__enter__ = unittest.mock.Mock(return_value=mock_ydl_instance)
+        mock_ydl_cls.return_value.__exit__ = unittest.mock.Mock(return_value=False)
 
-            def patched_init(opts: dict[str, T.Any]) -> T.Any:
-                return mock_ydl_cls.return_value
+        def patched_init(opts: dict[str, T.Any]) -> T.Any:
+            return mock_ydl_cls.return_value
 
-            mock_ydl_cls.side_effect = patched_init
-            mock_ydl_instance.extract_info.return_value = None
+        mock_ydl_cls.side_effect = patched_init
+        mock_ydl_instance.extract_info.return_value = None
 
-            downloader.download(task_sn, 'BV1xx411c7mD', resolution='1080', classify=True)
+        downloader.download(task_sn, 'BV1xx411c7mD', resolution='1080', classify=True)
 
     assert (task_sn, '下載完成') in status_calls, f'Expected 下載完成 in status calls; got {status_calls}'
 
@@ -563,31 +548,29 @@ def _capture_hook_with_bus(
 
     captured_hooks: list[T.Callable] = []
 
-    with unittest.mock.patch('app.downloader.bilibili.ytdlp_downloader.time.monotonic', side_effect=fake_monotonic):
-        with unittest.mock.patch('yt_dlp.YoutubeDL') as mock_ydl_cls:
-            mock_ydl_instance = unittest.mock.MagicMock()
-            mock_ydl_cls.return_value.__enter__ = unittest.mock.Mock(return_value=mock_ydl_instance)
-            mock_ydl_cls.return_value.__exit__ = unittest.mock.Mock(return_value=False)
+    with (
+        unittest.mock.patch('app.downloader.bilibili.ytdlp_downloader.time.monotonic', side_effect=fake_monotonic),
+        unittest.mock.patch('yt_dlp.YoutubeDL') as mock_ydl_cls,
+    ):
+        mock_ydl_instance = unittest.mock.MagicMock()
+        mock_ydl_cls.return_value.__enter__ = unittest.mock.Mock(return_value=mock_ydl_instance)
+        mock_ydl_cls.return_value.__exit__ = unittest.mock.Mock(return_value=False)
 
-            def patched_init(opts: dict[str, T.Any]) -> T.Any:
-                captured_hooks.extend(opts.get('progress_hooks', []))
-                return mock_ydl_cls.return_value
+        def patched_init(opts: dict[str, T.Any]) -> T.Any:
+            captured_hooks.extend(opts.get('progress_hooks', []))
+            return mock_ydl_cls.return_value
 
-            mock_ydl_cls.side_effect = patched_init
-            mock_ydl_instance.extract_info.return_value = None
+        mock_ydl_cls.side_effect = patched_init
+        mock_ydl_instance.extract_info.return_value = None
 
-            try:
-                downloader.download(task_sn, 'BV1xx411c7mD', resolution='1080', classify=True)
-            except Exception:
-                pass
+        with contextlib.suppress(Exception):
+            downloader.download(task_sn, 'BV1xx411c7mD', resolution='1080', classify=True)
 
     assert captured_hooks
     return captured_hooks[0], progress_bus
 
 
-def test_progress_aggregation_two_streams_video_then_audio(
-    tmp_path: pathlib.Path, logger: Logger
-) -> None:
+def test_progress_aggregation_two_streams_video_then_audio(tmp_path: pathlib.Path, logger: Logger) -> None:
     """Rate is monotonically non-decreasing across a DASH video+audio sequence."""
     task_sn = 30
     hook, progress_bus = _capture_hook_with_bus(tmp_path, logger, task_sn)
@@ -633,9 +616,7 @@ def test_progress_aggregation_two_streams_video_then_audio(
         )
 
 
-def test_progress_aggregation_no_reset_on_new_file(
-    tmp_path: pathlib.Path, logger: Logger
-) -> None:
+def test_progress_aggregation_no_reset_on_new_file(tmp_path: pathlib.Path, logger: Logger) -> None:
     """When a second file starts at 0 bytes, the aggregate rate must not reset to near-zero.
 
     With video at 80% complete (800/1000) and audio starting (0/500), the
@@ -672,9 +653,7 @@ def test_progress_aggregation_no_reset_on_new_file(
     assert downloading_rates, 'expected at least one downloading rate'
     # No rate should drop to near-zero (old bug: audio starting at 0/500 = 0%).
     for r in downloading_rates:
-        assert r > 10.0, (
-            f'Rate reset to near-zero ({r}) when new file started — aggregation not working'
-        )
+        assert r > 10.0, f'Rate reset to near-zero ({r}) when new file started — aggregation not working'
 
 
 # ---------------------------------------------------------------------------
@@ -682,9 +661,7 @@ def test_progress_aggregation_no_reset_on_new_file(
 # ---------------------------------------------------------------------------
 
 
-def test_download_sets_rate_100_on_success_even_when_hooks_silent(
-    tmp_path: pathlib.Path, logger: Logger
-) -> None:
+def test_download_sets_rate_100_on_success_even_when_hooks_silent(tmp_path: pathlib.Path, logger: Logger) -> None:
     """When yt-dlp skips because the file already exists, no hooks fire.
 
     download() must still emit rate=100 and status=下載完成 on the success path.
@@ -713,9 +690,7 @@ def test_download_sets_rate_100_on_success_even_when_hooks_silent(
     mock_stats.assert_any_call(task_sn, speed_mbps=None, eta_seconds=None)
 
 
-def test_download_does_not_set_rate_100_on_exception(
-    tmp_path: pathlib.Path, logger: Logger
-) -> None:
+def test_download_does_not_set_rate_100_on_exception(tmp_path: pathlib.Path, logger: Logger) -> None:
     """When yt-dlp raises DownloadCancelled, the terminal rate=100 / 下載完成 must NOT be emitted."""
     task_sn = 41
     progress_bus = ProgressBus()

@@ -249,13 +249,16 @@ async def dispatch_entry(
     try:
         result = await anyio.to_thread.run_sync(lambda: service.dispatch(entry_id, user.id))
     except EntryNotFound as exc:
-        raise fastapi.HTTPException(
-            status_code=fastapi.status.HTTP_404_NOT_FOUND, detail='entry not found'
-        ) from exc
+        raise fastapi.HTTPException(status_code=fastapi.status.HTTP_404_NOT_FOUND, detail='entry not found') from exc
     except PutioTokenMissing as exc:
         raise fastapi.HTTPException(status_code=fastapi.status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except PutioAuthFailed as exc:
         raise fastapi.HTTPException(status_code=fastapi.status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except PutioApiError as exc:
         raise fastapi.HTTPException(status_code=fastapi.status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    return BtDispatchResponse(**result)
+    # dispatch() returns dict[str, object]; the actual shape is guaranteed by the
+    # service to match BtDispatchResponse's fields (see its docstring).
+    return BtDispatchResponse(
+        transfer_id=T.cast('int', result['transfer_id']),
+        status=T.cast('str', result['status']),
+    )

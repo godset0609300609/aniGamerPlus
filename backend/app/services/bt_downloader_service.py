@@ -68,8 +68,8 @@ def _safe_int(value: object) -> int | None:
     if value is None:
         return None
     try:
-        return int(value)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
+        return int(value)  # type: ignore[call-overload,no-any-return]
+    except TypeError, ValueError:
         return None
 
 
@@ -214,7 +214,10 @@ class BtDownloaderService:
                 title = T.cast('str', mapped['title'])
                 if self._settings.hanzi_convert:
                     title = self._get_hanzi_converter().convert(title)
-                row = self._bt_feed_entry_repo.insert_if_new(
+                # mypy narrowed `row` to BtFeedEntry via the outer `for row in rescan:`
+                # loop above; reassigning to Optional here would widen it, so ignore
+                # the assignment error — the None case is handled immediately below.
+                row = self._bt_feed_entry_repo.insert_if_new(  # type: ignore[assignment]
                     feed.id,
                     T.cast('str', mapped['guid']),
                     title,

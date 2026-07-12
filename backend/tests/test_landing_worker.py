@@ -279,9 +279,7 @@ class FakeSettingsRepo:
 
     def load(self) -> types.SimpleNamespace:
         return types.SimpleNamespace(
-            bt_downloader=types.SimpleNamespace(
-                auto_delete_remote_on_landed=self._auto_delete_remote_on_landed
-            )
+            bt_downloader=types.SimpleNamespace(auto_delete_remote_on_landed=self._auto_delete_remote_on_landed)
         )
 
 
@@ -292,14 +290,10 @@ class FakeLogger:
         self.info_messages: list[str] = []
         self.error_messages: list[str] = []
 
-    def info(
-        self, sn: object, tag: str, detail: str = '', *, display: bool = True, display_time: bool = True
-    ) -> None:
+    def info(self, sn: object, tag: str, detail: str = '', *, display: bool = True, display_time: bool = True) -> None:
         self.info_messages.append(detail)
 
-    def error(
-        self, sn: object, tag: str, detail: str = '', *, display: bool = True, display_time: bool = True
-    ) -> None:
+    def error(self, sn: object, tag: str, detail: str = '', *, display: bool = True, display_time: bool = True) -> None:
         self.error_messages.append(detail)
 
 
@@ -429,10 +423,13 @@ def test_completed_with_multiple_files_records_the_last_ones_name(tmp_path: path
     repo = FakeFeedEntryRepo([_entry(1, transfer_id=42)])
     putio = FakePutioClient()
     putio.script_transfer(42, [{'status': 'COMPLETED', 'file_id': 99}])
-    putio.script_files(99, [
-        {'id': 1, 'name': 'part1.mp4'},
-        {'id': 2, 'name': 'part2.mp4'},
-    ])
+    putio.script_files(
+        99,
+        [
+            {'id': 1, 'name': 'part1.mp4'},
+            {'id': 2, 'name': 'part2.mp4'},
+        ],
+    )
 
     LandingWorker(putio, repo, tmp_path).run_iteration()
 
@@ -501,10 +498,17 @@ def test_terminal_landed_event_fires_when_local_path_set(tmp_path: pathlib.Path)
     putio = FakePutioClient()
     putio.script_transfer(42, [{'status': 'COMPLETED', 'file_id': 99}])
     putio.script_files(99, [{'id': 555, 'name': 'episode.mp4'}])
-    feed_repo = FakeBtFeedRepo({1: BtFeed(
-        id=1, name='my-feed', url='https://feed.example/rss',
-        created_at='2026-01-01T00:00:00+00:00', updated_at='2026-01-01T00:00:00+00:00',
-    )})
+    feed_repo = FakeBtFeedRepo(
+        {
+            1: BtFeed(
+                id=1,
+                name='my-feed',
+                url='https://feed.example/rss',
+                created_at='2026-01-01T00:00:00+00:00',
+                updated_at='2026-01-01T00:00:00+00:00',
+            )
+        }
+    )
     filter_repo = FakeBtFilterRepo({7: BtFilter(id=7, name='my-filter', keywords=['x'])})
     events: list[dict[str, object]] = []
 
@@ -512,8 +516,12 @@ def test_terminal_landed_event_fires_when_local_path_set(tmp_path: pathlib.Path)
         events.append(kwargs)
 
     worker = LandingWorker(
-        putio, repo, tmp_path,
-        bt_feed_repo=feed_repo, bt_filter_repo=filter_repo, notify_event_send=notify_event_send,
+        putio,
+        repo,
+        tmp_path,
+        bt_feed_repo=feed_repo,
+        bt_filter_repo=filter_repo,
+        notify_event_send=notify_event_send,
     )
     worker.run_iteration()
 
@@ -584,10 +592,12 @@ def test_failed_event_fired_on_error_status(tmp_path: pathlib.Path) -> None:
 
 def test_notify_failure_does_not_break_landing_loop(tmp_path: pathlib.Path) -> None:
     """A raising notify_event_send must not stop other rows from landing."""
-    repo = FakeFeedEntryRepo([
-        _entry(1, transfer_id=42),
-        _entry(2, transfer_id=43),
-    ])
+    repo = FakeFeedEntryRepo(
+        [
+            _entry(1, transfer_id=42),
+            _entry(2, transfer_id=43),
+        ]
+    )
     putio = FakePutioClient()
     putio.script_transfer(42, [{'status': 'COMPLETED', 'file_id': 991}])
     putio.script_files(991, [{'id': 1, 'name': 'ep1.mp4'}])
@@ -773,8 +783,11 @@ def test_landed_finishes_task_history_with_local_path_as_filename(tmp_path: path
     task_history_repo.seed_in_progress(task_sn, row_id=10)
 
     worker = LandingWorker(
-        putio, repo, tmp_path,
-        task_history_repo=task_history_repo, task_id_map_repo=task_id_map_repo,
+        putio,
+        repo,
+        tmp_path,
+        task_history_repo=task_history_repo,
+        task_id_map_repo=task_id_map_repo,
     )
     worker.run_iteration()
 
@@ -791,8 +804,11 @@ def test_failed_finishes_task_history_with_error_status(tmp_path: pathlib.Path) 
     task_history_repo.seed_in_progress(task_sn, row_id=11)
 
     worker = LandingWorker(
-        putio, repo, tmp_path,
-        task_history_repo=task_history_repo, task_id_map_repo=task_id_map_repo,
+        putio,
+        repo,
+        tmp_path,
+        task_history_repo=task_history_repo,
+        task_id_map_repo=task_id_map_repo,
     )
     worker.run_iteration()
 
@@ -812,8 +828,11 @@ def test_failed_via_generic_exception_finishes_task_history(tmp_path: pathlib.Pa
     task_history_repo.seed_in_progress(task_sn, row_id=12)
 
     worker = LandingWorker(
-        putio, repo, tmp_path,
-        task_history_repo=task_history_repo, task_id_map_repo=task_id_map_repo,
+        putio,
+        repo,
+        tmp_path,
+        task_history_repo=task_history_repo,
+        task_id_map_repo=task_id_map_repo,
     )
     worker.run_iteration()  # must not raise
 
@@ -832,8 +851,11 @@ def test_404_reset_does_not_touch_task_history(tmp_path: pathlib.Path) -> None:
     task_history_repo.seed_in_progress(task_sn, row_id=13)
 
     worker = LandingWorker(
-        putio, repo, tmp_path,
-        task_history_repo=task_history_repo, task_id_map_repo=task_id_map_repo,
+        putio,
+        repo,
+        tmp_path,
+        task_history_repo=task_history_repo,
+        task_id_map_repo=task_id_map_repo,
     )
     worker.run_iteration()  # must not raise
 
@@ -862,7 +884,9 @@ def test_status_update_includes_percent_done_and_size_from_transfer(tmp_path: pa
     repo = FakeFeedEntryRepo([_entry(1, transfer_id=42)])
     repo.update_putio_status(1, 'IN_QUEUE')
     putio = FakePutioClient()
-    putio.script_transfer(42, [{'status': 'DOWNLOADING', 'file_id': None, 'percent_done': 37, 'size': 500 * 1024 * 1024}])
+    putio.script_transfer(
+        42, [{'status': 'DOWNLOADING', 'file_id': None, 'percent_done': 37, 'size': 500 * 1024 * 1024}]
+    )
     events: list[dict[str, object]] = []
 
     def notify_event_send(*, kwargs: dict[str, object]) -> None:
@@ -966,8 +990,11 @@ def test_landing_progress_publishes_rate_and_speed_to_progress_bus(tmp_path: pat
     task_id_map_repo.allocate_calls.clear()
 
     worker = LandingWorker(
-        FakePutioClient(), repo, tmp_path,
-        progress_bus=progress_bus, task_id_map_repo=task_id_map_repo,
+        FakePutioClient(),
+        repo,
+        tmp_path,
+        progress_bus=progress_bus,
+        task_id_map_repo=task_id_map_repo,
     )
     callback = worker._make_landing_progress_callback(_entry(1, transfer_id=42))  # noqa: SLF001
 
@@ -1000,8 +1027,11 @@ def test_landed_finishes_progress_bus_entry(tmp_path: pathlib.Path) -> None:
     task_id_map_repo.allocate_calls.clear()
 
     worker = LandingWorker(
-        putio, repo, tmp_path,
-        progress_bus=progress_bus, task_id_map_repo=task_id_map_repo,
+        putio,
+        repo,
+        tmp_path,
+        progress_bus=progress_bus,
+        task_id_map_repo=task_id_map_repo,
     )
     worker.run_iteration()
 
@@ -1020,8 +1050,11 @@ def test_failed_finishes_progress_bus_entry_with_失敗(tmp_path: pathlib.Path) 
     task_id_map_repo.allocate_calls.clear()
 
     worker = LandingWorker(
-        putio, repo, tmp_path,
-        progress_bus=progress_bus, task_id_map_repo=task_id_map_repo,
+        putio,
+        repo,
+        tmp_path,
+        progress_bus=progress_bus,
+        task_id_map_repo=task_id_map_repo,
     )
     worker.run_iteration()
 
@@ -1038,8 +1071,11 @@ def test_404_reset_finishes_progress_bus_with_中斷(tmp_path: pathlib.Path) -> 
     task_id_map_repo.allocate_calls.clear()
 
     worker = LandingWorker(
-        putio, repo, tmp_path,
-        progress_bus=progress_bus, task_id_map_repo=task_id_map_repo,
+        putio,
+        repo,
+        tmp_path,
+        progress_bus=progress_bus,
+        task_id_map_repo=task_id_map_repo,
     )
     worker.run_iteration()  # must not raise
 
@@ -1128,8 +1164,12 @@ def test_auto_delete_remote_failure_logged_but_landing_still_marked_successful(t
         events.append(kwargs)
 
     worker = LandingWorker(
-        putio, repo, tmp_path,
-        settings_repo=settings_repo, logger=logger, notify_event_send=notify_event_send,
+        putio,
+        repo,
+        tmp_path,
+        settings_repo=settings_repo,
+        logger=logger,
+        notify_event_send=notify_event_send,
     )
     worker.run_iteration()  # must not raise
 

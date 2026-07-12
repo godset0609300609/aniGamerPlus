@@ -206,9 +206,7 @@ class TgService:
         return result
 
     async def delete_watched_chat(self, user_id: str, watched_chat_id: int) -> None:
-        await anyio.to_thread.run_sync(
-            functools.partial(self._watched_chat_repo.delete, user_id, watched_chat_id)
-        )
+        await anyio.to_thread.run_sync(functools.partial(self._watched_chat_repo.delete, user_id, watched_chat_id))
         await self._refresh_watcher(user_id)
 
     async def _refresh_watcher(self, user_id: str) -> None:
@@ -311,13 +309,17 @@ class TgService:
         if client is None:
             return [], False
         dialogs: list[hydrogram.types.Dialog] = []
+        # hydrogram's stub types get_dialogs() as Optional; at runtime it always
+        # yields a generator (errors raise instead). Guard for stub tightness.
+        dialogs_gen = client.get_dialogs(limit=limit + 1)
+        if dialogs_gen is None:
+            return dialogs, False
         try:
-            async for dialog in client.get_dialogs(limit=limit + 1):
+            async for dialog in dialogs_gen:
                 dialogs.append(dialog)
         except AttributeError as exc:
             self._log_warning(
-                f'user_id={user_id} 略過無法解析的 dialog（可能是 ChannelForbidden）: '
-                f'{scrub_exception_for_log(exc)}'
+                f'user_id={user_id} 略過無法解析的 dialog（可能是 ChannelForbidden）: {scrub_exception_for_log(exc)}'
             )
         truncated = len(dialogs) > limit
         if truncated:

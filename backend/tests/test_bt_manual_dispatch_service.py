@@ -129,14 +129,10 @@ class FakeLogger:
         self.info_messages: list[str] = []
         self.error_messages: list[str] = []
 
-    def info(
-        self, sn: object, tag: str, detail: str = '', *, display: bool = True, display_time: bool = True
-    ) -> None:
+    def info(self, sn: object, tag: str, detail: str = '', *, display: bool = True, display_time: bool = True) -> None:
         self.info_messages.append(detail)
 
-    def error(
-        self, sn: object, tag: str, detail: str = '', *, display: bool = True, display_time: bool = True
-    ) -> None:
+    def error(self, sn: object, tag: str, detail: str = '', *, display: bool = True, display_time: bool = True) -> None:
         self.error_messages.append(detail)
 
 

@@ -138,9 +138,7 @@ async def test_poll_success_persists_encrypted_session_and_binds_notification(
 ) -> None:
     login_token_result = raw.types.auth.LoginToken(expires=999999, token=b'token-bytes')
     raw_user = _real_raw_user()
-    success_result = raw.types.auth.LoginTokenSuccess(
-        authorization=raw.types.auth.Authorization(user=raw_user)
-    )
+    success_result = raw.types.auth.LoginTokenSuccess(authorization=raw.types.auth.Authorization(user=raw_user))
     client = _stub_client(invoke_results=[login_token_result, success_result])
     binder = NotificationBinder(lambda: 'aniGamerPlusBot')
 
@@ -387,9 +385,7 @@ async def test_dc_migration_reconnects_and_completes_login(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
-async def test_dc_migration_preserves_notification_bind(
-    anyio_backend: str, session_repo: TgSessionRepository
-) -> None:
+async def test_dc_migration_preserves_notification_bind(anyio_backend: str, session_repo: TgSessionRepository) -> None:
     login_token_result = raw.types.auth.LoginToken(expires=999999, token=b'token-bytes')
     migrate_result = raw.types.auth.LoginTokenMigrateTo(dc_id=2, token=b'other-dc-token')
     raw_user = _real_raw_user()

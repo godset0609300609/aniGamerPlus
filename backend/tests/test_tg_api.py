@@ -550,7 +550,9 @@ def test_rebind_notification_no_active_session_returns_404(
     assert r.status_code == 404
 
 
-def test_rebind_notification_requires_auth(client: fastapi.testclient.TestClient, fake_container: FakeContainer) -> None:
+def test_rebind_notification_requires_auth(
+    client: fastapi.testclient.TestClient, fake_container: FakeContainer
+) -> None:
     """With auth enabled and no session, the retry endpoint is 401 (not 403) — same
     convention as every other require_any_user route (see test_bt_api.py)."""
     service = _make_tg_service(fake_container)

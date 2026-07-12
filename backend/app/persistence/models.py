@@ -354,9 +354,7 @@ class BtFeedEntryRow(Base):
     # ISO-8601 UTC, set once the remote Put.io file has been cleaned up
     # (auto-deleted after landing, or detected as externally removed) — see
     # revision 0017.
-    remote_cleared_at: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(
-        sqlalchemy.Text, nullable=True
-    )
+    remote_cleared_at: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(sqlalchemy.Text, nullable=True)
 
     __table_args__ = (sqlalchemy.UniqueConstraint('feed_id', 'guid', name='uq_bt_feed_entry_feed_guid'),)
 
@@ -382,9 +380,7 @@ class TgSessionRow(Base):
     user_id: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column(
         sqlalchemy.Text, sqlalchemy.ForeignKey('users.id', ondelete='CASCADE'), nullable=False
     )
-    session_string_encrypted: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column(
-        sqlalchemy.Text, nullable=False
-    )
+    session_string_encrypted: sqlalchemy.orm.Mapped[str] = sqlalchemy.orm.mapped_column(sqlalchemy.Text, nullable=False)
     phone_tail4: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(sqlalchemy.Text, nullable=True)
     telegram_user_id: sqlalchemy.orm.Mapped[int | None] = sqlalchemy.orm.mapped_column(
         sqlalchemy.BigInteger, nullable=True
@@ -432,9 +428,7 @@ class TgWatchedChatRow(Base):
     size_min_mb: sqlalchemy.orm.Mapped[int | None] = sqlalchemy.orm.mapped_column(sqlalchemy.Integer, nullable=True)
     size_max_mb: sqlalchemy.orm.Mapped[int | None] = sqlalchemy.orm.mapped_column(sqlalchemy.Integer, nullable=True)
     # JSON array of extension strings, or NULL for "no format restriction".
-    format_whitelist: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(
-        sqlalchemy.Text, nullable=True
-    )
+    format_whitelist: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(sqlalchemy.Text, nullable=True)
     save_path: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(sqlalchemy.Text, nullable=True)
     enabled: sqlalchemy.orm.Mapped[bool] = sqlalchemy.orm.mapped_column(
         sqlalchemy.Boolean, nullable=False, default=True, server_default=sqlalchemy.text('1')
@@ -449,9 +443,7 @@ class TgWatchedChatRow(Base):
     )
     # One of 'pending' / 'running' / 'done' / 'failed', or NULL if a backfill
     # has never been requested for this chat.
-    backfill_status: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(
-        sqlalchemy.Text, nullable=True
-    )
+    backfill_status: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(sqlalchemy.Text, nullable=True)
     backfill_scanned_count: sqlalchemy.orm.Mapped[int] = sqlalchemy.orm.mapped_column(
         sqlalchemy.Integer, nullable=False, default=0, server_default=sqlalchemy.text('0')
     )

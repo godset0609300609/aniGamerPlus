@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pathlib
 import typing as T
-import unittest.mock
 
 import pytest
 import yt_dlp.utils
@@ -40,12 +39,14 @@ class FakeYtdlpDownloader:
         part_idx: int | None = None,
         parent_sn: int | None = None,
     ) -> dict[str, T.Any]:
-        self.download_calls.append({
-            'task_sn': task_sn,
-            'bvid': bvid,
-            'resolution': resolution,
-            'part_idx': part_idx,
-        })
+        self.download_calls.append(
+            {
+                'task_sn': task_sn,
+                'bvid': bvid,
+                'resolution': resolution,
+                'part_idx': part_idx,
+            }
+        )
         if self._raise is not None:
             raise self._raise
         return self._info
@@ -68,6 +69,7 @@ def progress_bus() -> ProgressBus:
 
 def _make_settings() -> T.Any:
     from app.models import AppSettings
+
     return AppSettings()
 
 

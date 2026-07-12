@@ -202,9 +202,7 @@ class UpdateLoop:
                 if self._queue.contains(target_sn):
                     continue
 
-                task_info = self._make_task_info(
-                    target_sn, info, mode, language_tag=sn_to_language_tag.get(target_sn)
-                )
+                task_info = self._make_task_info(target_sn, info, mode, language_tag=sn_to_language_tag.get(target_sn))
                 self._queue.add(target_sn, task_info)
                 newly_added += 1
                 self._logger.info(
@@ -337,9 +335,7 @@ class UpdateLoop:
         an unfiltered ``episode_sns[-1]`` could otherwise silently select
         the dub SN as "the latest episode").
         """
-        episode_sns = [
-            ep_sn for label, ep_sn in episode_list.items() if bilingual or not label.startswith('中文配音')
-        ]
+        episode_sns = [ep_sn for label, ep_sn in episode_list.items() if bilingual or not label.startswith('中文配音')]
         if not episode_sns:
             return [root_sn]
 

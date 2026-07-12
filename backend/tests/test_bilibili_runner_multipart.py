@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import pathlib
 import threading
 import typing as T
@@ -14,7 +15,6 @@ from app.downloader.bilibili.runner import BilibiliRunner
 from app.downloader.progress import ProgressBus
 from app.logging_ import Logger
 from app.persistence.paths import WorkspacePaths
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -64,13 +64,15 @@ class FakeYtdlpDownloader:
         part_idx: int | None = None,
         parent_sn: int | None = None,
     ) -> dict[str, T.Any]:
-        self.download_calls.append({
-            'task_sn': task_sn,
-            'bvid': bvid,
-            'resolution': resolution,
-            'part_idx': part_idx,
-            'parent_sn': parent_sn,
-        })
+        self.download_calls.append(
+            {
+                'task_sn': task_sn,
+                'bvid': bvid,
+                'resolution': resolution,
+                'part_idx': part_idx,
+                'parent_sn': parent_sn,
+            }
+        )
         if self._raise_on_part is not None and part_idx == self._raise_on_part:
             raise self._raise_exc
         return self._info
@@ -120,9 +122,7 @@ def _make_runner(
 # ---------------------------------------------------------------------------
 
 
-def test_runner_multipart_allocates_one_child_sn_per_part(
-    progress_bus: ProgressBus, logger: Logger
-) -> None:
+def test_runner_multipart_allocates_one_child_sn_per_part(progress_bus: ProgressBus, logger: Logger) -> None:
     """allocate() is called once per part with the expected external_ids."""
     info = {
         'title': 'BV1aBsaeeE8W Title',
@@ -140,9 +140,7 @@ def test_runner_multipart_allocates_one_child_sn_per_part(
     assert all(s == 'bilibili' for s in sources)
 
 
-def test_runner_multipart_announces_all_children_as_waiting_first(
-    progress_bus: ProgressBus, logger: Logger
-) -> None:
+def test_runner_multipart_announces_all_children_as_waiting_first(progress_bus: ProgressBus, logger: Logger) -> None:
     """All N progress_bus.start() calls happen before the first download."""
     info = {
         'title': 'Multi Title',
@@ -169,9 +167,7 @@ def test_runner_multipart_announces_all_children_as_waiting_first(
     runner.run(2, bvid='BV_multi', resolution='1080', classify=True)
 
     # All start() calls must appear before any download() call.
-    first_download_pos = next(
-        (i for i, e in enumerate(call_log) if e.startswith('download:')), len(call_log)
-    )
+    first_download_pos = next((i for i, e in enumerate(call_log) if e.startswith('download:')), len(call_log))
     start_positions = [i for i, e in enumerate(call_log) if e.startswith('start:')]
     assert len(start_positions) == 3
     assert all(pos < first_download_pos for pos in start_positions), (
@@ -179,9 +175,7 @@ def test_runner_multipart_announces_all_children_as_waiting_first(
     )
 
 
-def test_runner_multipart_downloads_all_parts(
-    progress_bus: ProgressBus, logger: Logger
-) -> None:
+def test_runner_multipart_downloads_all_parts(progress_bus: ProgressBus, logger: Logger) -> None:
     """download() is called N times, once per part (parallel order not guaranteed)."""
     info = {
         'title': 'Seq Title',
@@ -196,9 +190,7 @@ def test_runner_multipart_downloads_all_parts(
     assert part_indices == [1, 2, 3]
 
 
-def test_runner_multipart_parent_sn_has_no_progress_entry(
-    progress_bus: ProgressBus, logger: Logger
-) -> None:
+def test_runner_multipart_parent_sn_has_no_progress_entry(progress_bus: ProgressBus, logger: Logger) -> None:
     """In multi-part mode, progress_bus.start(parent_sn, ...) is NOT called."""
     info = {
         'title': 'No Parent Card',
@@ -219,16 +211,12 @@ def test_runner_multipart_parent_sn_has_no_progress_entry(
     runner = _make_runner(dl, progress_bus, logger)
     runner.run(parent_sn, bvid='BV_noparent', resolution='1080', classify=True)
 
-    assert parent_sn not in start_calls, (
-        f'parent_sn={parent_sn} should not appear in start_calls={start_calls}'
-    )
+    assert parent_sn not in start_calls, f'parent_sn={parent_sn} should not appear in start_calls={start_calls}'
     snap = progress_bus.snapshot()
     assert parent_sn not in snap
 
 
-def test_runner_multipart_cancel_part_raises_download_cancelled(
-    progress_bus: ProgressBus, logger: Logger
-) -> None:
+def test_runner_multipart_cancel_part_raises_download_cancelled(progress_bus: ProgressBus, logger: Logger) -> None:
     """When a part raises DownloadCancelled the runner swallows it and continues.
 
     In parallel mode all parts are submitted; a single part cancelling must not
@@ -257,11 +245,10 @@ def test_runner_multipart_cancel_part_raises_download_cancelled(
             parent_sn: int | None = None,
         ) -> dict[str, T.Any]:
             self.download_calls.append({'task_sn': task_sn, 'part_idx': part_idx})
-            if part_idx == 2:
-                if parent_sn is not None:
-                    ev = progress_bus.get_cancel_event(parent_sn)
-                    if ev is not None and ev.is_set():
-                        raise yt_dlp.utils.DownloadCancelled()
+            if part_idx == 2 and parent_sn is not None:
+                ev = progress_bus.get_cancel_event(parent_sn)
+                if ev is not None and ev.is_set():
+                    raise yt_dlp.utils.DownloadCancelled()
             return self._info
 
     dl = CancelOnPart2Downloader(info=info)
@@ -291,9 +278,7 @@ def test_runner_multipart_cancel_part_raises_download_cancelled(
         )
 
 
-def test_runner_singlepart_unchanged_behavior(
-    progress_bus: ProgressBus, logger: Logger
-) -> None:
+def test_runner_singlepart_unchanged_behavior(progress_bus: ProgressBus, logger: Logger) -> None:
     """When entries is absent or len==1, parent_sn is used (original path)."""
     for info, label in [
         ({'title': 'Single No Entries'}, 'no entries key'),
@@ -312,9 +297,7 @@ def test_runner_singlepart_unchanged_behavior(
         assert dl.download_calls[0]['part_idx'] is None, f'part_idx must be None for: {label}'
 
 
-def test_ytdlp_downloader_accepts_part_idx(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_ytdlp_downloader_accepts_part_idx(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """playlist_items=str(idx) is added to yt-dlp opts when part_idx is set."""
     from app.downloader.bilibili.ytdlp_downloader import YtdlpDownloader
     from app.downloader.progress import ProgressBus
@@ -338,7 +321,7 @@ def test_ytdlp_downloader_accepts_part_idx(
         def __init__(self, opts: dict[str, T.Any]) -> None:
             captured_opts.update(opts)
 
-        def __enter__(self) -> 'FakeYDL':
+        def __enter__(self) -> FakeYDL:
             return self
 
         def __exit__(self, *_: T.Any) -> None:
@@ -380,7 +363,7 @@ def test_ytdlp_downloader_no_playlist_items_when_part_idx_none(
         def __init__(self, opts: dict[str, T.Any]) -> None:
             captured_opts.update(opts)
 
-        def __enter__(self) -> 'FakeYDL':
+        def __enter__(self) -> FakeYDL:
             return self
 
         def __exit__(self, *_: T.Any) -> None:
@@ -445,7 +428,7 @@ def test_ytdlp_downloader_parent_sn_cancel_raises(
             for h in opts.get('progress_hooks', []):
                 hook_ref.append(h)
 
-        def __enter__(self) -> 'FakeYDL':
+        def __enter__(self) -> FakeYDL:
             return self
 
         def __exit__(self, *_: T.Any) -> None:
@@ -457,18 +440,18 @@ def test_ytdlp_downloader_parent_sn_cancel_raises(
                 h({'status': 'downloading', 'downloaded_bytes': 0})
             return {}
 
-    with unittest.mock.patch(
-        'app.downloader.bilibili.ytdlp_downloader.yt_dlp.YoutubeDL', FakeYDL
+    with (
+        unittest.mock.patch('app.downloader.bilibili.ytdlp_downloader.yt_dlp.YoutubeDL', FakeYDL),
+        pytest.raises(yt_dlp.utils.DownloadCancelled),
     ):
-        with pytest.raises(yt_dlp.utils.DownloadCancelled):
-            dl.download(
-                child_sn,
-                'BV_parentcancel',
-                resolution='1080',
-                classify=False,
-                part_idx=1,
-                parent_sn=parent_sn,
-            )
+        dl.download(
+            child_sn,
+            'BV_parentcancel',
+            resolution='1080',
+            classify=False,
+            part_idx=1,
+            parent_sn=parent_sn,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -476,12 +459,10 @@ def test_ytdlp_downloader_parent_sn_cancel_raises(
 # ---------------------------------------------------------------------------
 
 
-def test_multipart_runs_parts_concurrently_up_to_limit(
-    progress_bus: ProgressBus, logger: Logger
-) -> None:
+def test_multipart_runs_parts_concurrently_up_to_limit(progress_bus: ProgressBus, logger: Logger) -> None:
     """With bilibili_concurrent_parts=2 and 3 parts, two windows must overlap."""
-    import time
     import threading as _threading
+    import time
 
     n = 3
     info = {
@@ -506,10 +487,8 @@ def test_multipart_runs_parts_concurrently_up_to_limit(
         ) -> dict[str, T.Any]:
             start_times[part_idx or 0] = time.monotonic()
             if part_idx in (1, 2):
-                try:
+                with contextlib.suppress(_threading.BrokenBarrierError):
                     gate.wait(timeout=5.0)
-                except _threading.BrokenBarrierError:
-                    pass
             end_times[part_idx or 0] = time.monotonic()
             self.download_calls.append({'task_sn': task_sn, 'part_idx': part_idx})
             return self._info
@@ -534,9 +513,7 @@ def test_multipart_runs_parts_concurrently_up_to_limit(
     )
 
 
-def test_multipart_concurrent_parts_1_falls_back_to_sequential(
-    progress_bus: ProgressBus, logger: Logger
-) -> None:
+def test_multipart_concurrent_parts_1_falls_back_to_sequential(progress_bus: ProgressBus, logger: Logger) -> None:
     """With bilibili_concurrent_parts=1 parts must run without overlap."""
     import time
 
@@ -587,14 +564,11 @@ def test_multipart_concurrent_parts_1_falls_back_to_sequential(
             # With max_workers=1, no two windows can overlap.
             overlap = start_times[i] < end_times[j] and start_times[j] < end_times[i]
             assert not overlap, (
-                f'Parts {i} and {j} overlapped despite max_workers=1. '
-                f'starts={start_times} ends={end_times}'
+                f'Parts {i} and {j} overlapped despite max_workers=1. starts={start_times} ends={end_times}'
             )
 
 
-def test_multipart_cancel_with_parallel_marks_pending_as_cancelled(
-    progress_bus: ProgressBus, logger: Logger
-) -> None:
+def test_multipart_cancel_with_parallel_marks_pending_as_cancelled(progress_bus: ProgressBus, logger: Logger) -> None:
     """After cancel, no child remains in '等待下載' or '正在下載'."""
     import threading as _threading
 
@@ -629,15 +603,11 @@ def test_multipart_cancel_with_parallel_marks_pending_as_cancelled(
             self.download_calls.append({'task_sn': task_sn, 'part_idx': part_idx})
             if part_idx == 1:
                 cancel_event.set()
-                try:
+                with contextlib.suppress(_threading.BrokenBarrierError):
                     barrier.wait()
-                except _threading.BrokenBarrierError:
-                    pass
             else:
-                try:
+                with contextlib.suppress(_threading.BrokenBarrierError):
                     barrier.wait()
-                except _threading.BrokenBarrierError:
-                    pass
                 if parent_sn is not None:
                     ev = progress_bus.get_cancel_event(parent_sn)
                     if ev is not None and ev.is_set():
@@ -661,9 +631,7 @@ def test_multipart_cancel_with_parallel_marks_pending_as_cancelled(
     for child_sn, entry in snap.items():
         if child_sn == parent_sn:
             continue
-        assert entry.status not in ('等待下載', '正在下載'), (
-            f'child_sn={child_sn} stuck in {entry.status!r}'
-        )
+        assert entry.status not in ('等待下載', '正在下載'), f'child_sn={child_sn} stuck in {entry.status!r}'
 
 
 def test_settings_default_bilibili_concurrent_parts_is_2() -> None:

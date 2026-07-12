@@ -38,7 +38,8 @@ def test_write_netscape_header(repo: BilibiliCookieRepository, paths: WorkspaceP
 
 def test_write_single_cookie_produces_one_data_line(repo: BilibiliCookieRepository, paths: WorkspacePaths) -> None:
     repo.write('SESSDATA=mytoken')
-    lines = [l for l in paths.bilibili_cookie_path.read_text(encoding='utf-8').splitlines() if not l.startswith('#') and l.strip()]
+    raw_lines = paths.bilibili_cookie_path.read_text(encoding='utf-8').splitlines()
+    lines = [ln for ln in raw_lines if not ln.startswith('#') and ln.strip()]
     assert len(lines) == 1
     parts = lines[0].split('\t')
     assert parts[0] == '.bilibili.com'
@@ -49,23 +50,26 @@ def test_write_single_cookie_produces_one_data_line(repo: BilibiliCookieReposito
 
 def test_write_multiple_cookies(repo: BilibiliCookieRepository, paths: WorkspacePaths) -> None:
     repo.write('SESSDATA=tok1; buvid3=tok2; bili_jct=tok3')
-    lines = [l for l in paths.bilibili_cookie_path.read_text(encoding='utf-8').splitlines() if not l.startswith('#') and l.strip()]
+    raw_lines = paths.bilibili_cookie_path.read_text(encoding='utf-8').splitlines()
+    lines = [ln for ln in raw_lines if not ln.startswith('#') and ln.strip()]
     assert len(lines) == 3
-    names = {l.split('\t')[5] for l in lines}
+    names = {ln.split('\t')[5] for ln in lines}
     assert names == {'SESSDATA', 'buvid3', 'bili_jct'}
 
 
 def test_write_cookie_with_equals_in_value(repo: BilibiliCookieRepository, paths: WorkspacePaths) -> None:
     repo.write('SESSDATA=base64==; other=x')
-    lines = [l for l in paths.bilibili_cookie_path.read_text(encoding='utf-8').splitlines() if not l.startswith('#') and l.strip()]
-    sessdata_line = next(l for l in lines if 'SESSDATA' in l)
+    raw_lines = paths.bilibili_cookie_path.read_text(encoding='utf-8').splitlines()
+    lines = [ln for ln in raw_lines if not ln.startswith('#') and ln.strip()]
+    sessdata_line = next(ln for ln in lines if 'SESSDATA' in ln)
     parts = sessdata_line.split('\t')
     assert parts[6] == 'base64=='
 
 
 def test_write_netscape_format_correct_fields(repo: BilibiliCookieRepository, paths: WorkspacePaths) -> None:
     repo.write('SESSDATA=val')
-    lines = [l for l in paths.bilibili_cookie_path.read_text(encoding='utf-8').splitlines() if not l.startswith('#') and l.strip()]
+    raw_lines = paths.bilibili_cookie_path.read_text(encoding='utf-8').splitlines()
+    lines = [ln for ln in raw_lines if not ln.startswith('#') and ln.strip()]
     parts = lines[0].split('\t')
     assert len(parts) == 7
     assert parts[1] == 'TRUE'

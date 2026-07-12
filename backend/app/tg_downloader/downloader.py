@@ -198,7 +198,7 @@ class TgDownloadWatcher:
         watched = self._watched_chat_repo.list_enabled_by_user(user_id)
         if not watched:
             return
-        chat_ids = [w.chat_id for w in watched]
+        chat_ids: list[int | str] = [w.chat_id for w in watched]
 
         async def _on_message(_client: hydrogram.Client, message: hydrogram.types.Message) -> None:
             await self.handle_message(user_id, _client, message)
@@ -515,9 +515,7 @@ class TgDownloadWatcher:
                 self._emit('tg_progress', watched, media, message, bytes_written=current, total_bytes=total)
                 if self._progress_bus is not None and sn is not None:
                     fraction = current / total if total else 0.0
-                    self._progress_bus.update_stats(
-                        sn, rate=fraction, speed_mbps=speed_mbps, eta_seconds=eta_seconds
-                    )
+                    self._progress_bus.update_stats(sn, rate=fraction, speed_mbps=speed_mbps, eta_seconds=eta_seconds)
 
         return _on_progress
 

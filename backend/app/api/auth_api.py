@@ -107,6 +107,7 @@ async def _enforce_discord_allowlist(
         detail='Discord account is not authorized to access this application',
     )
 
+
 # ---------------------------------------------------------------------------
 # Dependency factories
 # ---------------------------------------------------------------------------

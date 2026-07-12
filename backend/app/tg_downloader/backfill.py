@@ -115,7 +115,12 @@ class TgBackfillService:
             # is generally bad hygiene against a live MTProto connection).
             # This guarantees get_chat_history()'s generator is closed on
             # every exit path — break, exception, or normal completion.
-            async with contextlib.aclosing(client.get_chat_history(chat_id)) as history:
+            history_gen = client.get_chat_history(chat_id)
+            # hydrogram's stub types this as Optional; at runtime it always yields
+            # a generator (errors raise instead). Guard for stub tightness.
+            if history_gen is None:
+                raise RuntimeError(f'get_chat_history 回傳 None（chat_id={chat_id}）')
+            async with contextlib.aclosing(history_gen) as history:
                 async for message in history:
                     message_date = getattr(message, 'date', None)
                     if message_date is not None and message_date < cutoff:

@@ -36,10 +36,12 @@ def test_list_all_empty_initially(repo: BtFilterRepository) -> None:
 
 
 def test_replace_all_persists_filters(repo: BtFilterRepository) -> None:
-    repo.replace_all([
-        BtFilter(name='f1', keywords=['LoliHouse', '1080'], sort_order=0),
-        BtFilter(name='f2', keywords=['Sub'], sort_order=1),
-    ])
+    repo.replace_all(
+        [
+            BtFilter(name='f1', keywords=['LoliHouse', '1080'], sort_order=0),
+            BtFilter(name='f2', keywords=['Sub'], sort_order=1),
+        ]
+    )
     result = repo.list_all()
     assert [f.name for f in result] == ['f1', 'f2']
     assert all(f.id is not None for f in result)
@@ -74,20 +76,24 @@ def test_replace_all_with_empty_list_clears_table(repo: BtFilterRepository) -> N
 
 
 def test_list_all_ordered_by_sort_order(repo: BtFilterRepository) -> None:
-    repo.replace_all([
-        BtFilter(name='third', sort_order=2),
-        BtFilter(name='first', sort_order=0),
-        BtFilter(name='second', sort_order=1),
-    ])
+    repo.replace_all(
+        [
+            BtFilter(name='third', sort_order=2),
+            BtFilter(name='first', sort_order=0),
+            BtFilter(name='second', sort_order=1),
+        ]
+    )
     result = repo.list_all()
     assert [f.name for f in result] == ['first', 'second', 'third']
 
 
 def test_replace_all_preserves_enabled_flag(repo: BtFilterRepository) -> None:
-    repo.replace_all([
-        BtFilter(name='on', enabled=True),
-        BtFilter(name='off', enabled=False),
-    ])
+    repo.replace_all(
+        [
+            BtFilter(name='on', enabled=True),
+            BtFilter(name='off', enabled=False),
+        ]
+    )
     result = {f.name: f.enabled for f in repo.list_all()}
     assert result == {'on': True, 'off': False}
 
@@ -103,8 +109,10 @@ def test_replace_all_preserves_existing_created_at(repo: BtFilterRepository) -> 
     repo.replace_all([BtFilter(name='f1')])
     [first] = repo.list_all()
 
-    repo.replace_all([
-        BtFilter(name='f1', created_at=first.created_at, keywords=['edited']),
-    ])
+    repo.replace_all(
+        [
+            BtFilter(name='f1', created_at=first.created_at, keywords=['edited']),
+        ]
+    )
     [second] = repo.list_all()
     assert second.created_at == first.created_at
