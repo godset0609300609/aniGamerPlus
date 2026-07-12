@@ -322,12 +322,16 @@ def build_container() -> Container:
     live_menu = None
     try:
         redis_url = get_redis_url()
-        redis_client_sync = redis.Redis.from_url(redis_url)
+        # socket_connect_timeout bounds the TCP handshake; without it a host
+        # that drops the SYN instead of refusing the connection (observed on
+        # Linux for e.g. 127.0.0.1:1, vs. Windows' instant ECONNREFUSED)
+        # blocks ping() forever instead of hitting the except-fallback below.
+        redis_client_sync = redis.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
         # Eagerly ping so a misconfigured Redis fails fast instead of silently
         # losing every mirror publish.  In tests / single-process CLI without
         # Redis available, fall through to None and operate without the mirror.
         redis_client_sync.ping()
-        redis_client_async = redis.asyncio.Redis.from_url(redis_url)
+        redis_client_async = redis.asyncio.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
         # No async ping here — pinging in async context at module-import time
         # would require an event loop; the FastAPI lifespan can ping if needed.
         from .downloader.redis_progress_mirror import RedisProgressMirror

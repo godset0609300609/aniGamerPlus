@@ -130,6 +130,12 @@ def get_telegram_outbound_limiter() -> TelegramOutboundRateLimiter:
     """
     global _SINGLETON
     if _SINGLETON is None:
-        client = redis.asyncio.Redis.from_url(dramatiq_setup.get_redis_url())
+        # socket_connect_timeout/socket_timeout bound each op so an
+        # unreachable Redis (SYN dropped, not refused — Linux vs. Windows)
+        # fails open promptly per the module docstring instead of stalling
+        # a worker on a dead connection attempt.
+        client = redis.asyncio.Redis.from_url(
+            dramatiq_setup.get_redis_url(), socket_connect_timeout=2, socket_timeout=2
+        )
         _SINGLETON = TelegramOutboundRateLimiter(client)
     return _SINGLETON

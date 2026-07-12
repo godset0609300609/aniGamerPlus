@@ -14,6 +14,19 @@ from app.logging_ import Logger
 from app.persistence.paths import WorkspacePaths
 
 
+@pytest.fixture(autouse=True)
+def _stub_ffmpeg_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub ``resolve_ffmpeg_path`` so these lifecycle tests don't depend on
+    whether a real ffmpeg binary happens to be on the machine running the
+    suite. ``backend/ffmpeg.exe`` is gitignored (present on a local Windows
+    dev checkout, absent on a fresh Linux CI checkout), so without this the
+    runner would silently take its "ffmpeg missing" early-fail branch on CI
+    instead of exercising the lifecycle under test — see
+    ``test_bilibili_runner_ffmpeg.py`` for the dedicated ffmpeg-missing tests.
+    """
+    monkeypatch.setattr('app.downloader.bilibili.runner.resolve_ffmpeg_path', lambda: '/fake/ffmpeg')
+
+
 class FakeYtdlpDownloader:
     def __init__(
         self,

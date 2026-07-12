@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import typing as T
 import unittest.mock
@@ -71,21 +72,34 @@ def test_resolve_ffmpeg_path_prefers_path(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_resolve_ffmpeg_path_falls_back_to_cwd(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for a Linux-only crash: forcing ``os.name = 'nt'`` while
+    the interpreter is genuinely running on POSIX makes ``pathlib.Path(...)``
+    construct a ``WindowsPath`` instance (the factory dispatches on the
+    *current* ``os.name``), but ``WindowsPath.resolve()`` still hits real
+    Windows-only internals and raises ``UnsupportedOperation: cannot
+    instantiate 'WindowsPath' on your system`` the moment it actually runs on
+    Linux — even though plain ``.exists()`` on the same mismatched instance
+    happens to still work. Windows' real ``os.name`` masked this locally, so
+    it only surfaced on Linux CI. Using the *real* platform's expected
+    filename (rather than spoofing ``os.name``) keeps this test meaningful on
+    both platforms without ever constructing a cross-flavour Path.
+    """
     monkeypatch.setattr('app.downloader.ffmpeg.shutil.which', lambda _: None)
-    monkeypatch.setattr('app.downloader.ffmpeg.os.name', 'nt')
-    candidate = tmp_path / 'ffmpeg.exe'
+    expected_name = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'
+    candidate = tmp_path / expected_name
     candidate.write_bytes(b'')
     monkeypatch.chdir(tmp_path)
     result = resolve_ffmpeg_path()
     assert result is not None
-    assert pathlib.Path(result).name == 'ffmpeg.exe'
+    assert pathlib.Path(result).name == expected_name
 
 
 def test_resolve_ffmpeg_path_returns_none_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr('app.downloader.ffmpeg.shutil.which', lambda _: None)
-    monkeypatch.setattr('app.downloader.ffmpeg.os.name', 'nt')
-    # No ffmpeg.exe in cwd (relies on tmp test isolation of chdir not being set)
-    # We patch pathlib.Path.exists to always return False to be safe.
+    # pathlib.Path.exists is patched to always return False below, so the
+    # candidate filename (which differs by os.name) never matters here —
+    # no need to spoof os.name (see test_resolve_ffmpeg_path_falls_back_to_cwd
+    # for why forcing it to a value other than the real platform is unsafe).
     with unittest.mock.patch('app.downloader.ffmpeg.pathlib.Path.exists', return_value=False):
         result = resolve_ffmpeg_path()
     assert result is None
