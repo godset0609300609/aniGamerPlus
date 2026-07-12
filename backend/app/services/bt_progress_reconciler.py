@@ -210,7 +210,7 @@ class BtProgressReconciler:
         live_entry = live_snapshot.get(sn)
         if live_entry is None or live_entry.finished_at is not None:
             return False
-        self._bt_progress_bus.force_finish(sn, status=final_status, filename=filename)
+        self._bt_progress_bus.force_finish(sn, status=final_status, filename=filename, source=_BT_SOURCE)
         return True
 
     # ------------------------------------------------------------------ TG
@@ -225,7 +225,7 @@ class BtProgressReconciler:
                 live_entry = live_snapshot.get(sn)
                 if live_entry is None or live_entry.finished_at is not None:
                     continue
-                self._progress_bus.force_finish(sn, status='下載完成', filename=row.file_name)
+                self._progress_bus.force_finish(sn, status='下載完成', filename=row.file_name, source=_TG_SOURCE)
                 fixed += 1
             except Exception:  # noqa: BLE001 — one bad row must not abort the pass
                 continue
@@ -263,7 +263,7 @@ class BtProgressReconciler:
                 live_entry = live_snapshot.get(sn)
                 if live_entry is None or live_entry.finished_at is not None:
                     continue
-                self._progress_bus.force_finish(sn, status='中斷', filename=row.filename)
+                self._progress_bus.force_finish(sn, status='中斷', filename=row.filename, source=_TG_SOURCE)
                 fixed += 1
             except Exception:  # noqa: BLE001 — one bad row must not abort the pass
                 continue

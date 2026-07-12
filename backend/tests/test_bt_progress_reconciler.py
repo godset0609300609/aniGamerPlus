@@ -223,6 +223,10 @@ async def test_reconcile_finishes_landed_bt_entries_that_have_stale_progress_bus
     assert snap[sn].status == '下載完成'
     assert snap[sn].filename == 'EP01.mp4'
     assert snap[sn].rate == 1.0
+    # Regression guard: a synthesised ghost entry with source=None renders as
+    # a mislabeled 動畫瘋 badge on the frontend (see sourceBadge.ts) — the
+    # reconciler must tag every BT force_finish call with source='bt'.
+    assert snap[sn].source == 'bt'
 
 
 @pytest.mark.anyio
@@ -243,6 +247,7 @@ async def test_reconcile_finishes_failed_bt_entries_with_terminal_putio_status_b
     snap = bt_progress_bus.snapshot()
     assert snap[sn].status == '失敗'
     assert snap[sn].finished_at is not None
+    assert snap[sn].source == 'bt'
 
 
 @pytest.mark.anyio
@@ -305,6 +310,9 @@ async def test_reconcile_handles_tg_downloaded_media_landed() -> None:
     assert snap[sn].finished_at is not None
     assert snap[sn].status == '下載完成'
     assert snap[sn].filename == 'movie.mkv'
+    # Regression guard for the null-source-masquerades-as-動畫瘋 monitor bug —
+    # see the BT landed test above for the full rationale.
+    assert snap[sn].source == 'tg'
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +477,7 @@ async def test_reconcile_finishes_stale_in_flight_ghosts_older_than_cutoff(
     assert snap[sn].status == '中斷'
     assert snap[sn].finished_at is not None
     assert snap[sn].filename == 'StuckAtQueue.mp4'
+    assert snap[sn].source == 'bt'
 
 
 @pytest.mark.anyio
@@ -524,6 +533,7 @@ async def test_reconcile_finishes_stale_tg_in_progress_rows_via_task_history_rep
     assert snap[sn].status == '中斷'
     assert snap[sn].finished_at is not None
     assert snap[sn].filename == 'stuck-download.mkv'
+    assert snap[sn].source == 'tg'
 
 
 @pytest.mark.anyio

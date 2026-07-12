@@ -354,6 +354,7 @@ def test_progress_status_transitions(tmp_path: pathlib.Path) -> None:
         bangumi_name: str | None = None,
         episode: str | None = None,
         resolution: str | None = None,
+        source: str | None = None,
     ) -> None:
         captured_starts.append((sn, filename, status))
         orig_start(
@@ -363,6 +364,7 @@ def test_progress_status_transitions(tmp_path: pathlib.Path) -> None:
             bangumi_name=bangumi_name,
             episode=episode,
             resolution=resolution,
+            source=source,
         )
 
     bus.start = record_start  # type: ignore[assignment]
@@ -655,6 +657,26 @@ def test_success_path_sets_download_complete_status(tmp_path: pathlib.Path) -> N
     snap = harness.progress.snapshot()
     sn = harness.anime.sn
     assert snap[sn].status == '下載完成'
+
+
+def test_download_sets_source_to_animad(tmp_path: pathlib.Path) -> None:
+    """Anime.download() must tag its progress.start() call with source='animad'.
+
+    Regression guard: before this, the animad pipeline relied on the
+    frontend badge map defaulting a bare (source=None) entry to 動畫瘋 —
+    which then meant every OTHER source-less entry (e.g. a boot-time TG
+    ghost-reconciliation) was mislabeled 動畫瘋 too. Now every source is set
+    explicitly at the writer, so the frontend can render null as a distinct
+    neutral "unknown" badge instead.
+    """
+    harness = _build_harness(tmp_path)
+
+    result = harness.anime.download(resolution='1080', classify=False)
+
+    assert result.success is True
+    snap = harness.progress.snapshot()
+    entry = snap[harness.anime.sn]
+    assert entry.source == 'animad'
 
 
 def test_success_path_does_not_call_finish(tmp_path: pathlib.Path) -> None:

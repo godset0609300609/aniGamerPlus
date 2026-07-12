@@ -99,8 +99,12 @@ const sortedRows = computed<TaskProgressEntry[]>(() => {
 // Filters — real Element Plus `:filters` + `:filter-method` per column,
 // dynamic option lists built from the current row set.
 // ---------------------------------------------------------------------------
+// `row.source` of `null`/`undefined` normalizes to `''` (the sentinel used
+// by filterBySource — see monitorTable.ts) rather than `'animad'`, so the
+// filter dropdown gets its own "未知" option instead of conflating unknown
+// entries with genuine animad ones.
 const sourceFilterOptions = computed(() =>
-  buildFilterOptions(props.tasks, (row) => row.source ?? 'animad', sourceBadgeLabel),
+  buildFilterOptions(props.tasks, (row) => row.source ?? '', (value) => sourceBadgeLabel(value || null)),
 )
 const statusFilterOptions = computed(() => buildFilterOptions(props.tasks, (row) => row.status))
 const ownerFilterOptions = computed(() =>
@@ -187,7 +191,7 @@ async function onCancel(row: TaskProgressEntry): Promise<void> {
           <el-tag
             size="small"
             :data-color="sourceBadgeColor(row.source)"
-            :data-source="row.source ?? 'animad'"
+            :data-source="row.source ?? 'unknown'"
             :style="{
               backgroundColor: sourceBadgeColor(row.source),
               borderColor: sourceBadgeColor(row.source),

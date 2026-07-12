@@ -74,11 +74,14 @@ export function formatSpeed(mbps: number | null | undefined): string {
 
 /**
  * Column-filter predicate for the 來源 column. `row.source` of
- * `null`/`undefined` is normalized to `'animad'` — see sourceBadge.ts for
- * why that's the correct default rather than a distinct "unknown" bucket.
+ * `null`/`undefined` is normalized to `''` — a sentinel that can never
+ * collide with a real source tag (they're always non-empty) — rather than
+ * `'animad'`. See sourceBadge.ts: every live download path now sets an
+ * explicit source, so an absent source is a distinct "unknown" bucket, not
+ * a synonym for animad.
  */
 export function filterBySource(row: TaskProgressEntry, value: string): boolean {
-  return (row.source ?? 'animad') === value
+  return (row.source ?? '') === value
 }
 
 /** Column-filter predicate for the 狀態 column. */

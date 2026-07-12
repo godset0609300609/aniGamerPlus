@@ -774,3 +774,60 @@ def test_start_without_source_defaults_to_none() -> None:
     snap = bus.snapshot()
     assert snap[7002].source is None
     assert snap[7002].external_id is None
+
+
+# ---------------------------------------------------------------------------
+# force_finish — source propagation (fix for the null-source-masquerades-as-
+# 動畫瘋 monitor bug: a boot-time ghost reconciliation used to synthesise a
+# terminal entry with source=None, which the frontend's sourceBadge.ts then
+# rendered as a duplicate 動畫瘋 card for what was actually a finished TG/BT
+# download).
+# ---------------------------------------------------------------------------
+
+
+def test_force_finish_synthesised_entry_carries_source() -> None:
+    """force_finish() on a never-seen sn with source='tg' must publish an
+    entry whose source is 'tg', not None."""
+    bus = ProgressBus()
+    bus.force_finish(8001, status='下載完成', filename='ep01.mkv', source='tg')
+
+    snap = bus.snapshot()
+    assert 8001 in snap
+    entry = snap[8001]
+    assert entry.source == 'tg'
+    assert entry.status == '下載完成'
+    assert entry.finished_at is not None
+    assert entry.filename == 'ep01.mkv'
+
+
+def test_force_finish_synthesised_entry_defaults_source_to_none_when_omitted() -> None:
+    """Backward compatibility: omitting source still synthesises an entry
+    (source stays None) rather than raising."""
+    bus = ProgressBus()
+    bus.force_finish(8002, status='中斷', filename='ep02.mkv')
+
+    snap = bus.snapshot()
+    assert snap[8002].source is None
+
+
+def test_force_finish_existing_entry_preserves_source() -> None:
+    """force_finish() on an sn with a pre-existing entry must NOT clobber its
+    source — even when called without a source (or with a different one)."""
+    bus = ProgressBus()
+    bus.start(8003, 'ep03.mkv', source='tg')
+
+    bus.force_finish(8003, status='下載完成', filename='ep03-final.mkv')
+
+    snap = bus.snapshot()
+    entry = snap[8003]
+    assert entry.source == 'tg', 'existing source must survive a force_finish() call that passes none'
+    assert entry.status == '下載完成'
+    assert entry.finished_at is not None
+
+
+def test_force_finish_bt_source_tags_synthesised_ghost_entry() -> None:
+    """Same guard as the TG test above, for the BT source tag."""
+    bus = ProgressBus()
+    bus.force_finish(8004, status='下載完成', filename='landed.mkv', source='bt')
+
+    assert bus.snapshot()[8004].source == 'bt'

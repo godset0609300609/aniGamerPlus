@@ -424,6 +424,7 @@ class ProgressBus:
         *,
         status: str,
         filename: str | None = None,
+        source: str | None = None,
     ) -> None:
         """Force-close an entry this *process* never had a live copy of.
 
@@ -455,6 +456,15 @@ class ProgressBus:
         either double-INSERT (if no DB row is currently open) or overwrite an
         already-correct row with a second, redundant UPDATE.
 
+        ``source`` is only applied when a *new* entry is synthesised (no local
+        copy existed). It is the caller's job to pass the correct platform tag
+        (``'bt'`` / ``'tg'``) — without it, the synthesised entry's ``source``
+        stays ``None`` and the frontend badge falls back to a neutral "unknown"
+        label rather than mislabeling the card. When a local entry already
+        exists, its ``source`` (set by the original ``start()`` call) is left
+        untouched — this call never overwrites a known source with ``None`` or
+        a different value.
+
         Idempotent: no-op if a local entry already exists and is finished.
         """
         finished_at = datetime.datetime.now(datetime.UTC)
@@ -463,7 +473,7 @@ class ProgressBus:
             if entry is not None and entry.finished_at is not None:
                 return
             if entry is None:
-                entry = TaskProgress(sn=sn, rate=0.0, status=status, filename=filename or '')
+                entry = TaskProgress(sn=sn, rate=0.0, status=status, filename=filename or '', source=source)
                 self._entries[sn] = entry
             else:
                 entry.status = status
