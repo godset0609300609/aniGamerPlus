@@ -189,7 +189,9 @@ async function copyText(text: string): Promise<void> {
   margin: 16px 0 8px;
 }
 .ag-code-block {
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-primary);
+  font-family: var(--el-font-family, ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace);
   padding: 12px;
   border-radius: 6px;
   font-size: 12px;
