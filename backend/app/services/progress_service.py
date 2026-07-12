@@ -236,7 +236,14 @@ class ProgressService:
                     )
 
         # Phase 2: unconditional mirror close so the card disappears either way.
-        await anyio.to_thread.run_sync(functools.partial(bus.force_finish, sn, status=status, filename=entry.filename))
+        # ``source=entry.source`` matters for the ghost-card case: this process
+        # never locally start()ed sn, so force_finish() has to synthesise a
+        # fresh entry — without forwarding the source already visible in the
+        # raw (Redis) snapshot, that synthesised entry would carry source=None
+        # and the frontend badge would mislabel it as 動畫瘋 (see sourceBadge.ts).
+        await anyio.to_thread.run_sync(
+            functools.partial(bus.force_finish, sn, status=status, filename=entry.filename, source=entry.source)
+        )
 
 
 get_progress_service = container_bound(

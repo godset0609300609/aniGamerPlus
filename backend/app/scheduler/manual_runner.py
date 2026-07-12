@@ -260,6 +260,7 @@ class ManualRunner:
             f'《{preview_source}》',
             status='等待下載',
             owner_id=owner_id,
+            source='animad',
         )
 
     def _emit_telegram_event(

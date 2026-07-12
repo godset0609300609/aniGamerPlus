@@ -239,6 +239,26 @@ def test_progress_entry_seeded_before_anime_load(tmp_path: pathlib.Path) -> None
     assert observed == [(400, '等待下載')]
 
 
+def test_announce_waiting_tags_source_animad(tmp_path: pathlib.Path) -> None:
+    """_announce_waiting must seed the progress entry with source='animad'.
+
+    Regression guard: ManualRunner drives Bahamut/animad manual downloads
+    exclusively (no other source ever flows through this path). Before this,
+    the entry was seeded with no source at all and the frontend badge map
+    defaulted a bare source to 動畫瘋 as a side effect — which then meant any
+    OTHER source-less entry (e.g. a boot-time TG ghost reconciliation) was
+    ALSO mislabeled 動畫瘋. Now the source is set explicitly here instead of
+    being inferred from absence.
+    """
+    bus = ProgressBus()
+    fa = _FakeAnime(401)
+    r = _runner(tmp_path, {401: fa}, progress_bus=bus)
+    r.run(401, mode='single')
+
+    snap = bus.snapshot()
+    assert snap[401].source == 'animad'
+
+
 # ---------------------------------------------------------------------------
 # Bug (3) — mode='all' announces every episode as waiting upfront
 # ---------------------------------------------------------------------------

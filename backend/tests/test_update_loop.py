@@ -329,6 +329,37 @@ def test_check_tasks_announces_waiting_status(tmp_path: pathlib.Path) -> None:
     assert '《' in snap[321].filename and '》' in snap[321].filename
 
 
+def test_check_tasks_announces_waiting_status_tags_source_animad(tmp_path: pathlib.Path) -> None:
+    """_announce_waiting must seed the progress entry with source='animad'.
+
+    Regression guard: UpdateLoop drives Bahamut/animad scheduled downloads
+    exclusively (no other source ever flows through this path). Before this,
+    the entry was seeded with no source at all and the frontend badge map
+    defaulted a bare source to 動畫瘋 as a side effect — which then meant any
+    OTHER source-less entry (e.g. a boot-time TG ghost reconciliation) was
+    ALSO mislabeled 動畫瘋. Now the source is set explicitly here instead of
+    being inferred from absence.
+    """
+
+    class _NoopWorker:
+        def run(self, sn: int, **_kwargs: Any) -> None:
+            return None
+
+    bus = ProgressBus()
+    loop, _worker, queue, _repo, _cookies, _sn_list, _md, _al = _build(
+        tmp_path,
+        metadata_by_sn={323: _meta(323)},
+        progress_bus=bus,
+    )
+    loop._worker = _NoopWorker()  # type: ignore[assignment]
+
+    loop.check_tasks({323: {'mode': 'single', 'tag': ''}})
+
+    assert queue.contains(323)
+    snap = bus.snapshot()
+    assert snap[323].source == 'animad'
+
+
 def test_check_tasks_without_progress_bus_still_works(
     tmp_path: pathlib.Path,
 ) -> None:

@@ -153,11 +153,15 @@ describe('TaskCard — source badge colors', () => {
     expect(badge.text()).toBe('動畫瘋')
   })
 
-  it('defaults the animad badge (and color) when source is absent', () => {
+  it('shows a neutral unknown badge (not animad) when source is absent', () => {
+    // Regression guard: a null/undefined source must NOT impersonate 動畫瘋 —
+    // every live download path now sets an explicit source (see
+    // sourceBadge.ts), so an absent source means a legacy/unknown entry.
     const wrapper = mountCard(makeTask({ source: undefined }))
-    const badge = wrapper.find('.task-card__badge--animad')
+    expect(wrapper.find('.task-card__badge--animad').exists()).toBe(false)
+    const badge = wrapper.find('.task-card__badge--unknown')
     expect(badge.exists()).toBe(true)
-    expect(badge.attributes('data-color')).toBe('#3b8686')
+    expect(badge.text()).toBe('未知')
   })
 
   it('test_source_badge_uses_bilibili_blue', () => {

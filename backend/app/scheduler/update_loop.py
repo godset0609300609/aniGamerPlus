@@ -407,6 +407,7 @@ class UpdateLoop:
             bangumi_name=bangumi_name,
             episode=episode,
             owner_id=owner_id,
+            source='animad',
         )
 
     def _spawn_worker(self, sn: int) -> None:

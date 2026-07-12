@@ -6,7 +6,7 @@
  * duplicating the mapping in two places.
  */
 
-export type SourceBadgeKey = 'animad' | 'bilibili' | 'bt' | 'tg' | 'other'
+export type SourceBadgeKey = 'animad' | 'bilibili' | 'bt' | 'tg' | 'unknown' | 'other'
 
 export interface SourceBadgeInfo {
   key: SourceBadgeKey
@@ -29,11 +29,16 @@ const UNKNOWN_TEXT = 'var(--el-text-color-primary)'
 /**
  * Maps a task's `source` field to a badge color + label.
  *
- * `null`/`undefined` are treated identically to `'animad'`: legacy /
- * non-BT-downloader progress payloads simply omit the field (see
- * `TaskProgressEntry` in `frontend/src/types.ts`) rather than encoding a
- * distinct "unknown" source. Any other, truly unrecognized string falls
- * back to a neutral gray badge labeled with the raw value.
+ * Every live download path (動畫瘋/animad, Bilibili, BT, Telegram) now sets
+ * an explicit `source` on the progress entry it creates (see
+ * `ProgressBus.start()` / `force_finish()` call sites in the backend), so
+ * `null`/`undefined` no longer means "this is an animad entry that forgot to
+ * tag itself" — that assumption predates the backend setting `source`
+ * explicitly everywhere. A `null`/`undefined` source now genuinely means
+ * either a legacy Redis entry written before this field existed, or a bug,
+ * and is rendered as a neutral gray "unknown" badge rather than impersonating
+ * 動畫瘋. Any other, truly unrecognized non-null string still falls back to a
+ * neutral gray badge labeled with the raw value.
  */
 export function sourceBadgeInfo(source: string | null | undefined): SourceBadgeInfo {
   switch (source) {
@@ -43,10 +48,11 @@ export function sourceBadgeInfo(source: string | null | undefined): SourceBadgeI
       return { key: 'bt', label: 'BT', color: BT_ORANGE, textColor: '#fff' }
     case 'tg':
       return { key: 'tg', label: 'Telegram', color: TELEGRAM_BLUE, textColor: '#fff' }
-    case null:
-    case undefined:
     case 'animad':
       return { key: 'animad', label: '動畫瘋', color: BAHAMUT_GREEN, textColor: '#fff' }
+    case null:
+    case undefined:
+      return { key: 'unknown', label: '未知', color: UNKNOWN_BG, textColor: UNKNOWN_TEXT }
     default:
       return { key: 'other', label: source, color: UNKNOWN_BG, textColor: UNKNOWN_TEXT }
   }

@@ -382,6 +382,31 @@ async def test_force_finish_routes_bt_sourced_sn_to_the_bt_bus() -> None:
 
     assert bt_bus.snapshot()[5006].status == '已取消'
     assert bus.snapshot() == {}, 'must not have touched the shared (non-BT) bus'
+    # Regression guard: this process never locally start()ed sn=5006 (it's a
+    # ghost card only visible via the raw/Redis snapshot), so force_finish()
+    # has to synthesise a fresh local entry. Without forwarding entry.source
+    # through, that synthesised entry would carry source=None and the
+    # frontend badge would mislabel it 動畫瘋 (see sourceBadge.ts).
+    assert bt_bus.snapshot()[5006].source == 'bt'
+
+
+@pytest.mark.anyio
+async def test_force_finish_ghost_card_carries_source_into_synthesised_entry() -> None:
+    """Dismissing a TG ghost card (visible only via the raw/Redis snapshot,
+    never locally start()ed in this process) must not lose its source."""
+    tg_entry = TaskProgress(
+        sn=5007, rate=1.0, status='下載完成', filename='tg-entry.mkv', owner_id='admin-1', source='tg'
+    )
+    reader = _FakeRawSnapshotReader({5007: tg_entry})
+    bus = ProgressBus()
+
+    svc = ProgressService(progress_bus=bus, user_repo=None, redis_reader=reader)  # type: ignore[arg-type]
+    # entry.finished_at is None on the TaskProgress default, so the idempotency
+    # guard does not short-circuit before force_finish() is reached.
+    await svc.force_finish(5007, _admin(), status='已取消')
+
+    entry = bus.snapshot()[5007]
+    assert entry.source == 'tg'
 
 
 # ---------------------------------------------------------------------------

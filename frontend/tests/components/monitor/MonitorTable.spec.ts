@@ -135,13 +135,16 @@ describe('MonitorTable — filter predicates', () => {
   it('test_table_filters_by_source_when_column_filter_applied', () => {
     const btRow = makeTask({ source: 'bt' })
     const animadRowExplicit = makeTask({ source: 'animad' })
-    const animadRowImplicit = makeTask({ source: undefined })
+    const unknownRowImplicit = makeTask({ source: undefined })
     const bilibiliRow = makeTask({ source: 'bilibili' })
 
     expect(filterBySource(btRow, 'bt')).toBe(true)
     expect(filterBySource(animadRowExplicit, 'bt')).toBe(false)
-    // Absent source normalizes to 'animad' for filtering purposes too.
-    expect(filterBySource(animadRowImplicit, 'animad')).toBe(true)
+    expect(filterBySource(animadRowExplicit, 'animad')).toBe(true)
+    // Absent source normalizes to the '' sentinel — a distinct bucket from
+    // 'animad', not a synonym for it (see monitorTable.ts's filterBySource).
+    expect(filterBySource(unknownRowImplicit, '')).toBe(true)
+    expect(filterBySource(unknownRowImplicit, 'animad')).toBe(false)
     expect(filterBySource(bilibiliRow, 'animad')).toBe(false)
   })
 

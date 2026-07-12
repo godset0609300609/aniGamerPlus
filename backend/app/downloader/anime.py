@@ -202,6 +202,7 @@ class Anime:
             status='等待下載',
             bangumi_name=self._metadata.bangumi_name or None,
             episode=self._metadata.episode or None,
+            source='animad',
         )
 
         # Grab the cancel event once; it is safe to hold a reference because
