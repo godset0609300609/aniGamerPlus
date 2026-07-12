@@ -541,6 +541,31 @@ describe("useProgressStore — historyEntries", () => {
     expect(entry400?.filename).toBe("hist_only.mp4");
     expect(entry400?.status).toBe("任務完成");
   });
+
+  it("history-only entries preserve their source field (not dropped in the merge)", () => {
+    // Regression guard: a history row's `source` used to be silently
+    // dropped when mapped into a TaskProgressEntry in mergedCompleted,
+    // which fed sourceBadge.ts's null fallback and mislabeled every
+    // DB-history-derived completed card regardless of its real source.
+    const store = useProgressStore();
+
+    store.historyEntries.value = [
+      {
+        id: 5,
+        sn: 401,
+        filename: "hist_tg.mp4",
+        final_status: "下載完成",
+        retries: 0,
+        finished_at: "2026-04-18T08:00:00+00:00",
+        source: "tg",
+      },
+    ];
+
+    const completed = store.byCategory.value.completed;
+    const entry401 = completed.find((e) => e.sn === 401);
+    expect(entry401).toBeDefined();
+    expect(entry401?.source).toBe("tg");
+  });
 });
 
 // ---------------------------------------------------------------------------

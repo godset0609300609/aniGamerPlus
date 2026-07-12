@@ -171,6 +171,13 @@ function buildStore(): ProgressStore {
           started_at: h.started_at,
           finished_at: h.finished_at,
           owner_id: h.owner_id,
+          // Regression guard: omitting this dropped every DB-history-derived
+          // completed card into sourceBadge.ts's null fallback, which used
+          // to render as a mislabeled 動畫瘋 badge regardless of the row's
+          // real source. See TaskHistoryEntryOut.source in app/models.py —
+          // the backend already populates it, this was just lost in transit.
+          source: h.source,
+          external_id: h.external_id,
         }),
       )
 
