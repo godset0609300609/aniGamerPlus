@@ -834,6 +834,90 @@ describe("useProgressStore — per-attempt mergedCompleted", () => {
     expect(completed[2].filename).toBe("ep_attempt1.mp4");
   });
 
+  it("test_live_and_history_same_sn_different_started_at_collapse_to_one", () => {
+    // Regression test: ProgressBus.force_finish (boot-time ghost
+    // reconciliation for TG/BT) synthesises its live entry with
+    // started_at=null, since the process that calls it never locally
+    // start()ed the sn. The old "sn|started_at" dedup key never matched
+    // the DB-history row's real started_at, so the same completed task
+    // rendered as two MonitorView cards. A null-started_at live entry must
+    // collapse against its DB-history counterpart by sn alone.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-19T12:00:00Z"));
+
+    const store = useProgressStore();
+
+    // Live ghost-reconciliation entry: started_at is null/absent.
+    pushMessage({
+      "555": {
+        sn: 555,
+        rate: 100,
+        status: "下載完成",
+        filename: "ghost_live.mp4",
+        finished_at: "2026-04-19T11:00:00Z",
+        // started_at intentionally omitted, mirroring force_finish's
+        // synthesised entry.
+      },
+    });
+
+    // DB-history row for the same sn with a real started_at (written by
+    // record_start before the owning process died, and closed out by
+    // LandingWorker/TgDownloadWatcher's own direct repo call).
+    store.historyEntries.value = [
+      {
+        id: 6,
+        sn: 555,
+        filename: "hist_555.mp4",
+        final_status: "下載完成",
+        retries: 0,
+        started_at: "2026-04-19T09:00:00Z",
+        finished_at: "2026-04-19T11:00:00Z",
+      },
+    ];
+
+    const completed = store.byCategory.value.completed;
+    // Exactly one card for sn=555 — not two.
+    expect(completed.filter((e) => e.sn === 555).length).toBe(1);
+    // Live entry wins on collision (same precedence as the exact-match case).
+    expect(completed.find((e) => e.sn === 555)?.filename).toBe("ghost_live.mp4");
+  });
+
+  it("test_two_entries_different_sn_both_render_as_separate_cards", () => {
+    // Sanity guard against over-merging: distinct sn values must never
+    // collapse into one card, even if one side has a null started_at.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-19T12:00:00Z"));
+
+    const store = useProgressStore();
+
+    pushMessage({
+      "601": {
+        sn: 601,
+        rate: 100,
+        status: "下載完成",
+        filename: "ghost_601.mp4",
+        finished_at: "2026-04-19T11:00:00Z",
+      },
+    });
+
+    store.historyEntries.value = [
+      {
+        id: 7,
+        sn: 602,
+        filename: "hist_602.mp4",
+        final_status: "下載完成",
+        retries: 0,
+        started_at: "2026-04-19T09:00:00Z",
+        finished_at: "2026-04-19T10:00:00Z",
+      },
+    ];
+
+    const completed = store.byCategory.value.completed;
+    expect(completed.some((e) => e.sn === 601 && e.filename === "ghost_601.mp4")).toBe(true);
+    expect(completed.some((e) => e.sn === 602 && e.filename === "hist_602.mp4")).toBe(true);
+    expect(completed.length).toBe(2);
+  });
+
   it("test_merged_completed_dedupes_live_and_history_same_attempt", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-19T12:00:00Z"));

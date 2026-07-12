@@ -139,22 +139,49 @@ function buildStore(): ProgressStore {
   /**
    * Merge live completed (in-memory) and DB history entries into the
    * completed column.  Each unique (sn, started_at) pair is its own card,
-   * so multiple download attempts for the same sn each appear separately.
-   * Live entries take precedence over DB history for the same attempt
-   * (identified by matching sn + started_at).
+   * so multiple genuine download attempts for the same sn (e.g. a manual
+   * re-download after the first attempt already finished — each attempt
+   * gets its own `task_history` row, see
+   * backend/app/persistence/task_history_repo.py) each appear separately.
+   * Live entries take precedence over DB history for the same attempt.
+   *
+   * Matching rules:
+   *  - Live entry has a real `started_at`: matched against a DB-history
+   *    row for the same sn only when `started_at` is identical (exact
+   *    per-attempt match). This is what lets multiple genuine re-download
+   *    attempts for the same sn each surface as their own card.
+   *  - Live entry has `started_at === null`: this only happens for
+   *    boot-time ghost-reconciliation entries synthesised by
+   *    `ProgressBus.force_finish` (backend/app/downloader/progress.py),
+   *    which closes out a stuck entry this process never locally `start()`ed
+   *    and so never knows the real started_at. Matching those strictly by
+   *    "sn|started_at" never matches the DB-history row's real started_at,
+   *    so the same completed TG/BT task rendered as two cards. Matched by
+   *    sn alone instead — a null-started_at live entry and its DB-history
+   *    counterpart are always the same attempt, never a distinct one.
    */
   const mergedCompleted = computed((): TaskProgressEntry[] => {
-    // Build a set of keys for live completed attempts: "sn|started_at".
+    // Live completed attempts with a known started_at: matched exactly by "sn|started_at".
     const liveKeys = new Set<string>()
+    // Live completed attempts with started_at === null (force_finish ghost
+    // reconciliation entries): matched by sn alone, regardless of the DB
+    // row's started_at, so they collapse into a single card.
+    const liveGhostSns = new Set<number>()
     for (const entry of completedEntries.value) {
-      liveKeys.add(`${entry.sn}|${entry.started_at ?? ''}`)
+      if (entry.started_at) {
+        liveKeys.add(`${entry.sn}|${entry.started_at}`)
+      } else {
+        liveGhostSns.add(entry.sn)
+      }
     }
 
-    // Add history rows whose (sn, started_at) pair is not already live,
-    // excluding statuses that should be hidden from the monitor UI.
+    // Add history rows not already covered by a live entry (either an exact
+    // sn|started_at match, or a ghost sn-only match), excluding statuses
+    // that should be hidden from the monitor UI.
     const historyAsProgressEntries: TaskProgressEntry[] = historyEntries.value
       .filter(
         (h) =>
+          !liveGhostSns.has(h.sn) &&
           !liveKeys.has(`${h.sn}|${h.started_at ?? ''}`) &&
           !HIDDEN_FROM_MONITOR.has(h.final_status),
       )
