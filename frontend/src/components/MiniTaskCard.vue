@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { ElProgress } from 'element-plus'
 import type { TaskProgressEntry } from '@/types'
+import { clampPercentage } from '@/utils/format'
 
 const props = defineProps<{
   task: TaskProgressEntry
@@ -15,7 +16,7 @@ const displayName = computed(() => {
   return props.task.filename
 })
 
-const pct = computed(() => Math.round(props.task.rate))
+const pct = computed(() => clampPercentage(props.task.rate))
 </script>
 
 <template>
