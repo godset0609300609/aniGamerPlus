@@ -8,13 +8,17 @@ import { useBreakpoint } from '@/composables/useBreakpoint'
  * BrowserExtensionDialog — explains and hands out the two client-side
  * "quick add" integrations for 動畫瘋 anime pages:
  *
- *  - a Tampermonkey userscript (recommended) that injects a floating
- *    "📌 加入追番" button
- *  - a drag-to-bookmarks-bar bookmarklet as an install-free fallback
+ *  - a Tampermonkey userscript (recommended) that injects two floating
+ *    buttons: "📌 加入追番" (opens /quick-add) and "⬇️ 直接下載" (opens
+ *    /quick-download)
+ *  - a drag-to-bookmarks-bar bookmarklet as an install-free fallback —
+ *    limited to a single action (📌 加入追番 only), since a bookmarklet is
+ *    one link with one onclick and can't inject a second floating button
  *
- * Both snippets open a popup at `${origin}/#/quick-add?sn=...&title=...`,
- * which is same-origin with this app and therefore reuses the existing
- * session cookie — no cross-origin API call or CORS configuration needed.
+ * Both popups open at `${origin}/#/quick-add?sn=...&title=...` or
+ * `${origin}/#/quick-download?sn=...&title=...`, which is same-origin with
+ * this app and therefore reuses the existing session cookie — no
+ * cross-origin API call or CORS configuration needed.
  */
 
 const props = defineProps<{ modelValue: boolean }>()
@@ -47,12 +51,12 @@ const isInsecureOrigin = computed(
 )
 
 const USERSCRIPT_TEMPLATE = `// ==UserScript==
-// @name         aniGamerPlus 快速加入追番
+// @name         aniGamerPlus 快速加入追番 / 直接下載
 // @namespace    https://anibutler.example
 // @match        https://ani.gamer.com.tw/animeVideo.php*
 // @grant        none
 // @run-at       document-idle
-// @description  在動畫瘋作品頁注入按鈕，一鍵加入 aniGamerPlus 追番清單
+// @description  在動畫瘋作品頁注入按鈕，一鍵加入 aniGamerPlus 追番清單或直接下載本集
 // ==/UserScript==
 (function () {
   'use strict';
@@ -61,20 +65,24 @@ const USERSCRIPT_TEMPLATE = `// ==UserScript==
   var sn = m[1];
   var titleEl = document.querySelector('.anime_name h1') || document.querySelector('.anime_name');
   var title = (titleEl ? titleEl.textContent : document.title).trim();
-  var btn = document.createElement('button');
-  btn.textContent = '📌 加入追番';
-  btn.style.cssText = [
-    'position:fixed', 'right:20px', 'bottom:20px', 'z-index:2147483647',
-    'background:#409eff', 'color:#fff', 'border:0', 'padding:12px 20px',
-    'border-radius:8px', 'font-size:14px', 'cursor:pointer',
-    'box-shadow:0 4px 12px rgba(0,0,0,.15)',
-    'font-family:system-ui, -apple-system, sans-serif'
-  ].join(';');
-  btn.onclick = function () {
-    var u = 'ORIGIN_PLACEHOLDER/#/quick-add?sn=' + sn + '&title=' + encodeURIComponent(title);
-    window.open(u, 'anibutler_quickadd', 'width=480,height=640');
-  };
-  document.body.appendChild(btn);
+  function mkBtn(text, path, bg, bottom) {
+    var b = document.createElement('button');
+    b.textContent = text;
+    b.style.cssText = [
+      'position:fixed', 'right:20px', 'bottom:' + bottom, 'z-index:2147483647',
+      'background:' + bg, 'color:#fff', 'border:0', 'padding:12px 20px',
+      'border-radius:8px', 'font-size:14px', 'cursor:pointer',
+      'box-shadow:0 4px 12px rgba(0,0,0,.15)',
+      'font-family:system-ui, -apple-system, sans-serif'
+    ].join(';');
+    b.onclick = function () {
+      var u = 'ORIGIN_PLACEHOLDER/#/' + path + '?sn=' + sn + '&title=' + encodeURIComponent(title);
+      window.open(u, 'anibutler_' + path, 'width=480,height=640');
+    };
+    document.body.appendChild(b);
+  }
+  mkBtn('📌 加入追番', 'quick-add', '#409eff', '20px');
+  mkBtn('⬇️ 直接下載', 'quick-download', '#67c23a', '72px');
 })();`
 
 const BOOKMARKLET_TEMPLATE = `javascript:(function(){var m=location.href.match(/sn=(\\d+)/);if(!m){alert('此頁面沒有 sn 參數，不是動畫瘋作品頁');return}var t=(document.querySelector('.anime_name h1')||document).textContent.trim();window.open('ORIGIN_PLACEHOLDER/#/quick-add?sn='+m[1]+'&title='+encodeURIComponent(t),'anibutler_quickadd','width=480,height=640');})();`
@@ -118,7 +126,7 @@ async function copyText(text: string): Promise<void> {
     </el-alert>
 
     <p class="ag-ext-intro">
-      在動畫瘋作品頁一鍵加入追番清單。
+      在動畫瘋作品頁一鍵加入追番清單，或直接下載本集。
     </p>
 
     <h3 class="ag-ext-heading">
@@ -144,7 +152,7 @@ async function copyText(text: string): Promise<void> {
       </li>
       <li>點瀏覽器工具列的 Tampermonkey icon → 新增指令碼</li>
       <li>貼上並存檔 (Ctrl+S)</li>
-      <li>重整動畫瘋作品頁 → 右下會出現「📌 加入追番」浮動按鈕</li>
+      <li>重整動畫瘋作品頁 → 右下會出現「📌 加入追番」與「⬇️ 直接下載」兩個浮動按鈕</li>
     </ol>
 
     <hr class="ag-ext-divider" />
@@ -152,6 +160,10 @@ async function copyText(text: string): Promise<void> {
     <h3 class="ag-ext-heading">
       書籤列版本（免安裝，備用）
     </h3>
+    <p class="ag-ext-bookmarklet-note">
+      書籤列版本僅支援「📌 加入追番」單一動作（一個書籤只能做一件事）；如需「⬇️ 直接下載」，請改用上方的
+      Tampermonkey 使用者腳本，兩個按鈕的完整體驗僅限使用者腳本提供。
+    </p>
     <p>拖曳下方連結到書籤列即可：</p>
     <a
       class="ag-bookmarklet-link"
@@ -211,6 +223,11 @@ async function copyText(text: string): Promise<void> {
   border: none;
   border-top: 1px solid var(--el-border-color, #e4e7ed);
   margin: 20px 0;
+}
+.ag-ext-bookmarklet-note {
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #909399);
+  margin: 0 0 8px;
 }
 .ag-bookmarklet-link {
   display: inline-block;

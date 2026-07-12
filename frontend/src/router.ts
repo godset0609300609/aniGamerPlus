@@ -45,6 +45,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '快速加入追番' },
   },
   {
+    path: '/quick-download',
+    name: 'quick-download',
+    component: () => import('./views/QuickDownloadView.vue'),
+    meta: { title: '直接下載' },
+  },
+  {
     path: '/bt',
     name: 'bt',
     component: () => import('./views/BtView.vue'),

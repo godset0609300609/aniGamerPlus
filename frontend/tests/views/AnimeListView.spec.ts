@@ -742,7 +742,10 @@ describe('AnimeListView — browser extension dialog', () => {
     const codeBlocks = wrapper.findAll('.ag-code-block')
     expect(codeBlocks).toHaveLength(2)
     expect(codeBlocks[0].text()).toContain('==UserScript==')
-    expect(codeBlocks[0].text()).toContain('/#/quick-add?sn=')
+    // Userscript injects two buttons; each opens its own route via a
+    // dynamically-built path rather than a literal '/#/quick-add?sn=' URL.
+    expect(codeBlocks[0].text()).toContain("'quick-add'")
+    expect(codeBlocks[0].text()).toContain("'quick-download'")
     expect(codeBlocks[1].text()).toContain('javascript:(function(){')
     expect(codeBlocks[1].text()).toContain('/#/quick-add?sn=')
 
@@ -765,7 +768,7 @@ describe('AnimeListView — browser extension dialog', () => {
 
     const codeBlocks = wrapper.findAll('.ag-code-block')
     const origin = window.location.origin
-    expect(codeBlocks[0].text()).toContain(`${origin}/#/quick-add?sn=`)
+    expect(codeBlocks[0].text()).toContain(`'${origin}/#/' + path`)
     expect(codeBlocks[0].text()).not.toContain('ORIGIN_PLACEHOLDER')
     expect(codeBlocks[1].text()).toContain(`${origin}/#/quick-add?sn=`)
     expect(codeBlocks[1].text()).not.toContain('ORIGIN_PLACEHOLDER')
