@@ -810,11 +810,25 @@ def _format_message(
 # Header line for every BT lifecycle event — mirrors _format_message's animad
 # headers (bold, MarkdownV2-escaped literal text). Keyed by 'bt_status_update'
 # putio_status for the transient (pre-landing) rows of the state machine.
+#
+# Must stay in sync with frontend/src/utils/btStatus.ts::LABEL_MAP — that
+# file's BT_STATUS_LIFECYCLE is the authoritative list of Put.io transfer
+# statuses. This dict previously covered only 4 of the 8 lifecycle statuses;
+# the missing ones (WAITING, PREPARING_DOWNLOAD, COMPLETING) fell through to
+# _bt_header's generic fallback and rendered the raw English enum in
+# Telegram messages instead of a Chinese label. When Put.io/the frontend
+# adds a new status, add it here too. ERROR is intentionally absent: it is
+# routed through the 'bt_failed' event (see landing_worker's ERROR branch,
+# which returns before reaching the 'bt_status_update' emit), never through
+# 'bt_status_update'.
 _BT_STATUS_HEADERS = {
     'IN_QUEUE': '⏳ *Put\\.io 排隊中*',
+    'WAITING': '⏳ *Put\\.io 等待中*',
+    'PREPARING_DOWNLOAD': '⚙️ *Put\\.io 準備中*',
     'DOWNLOADING': '⬇️ *Put\\.io 下載中*',
-    'COMPLETED': '📦 *Put\\.io 完成，準備落地*',
+    'COMPLETING': '📦 *Put\\.io 完成中*',
     'SEEDING': '📦 *Put\\.io Seeding，準備落地*',
+    'COMPLETED': '📦 *Put\\.io 完成，準備落地*',
 }
 
 # Resolution marker regex — first match wins; 4K/8K are upper-cased, every

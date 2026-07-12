@@ -473,6 +473,48 @@ def test_format_bt_status_update_in_queue_header() -> None:
     assert msg.startswith('⏳ *Put\\.io 排隊中*')
 
 
+def test_format_bt_status_update_waiting_header() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status='WAITING',
+        local_path=None,
+        error_message=None,
+    )
+    assert msg.startswith('⏳ *Put\\.io 等待中*')
+
+
+def test_format_bt_status_update_preparing_download_header() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status='PREPARING_DOWNLOAD',
+        local_path=None,
+        error_message=None,
+    )
+    assert msg.startswith('⚙️ *Put\\.io 準備中*')
+
+
+def test_format_bt_status_update_completing_header() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status='COMPLETING',
+        local_path=None,
+        error_message=None,
+    )
+    assert msg.startswith('📦 *Put\\.io 完成中*')
+
+
 def test_bt_status_update_downloading_shows_percent_done_from_putio() -> None:
     msg = _format_bt_message(
         event='bt_status_update',
