@@ -16,6 +16,7 @@ awkward to clean up. This class:
 from __future__ import annotations
 
 import collections.abc
+import os
 import pathlib
 import platform
 import shutil
@@ -24,6 +25,22 @@ import typing as T
 
 if T.TYPE_CHECKING:
     from ..logging_ import Logger
+
+
+def resolve_ffmpeg_path() -> str | None:
+    """Return the ffmpeg binary path if available, else None.
+
+    Search order:
+    1. PATH (via shutil.which).
+    2. ``ffmpeg.exe`` (Windows) or ``ffmpeg`` (POSIX) relative to cwd.
+    """
+    found = shutil.which('ffmpeg')
+    if found:
+        return found
+    candidate = pathlib.Path('ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+    if candidate.exists():
+        return str(candidate.resolve())
+    return None
 
 
 class FFmpegRunner:

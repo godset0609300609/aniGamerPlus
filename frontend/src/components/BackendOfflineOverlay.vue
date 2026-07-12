@@ -99,6 +99,7 @@ function handleRetry() {
   border: none;
   border-radius: 6px;
   padding: 10px 24px;
+  min-height: 44px;
   font-size: 14px;
   cursor: pointer;
   transition: background 0.2s;

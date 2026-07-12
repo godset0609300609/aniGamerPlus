@@ -493,6 +493,36 @@ def test_parse_watch_args_mixed_ambiguous_rejected() -> None:
     assert '老名字' in result
 
 
+def test_parse_watch_args_double_quoted_name_with_space() -> None:
+    """shlex.split('...name="戰鬥陀螺 X"') yields one token: 'name=戰鬥陀螺 X'."""
+    result = _parse_watch_args(['tag=2026-07', 'season=1', 'mode=all', 'name=戰鬥陀螺 X'])
+    assert result == (None, '2026-07', 1, 'all', '戰鬥陀螺 X')
+
+
+def test_parse_watch_args_single_quoted_name_with_space() -> None:
+    """shlex.split("...name='戰鬥陀螺 X'") also collapses to one token, same as double quotes."""
+    result = _parse_watch_args(['tag=2026-07', 'season=1', 'mode=all', 'name=戰鬥陀螺 X'])
+    assert result == (None, '2026-07', 1, 'all', '戰鬥陀螺 X')
+
+
+def test_parse_watch_args_unquoted_still_works() -> None:
+    result = _parse_watch_args(['name=戰鬥陀螺_X'])
+    assert result == (None, '', 1, None, '戰鬥陀螺_X')
+
+
+def test_parse_watch_args_backwards_compat_positional_name() -> None:
+    """/watch 49784 戰鬥陀螺 X → custom_name='戰鬥陀螺 X' (first token has no '=')."""
+    result = _parse_watch_args(['戰鬥陀螺', 'X'])
+    assert result == ('戰鬥陀螺 X', '', 1, None, None)
+
+
+def test_parse_watch_args_unknown_key_still_rejected() -> None:
+    result = _parse_watch_args(['session=1'])
+    assert isinstance(result, str)
+    assert '未知選項' in result
+    assert 'session' in result
+
+
 # ---------------------------------------------------------------------------
 # /watch — metadata resolution
 # ---------------------------------------------------------------------------
@@ -657,6 +687,77 @@ async def test_cmd_watch_mixed_ambiguous_rejected() -> None:
     await dispatcher.dispatch(chat_id=111, user=user, text='/watch 48613 tag=進擊 老名字')
     msg = _last_message(client)
     assert '⚠️' in msg
+
+
+@pytest.mark.anyio
+async def test_cmd_watch_double_quoted_name_with_space_integration() -> None:
+    """/watch 49784 tag=2026-07 season=1 mode=all name="戰鬥陀螺 X" — the reported bug repro."""
+    animelist_service = MagicMock()
+    saved_entry = AnimeListEntry(
+        sn=49784,
+        enabled=True,
+        owner_id='user-1',
+        anime_name='SN 49784',
+        tag='2026-07',
+        season=1,
+        mode='all',  # type: ignore[arg-type]
+        custom_name='戰鬥陀螺 X',
+    )
+    animelist_service.list_entries = AsyncMock(side_effect=[[], [], [saved_entry]])
+    animelist_service.replace_entries = AsyncMock(return_value=None)
+
+    dispatcher, client = _make_dispatcher(animelist_service=animelist_service)
+    user = _make_user()
+    await dispatcher.dispatch(
+        chat_id=111,
+        user=user,
+        text='/watch 49784 tag=2026-07 season=1 mode=all name="戰鬥陀螺 X"',
+    )
+
+    assert animelist_service.replace_entries.called
+    entries_saved: list[AnimeListEntry] = animelist_service.replace_entries.call_args[0][1]
+    new_e = next(e for e in entries_saved if e.sn == 49784)
+    assert new_e.custom_name == '戰鬥陀螺 X'
+    assert new_e.tag == '2026-07'
+    assert new_e.mode == 'all'
+
+    msg = _last_message(client)
+    assert '⚠️ 無法解析參數' not in msg
+
+
+@pytest.mark.anyio
+async def test_cmd_watch_single_quoted_name_with_space_integration() -> None:
+    """Same as above but with single quotes around the name value."""
+    animelist_service = MagicMock()
+    saved_entry = AnimeListEntry(
+        sn=49784,
+        enabled=True,
+        owner_id='user-1',
+        anime_name='SN 49784',
+        custom_name='戰鬥陀螺 X',
+    )
+    animelist_service.list_entries = AsyncMock(side_effect=[[], [], [saved_entry]])
+    animelist_service.replace_entries = AsyncMock(return_value=None)
+
+    dispatcher, client = _make_dispatcher(animelist_service=animelist_service)
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text="/watch 49784 name='戰鬥陀螺 X'")
+
+    assert animelist_service.replace_entries.called
+    entries_saved: list[AnimeListEntry] = animelist_service.replace_entries.call_args[0][1]
+    new_e = next(e for e in entries_saved if e.sn == 49784)
+    assert new_e.custom_name == '戰鬥陀螺 X'
+
+
+@pytest.mark.anyio
+async def test_cmd_watch_mismatched_quote_returns_error() -> None:
+    """An unclosed quote must not crash the dispatcher; it gets a clean error reply."""
+    dispatcher, client = _make_dispatcher()
+    user = _make_user()
+    await dispatcher.dispatch(chat_id=111, user=user, text='/watch 49784 name="戰鬥陀螺')
+    msg = _last_message(client)
+    assert '⚠️' in msg
+    assert '引號' in msg
 
 
 # ---------------------------------------------------------------------------

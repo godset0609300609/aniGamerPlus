@@ -9,9 +9,11 @@ function mountHeader(
   counts = { downloading: 0, waiting: 0, completed: 0 },
   connectionState: 'connecting' | 'open' | 'closed' = 'open',
   showDisconnectedBanner = false,
+  viewMode: 'table' | 'kanban' = 'kanban',
+  isMobile = false,
 ) {
   return mount(MonitorHeader, {
-    props: { counts, connectionState, showDisconnectedBanner },
+    props: { counts, connectionState, showDisconnectedBanner, viewMode, isMobile },
     global: { stubs },
   })
 }
@@ -76,5 +78,35 @@ describe('MonitorHeader — connection dot', () => {
   it('does not apply closed class when state is closed but banner is hidden', () => {
     const wrapper = mountHeader({ downloading: 0, waiting: 0, completed: 0 }, 'closed', false)
     expect(wrapper.find('.monitor-header__dot--closed').exists()).toBe(false)
+  })
+})
+
+describe('MonitorHeader — view mode toggle', () => {
+  it('renders the table and kanban toggle labels', () => {
+    const wrapper = mountHeader()
+    expect(wrapper.text()).toContain('表格')
+    expect(wrapper.text()).toContain('看板')
+  })
+
+  it('emits update:viewMode with "table" when the 表格 button is clicked', async () => {
+    const wrapper = mountHeader({ downloading: 0, waiting: 0, completed: 0 }, 'open', false, 'kanban')
+    const buttons = wrapper.findAll('.el-radio-button')
+    const tableButton = buttons.find((b) => b.text().includes('表格'))
+    expect(tableButton).toBeTruthy()
+    await tableButton!.trigger('click')
+
+    expect(wrapper.emitted('update:viewMode')).toBeTruthy()
+    expect(wrapper.emitted('update:viewMode')![0]).toEqual(['table'])
+  })
+
+  it('hides the toggle entirely when isMobile is true', () => {
+    const wrapper = mountHeader({ downloading: 0, waiting: 0, completed: 0 }, 'open', false, 'kanban', true)
+    expect(wrapper.find('.monitor-header__view-toggle').exists()).toBe(false)
+    expect(wrapper.findAll('.el-radio-button').length).toBe(0)
+  })
+
+  it('shows the toggle when isMobile is false (default)', () => {
+    const wrapper = mountHeader()
+    expect(wrapper.find('.monitor-header__view-toggle').exists()).toBe(true)
   })
 })

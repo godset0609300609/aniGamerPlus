@@ -129,6 +129,19 @@ def test_health_response_structure(
     assert 'version' in data['api']
 
 
+def test_health_does_not_leak_working_dir(
+    client: fastapi.testclient.TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/api/health is unauthenticated — it must never surface the on-disk install path (fix #27 LOW)."""
+    monkeypatch.setattr('app.api.health._get_redis_client', lambda: _FakeRedisOk())
+
+    r = client.get('/api/health')
+    assert r.status_code == 200
+    assert 'working_dir' not in r.json()
+    assert 'working_dir' not in r.json()['api']
+
+
 def test_health_fetch_timeout_is_2_seconds(
     client: fastapi.testclient.TestClient,
     monkeypatch: pytest.MonkeyPatch,

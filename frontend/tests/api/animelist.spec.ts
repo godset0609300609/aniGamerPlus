@@ -6,6 +6,7 @@ function makeEntry(overrides: Partial<AnimeListEntry> = {}): AnimeListEntry {
   return {
     sn: 12345,
     enabled: true,
+    bilingual: false,
     mode: 'latest',
     tag: '',
     season: 1,

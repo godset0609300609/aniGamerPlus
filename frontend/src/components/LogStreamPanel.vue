@@ -249,6 +249,7 @@ function levelClass(level: string): string {
 /* ---------- Filter bar (never scrolled) ---------- */
 .log-stream-panel__filter {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   flex-shrink: 0;
   padding: 8px;
@@ -269,6 +270,7 @@ function levelClass(level: string): string {
 /* ---------- Collapsible toolbar (non-expanded mode) ---------- */
 .log-toolbar {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
 }
@@ -280,6 +282,17 @@ function levelClass(level: string): string {
 
 .log-keyword-input {
   flex: 1;
+  min-width: 160px;
+}
+
+@media (max-width: 767px) {
+  .log-level-select {
+    width: 100%;
+  }
+  .log-keyword-input {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 .log-scrollbar {

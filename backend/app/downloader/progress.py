@@ -76,6 +76,9 @@ class TaskProgress:
     finished_at: datetime.datetime | None = None
     # Owner tracking (user_id of the user who triggered this task)
     owner_id: str | None = None
+    # Source platform and platform-native identifier
+    source: str | None = None
+    external_id: str | None = None
     # Cooldown deadline — set by ProgressBus.set_cooldown(); cleared by
     # clear_cooldown() or when finish() is called.  Clients use this to
     # display a live "冷卻 Ns" countdown without the backend having to push
@@ -116,6 +119,8 @@ class ProgressBus:
         episode: str | None = None,
         resolution: str | None = None,
         owner_id: str | None = None,
+        source: str | None = None,
+        external_id: str | None = None,
     ) -> None:
         """Register a new task or update an in-progress one without double-inserting.
 
@@ -216,6 +221,8 @@ class ProgressBus:
                     resolution=resolution,
                     started_at=started_at,
                     owner_id=owner_id,
+                    source=source,
+                    external_id=external_id,
                 )
                 entry._cancel_event = cancel_event
                 self._entries[sn] = entry
@@ -239,6 +246,8 @@ class ProgressBus:
                 episode=episode,
                 resolution=resolution,
                 started_at=started_at,
+                source=source,
+                external_id=external_id,
             )
             with self._lock:
                 self._row_ids[sn] = row_id
@@ -359,6 +368,14 @@ class ProgressBus:
         an unhandled exception, a kill signal, or a logic gap.  In that case
         the status is coerced to ``'中斷'`` before the DB row is written so
         the history table always contains semantically correct final statuses.
+
+        **Rate normalisation**: if the status is one of :data:`TERMINAL_STATUSES`
+        (a genuine success terminal — ``'下載完成'``/``'任務完成'``), ``rate`` is
+        forced to ``1.0`` regardless of whatever value was last written. Without
+        this, a task that finishes via an event carrying no incremental progress
+        (e.g. BT's ``bt_landed``, which jumps straight from a low-percentage
+        ``landing_progress`` sample to done) would display a "完成" label next
+        to a near-empty progress bar.
         """
         finished_at = datetime.datetime.now(datetime.UTC)
         with self._lock:
@@ -374,6 +391,8 @@ class ProgressBus:
             # reflects reality, not a transient mid-flight snapshot.
             if entry.status not in ALREADY_TERMINAL:
                 entry.status = '中斷'
+            if entry.status in TERMINAL_STATUSES:
+                entry.rate = 1.0
             entry.finished_at = finished_at
             # Snapshot fields needed for DB write — copy under lock.
             _status = entry.status
@@ -396,6 +415,63 @@ class ProgressBus:
                 resolution=_resolution,
                 filename=_filename,
             )
+
+        self._mirror_publish_finish(sn)
+
+    def force_finish(
+        self,
+        sn: int,
+        *,
+        status: str,
+        filename: str | None = None,
+    ) -> None:
+        """Force-close an entry this *process* never had a live copy of.
+
+        ``update_status``/``finish`` are silent no-ops when ``sn`` is not in
+        ``self._entries`` — by design, so a stray call for an sn nobody is
+        tracking can't fabricate a bogus row. That guard is exactly what makes
+        them useless for **boot-time ghost reconciliation**
+        (:class:`~app.services.bt_progress_reconciler.BtProgressReconciler`):
+        ``ProgressBus`` is per-process, in-memory state; when the process
+        holding the real entry dies mid-flight (e.g. the scheduler is killed
+        while a BT transfer is landing), the *Redis* mirror it wrote through
+        survives — a hash with ``finished_at`` empty has no TTL — but the
+        freshly-booted replacement process's ``self._entries`` is empty, so it
+        can never "already have" the row ``finish()`` requires.
+
+        This method exists specifically for that case: the caller has already
+        confirmed (via the Redis snapshot) that a stale, non-terminal entry
+        exists for ``sn`` and that the underlying DB row (``bt_feed_entry`` /
+        ``tg_downloaded_media``) shows the task actually completed. It
+        synthesises a terminal local entry if none exists yet (rather than
+        requiring one to pre-exist) and publishes the finish through the
+        mirror so the Redis hash gets the same ``zrem`` + TTL treatment
+        ``finish()`` would have given it.
+
+        Deliberately never touches ``history_repo`` — unlike ``finish()``.
+        The BT/TG task_history row for this sn was already closed out by the
+        caller's own direct repo call (``LandingWorker._finish_task_history``
+        / ``TgDownloadWatcher._finish_history``), so writing here too would
+        either double-INSERT (if no DB row is currently open) or overwrite an
+        already-correct row with a second, redundant UPDATE.
+
+        Idempotent: no-op if a local entry already exists and is finished.
+        """
+        finished_at = datetime.datetime.now(datetime.UTC)
+        with self._lock:
+            entry = self._entries.get(sn)
+            if entry is not None and entry.finished_at is not None:
+                return
+            if entry is None:
+                entry = TaskProgress(sn=sn, rate=0.0, status=status, filename=filename or '')
+                self._entries[sn] = entry
+            else:
+                entry.status = status
+                if filename is not None:
+                    entry.filename = filename
+            if status in TERMINAL_STATUSES:
+                entry.rate = 1.0
+            entry.finished_at = finished_at
 
         self._mirror_publish_finish(sn)
 

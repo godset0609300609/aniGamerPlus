@@ -39,6 +39,24 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '追番清單' },
   },
   {
+    path: '/quick-add',
+    name: 'quick-add',
+    component: () => import('./views/QuickAddView.vue'),
+    meta: { title: '快速加入追番' },
+  },
+  {
+    path: '/bt',
+    name: 'bt',
+    component: () => import('./views/BtView.vue'),
+    meta: { title: 'BT 下載', requiresAdmin: true },
+  },
+  {
+    path: '/tg',
+    name: 'tg',
+    component: () => import('./views/TgView.vue'),
+    meta: { title: 'Telegram 下載' },
+  },
+  {
     path: '/logs',
     name: 'logs',
     component: () => import('./views/LogsView.vue'),

@@ -2,11 +2,13 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { SnListApi } from '@/api/snlist'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ (e: 'update:modelValue', value: boolean): void }>()
 
 const api = new SnListApi()
+const { isMobile } = useBreakpoint()
 const content = ref('')
 const saving = ref(false)
 
@@ -42,7 +44,8 @@ async function submit(): Promise<void> {
   <el-dialog
     v-model="visible"
     title="sn_list"
-    width="720px"
+    :width="isMobile ? '100%' : '720px'"
+    :fullscreen="isMobile"
   >
     <div class="ag-snlist-help">
       <p><strong>格式：</strong></p>

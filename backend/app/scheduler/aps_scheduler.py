@@ -8,10 +8,24 @@ Runs alongside the dramatiq worker in the scheduler container.  Provides
 * ``progress_publish_tick`` every 5 seconds — edits live progress DMs.
 * ``health_check_tick`` every 5 minutes — alerts admins on disk-low /
   cookie-expired conditions.
+* ``bt_feed_tick`` / ``bt_landing_tick`` — only when
+  ``settings.bt_downloader.enabled`` is ``True``; RSS -> filter -> Put.io
+  dispatch and Put.io transfer landing, respectively.
+* ``bt_retention_tick`` every 24 hours — always scheduled (independent of
+  ``settings.bt_downloader.enabled``); prunes stale ``bt_feed_entry`` and
+  ``task_history`` rows.
+* ``bt_remote_refresh_tick`` — only when ``settings.bt_downloader.enabled``
+  is ``True``; re-polls Put.io for landed-but-not-remote-cleared entries so
+  SEEDING -> COMPLETED transitions and externally-deleted transfers are
+  still reflected after landing. Interval is
+  ``ANIGAMERPLUS_BT_REMOTE_REFRESH_SECONDS`` (default 600s / 10 minutes) —
+  not surfaced in Settings since remote-state churn is slow and this is an
+  operator-tunable knob, not a user-facing one.
 """
 
 from __future__ import annotations
 
+import os
 import typing as T
 
 import apscheduler.schedulers.background
@@ -41,7 +55,8 @@ class ApsScheduler:
         from ..services.telegram_progress_publisher import progress_publish_tick
         from ..tasks.auto_scan import auto_scan_tick
 
-        check_minutes = max(1, int(self._settings_repo.load().check_frequency))
+        settings = self._settings_repo.load()
+        check_minutes = max(1, int(settings.check_frequency))
         self._scheduler.add_job(
             auto_scan_tick.send,
             trigger='interval',
@@ -73,6 +88,61 @@ class ApsScheduler:
             coalesce=True,
             misfire_grace_time=60,
         )
+
+        # Retention housekeeping — always runs once daily regardless of
+        # bt_downloader.enabled: task_history pruning is independent of the
+        # BT downloader feature, and stale bt_feed_entry rows should still
+        # be cleaned up even after the feature is disabled.
+        from ..tasks.bt_retention_tick import bt_retention_tick
+
+        self._scheduler.add_job(
+            bt_retention_tick.send,
+            trigger='interval',
+            hours=24,
+            id='bt_retention_tick',
+            replace_existing=True,
+            max_instances=3,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+        if settings.bt_downloader.enabled:
+            from ..tasks.bt_feed_tick import bt_feed_tick
+            from ..tasks.bt_landing_tick import bt_landing_tick
+
+            self._scheduler.add_job(
+                bt_feed_tick.send,
+                trigger='interval',
+                seconds=settings.bt_downloader.poll_interval_seconds,
+                id='bt_feed_tick',
+                replace_existing=True,
+                max_instances=3,
+                coalesce=True,
+                misfire_grace_time=60,
+            )
+            self._scheduler.add_job(
+                bt_landing_tick.send,
+                trigger='interval',
+                seconds=settings.bt_downloader.landing_poll_seconds,
+                id='bt_landing_tick',
+                replace_existing=True,
+                max_instances=3,
+                coalesce=True,
+                misfire_grace_time=30,
+            )
+
+            from ..tasks.bt_remote_refresh_tick import bt_remote_refresh_tick
+
+            self._scheduler.add_job(
+                bt_remote_refresh_tick.send,
+                trigger='interval',
+                seconds=int(os.environ.get('ANIGAMERPLUS_BT_REMOTE_REFRESH_SECONDS', '600')),
+                id='bt_remote_refresh_tick',
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=60,
+            )
 
         self._scheduler.start()
 

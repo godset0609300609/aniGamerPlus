@@ -43,6 +43,7 @@ function makeEntry(overrides: Partial<AnimeListEntry> = {}): AnimeListEntry {
   return {
     sn: 0,
     enabled: true,
+    bilingual: false,
     mode: null,
     tag: '',
     season: 1,
@@ -661,6 +662,82 @@ describe('AnimeListView — custom_name column', () => {
 
     const vm = wrapper.vm as unknown as { entries: AnimeListEntry[] }
     expect(vm.entries[0]!.custom_name).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// bilingual column tests
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — bilingual column', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockElMessageBoxConfirm.mockResolvedValue(undefined)
+  })
+
+  it('test_bilingual_column_renders_with_row_value: switch reflects row.bilingual', async () => {
+    list.mockResolvedValueOnce(
+      payload([
+        makeEntry({ sn: 300, bilingual: true, tag: '群' }),
+        makeEntry({ sn: 301, bilingual: false, tag: '群' }),
+      ]),
+    )
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const switches = wrapper.findAll('td[data-label="雙語"] input.el-switch')
+    expect(switches).toHaveLength(2)
+    expect((switches[0]!.element as HTMLInputElement).checked).toBe(true)
+    expect((switches[1]!.element as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('test_toggling_bilingual_marks_dirty: click switch → dirty fab shows', async () => {
+    list.mockResolvedValue(
+      payload([makeEntry({ sn: 310, bilingual: false, tag: '群' })]),
+    )
+    replaceAll.mockClear()
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    expect(
+      wrapper.findAll('button').find((b) => b.text().trim() === '儲存'),
+    ).toBeUndefined()
+
+    const bilingualSwitch = wrapper.find('td[data-label="雙語"] input.el-switch')
+    expect(bilingualSwitch.exists()).toBe(true)
+    await bilingualSwitch.setValue(true)
+
+    expect(wrapper.text()).toContain('尚未儲存')
+    const saveBtn = wrapper.findAll('button').find((b) => b.text().trim() === '儲存')!
+    expect(saveBtn).toBeDefined()
+    expect(saveBtn.attributes('disabled')).toBeUndefined()
+  })
+
+  it('test_saving_persists_bilingual_field: replaceAll payload contains bilingual: true', async () => {
+    list.mockReset()
+    list.mockResolvedValue(
+      payload([makeEntry({ sn: 320, bilingual: false, tag: '群' })]),
+    )
+    replaceAll.mockClear()
+    const wrapper = mount(AnimeListView, { global: { stubs } })
+    await flushPromises()
+
+    const bilingualSwitch = wrapper.find('td[data-label="雙語"] input.el-switch')
+    await bilingualSwitch.setValue(true)
+
+    list.mockResolvedValue(
+      payload([makeEntry({ sn: 320, bilingual: true, tag: '群' })]),
+    )
+
+    const saveBtn = wrapper.findAll('button').find((b) => b.text().trim() === '儲存')!
+    await saveBtn.trigger('click')
+    await flushPromises()
+
+    expect(replaceAll).toHaveBeenCalledTimes(1)
+    const [sentEntries] = replaceAll.mock.calls[0]!
+    const sent = (sentEntries as AnimeListEntry[]).find((e) => e.sn === 320)!
+    expect(sent.bilingual).toBe(true)
+    expect(ElMessage.success).toHaveBeenCalledWith('追番清單已儲存')
   })
 })
 

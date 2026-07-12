@@ -55,6 +55,66 @@ describe("categorize", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// BT downloader (Put.io -> local disk) status strings
+// ---------------------------------------------------------------------------
+
+describe("categorize — BT downloader statuses", () => {
+  it("returns waiting for 等待 Put.io", () => {
+    expect(categorize("等待 Put.io")).toBe("waiting");
+  });
+
+  it("returns waiting for Put.io 排隊中", () => {
+    expect(categorize("Put.io 排隊中")).toBe("waiting");
+  });
+
+  it("returns downloading for Put.io 下載中", () => {
+    expect(categorize("Put.io 下載中")).toBe("downloading");
+  });
+
+  it("returns downloading for 準備落地", () => {
+    expect(categorize("準備落地")).toBe("downloading");
+  });
+
+  it("returns downloading for 準備落地 (Seeding)", () => {
+    expect(categorize("準備落地 (Seeding)")).toBe("downloading");
+  });
+
+  it("returns downloading for 落地中", () => {
+    expect(categorize("落地中")).toBe("downloading");
+  });
+
+  it("test_categorize_bt_中斷_is_completed: returns completed for 中斷", () => {
+    // '中斷' is ProgressBus.finish()'s coercion target for a task that died
+    // mid-flight without reaching a recognised terminal status — a final
+    // state, not an in-progress one. See ALREADY_TERMINAL in
+    // backend/app/downloader/progress.py.
+    expect(categorize("中斷")).toBe("completed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TG downloader (chat media watcher) status strings — see
+// backend/app/tg_downloader/downloader.py's TgDownloadWatcher._start_progress
+// / _finish_progress for the exact strings published to ProgressBus.
+// ---------------------------------------------------------------------------
+
+describe("categorize — TG downloader statuses", () => {
+  it("test_categorize_tg_下載中_is_downloading: returns downloading for 下載中", () => {
+    // Distinct from animad's '正在下載' — TG starts every task with
+    // status='下載中' in _start_progress().
+    expect(categorize("下載中")).toBe("downloading");
+  });
+
+  it("test_categorize_tg_下載完成_is_completed: returns completed for 下載完成", () => {
+    expect(categorize("下載完成")).toBe("completed");
+  });
+
+  it("test_categorize_tg_失敗_is_completed: returns completed for 失敗", () => {
+    expect(categorize("失敗")).toBe("completed");
+  });
+});
+
 describe("isWithinLastNDays", () => {
   afterEach(() => {
     vi.useRealTimers();

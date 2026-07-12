@@ -87,6 +87,8 @@ class RedisProgressReader:
                     finished_at=_parse_dt(data.get('finished_at', '')),
                     cooldown_until=_parse_dt(data.get('cooldown_until', '')),
                     owner_id=_parse_optstr(data.get('owner_id', '')),
+                    source=_parse_optstr(data.get('source', '')),
+                    external_id=_parse_optstr(data.get('external_id', '')),
                 )
             except Exception:  # noqa: BLE001 — corrupted entry, skip
                 continue

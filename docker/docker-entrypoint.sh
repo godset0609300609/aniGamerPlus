@@ -4,22 +4,25 @@ set -e
 case "${1:-}" in
     api)
         shift
-        exec uv run anigamerplus-api "$@"
+        exec /app/.venv/bin/anigamerplus-api "$@"
         ;;
     scheduler)
         shift
-        exec uv run anigamerplus-scheduler "$@"
+        exec /app/.venv/bin/anigamerplus-scheduler "$@"
+        ;;
+    worker)
+        shift
+        exec /app/.venv/bin/dramatiq app.tasks "$@"
         ;;
     admin)
         shift
-        exec uv run anigamerplus-admin "$@"
+        exec /app/.venv/bin/anigamerplus-admin "$@"
         ;;
     cli)
         shift
-        exec uv run anigamerplus "$@"
+        exec /app/.venv/bin/anigamerplus "$@"
         ;;
     *)
-        # Pass through arbitrary commands (e.g. `uv run pytest`, `sh`, etc.)
         exec "$@"
         ;;
 esac

@@ -55,6 +55,26 @@ export class HttpClient {
     return (await res.json()) as T
   }
 
+  async patchJson<T>(path: string, body: unknown): Promise<T> {
+    const res = await fetch(this.baseUrl + path, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    await this.assertOk(res)
+    return (await res.json()) as T
+  }
+
+  async deleteJson<T>(path: string): Promise<T> {
+    const res = await fetch(this.baseUrl + path, {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    await this.assertOk(res)
+    return (await res.json()) as T
+  }
+
   private async assertOk(res: Response): Promise<void> {
     if (!res.ok) {
       const body = await res.text().catch(() => '')

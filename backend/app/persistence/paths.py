@@ -27,6 +27,8 @@ class WorkspacePaths:
     sn_list_path: pathlib.Path
     cookie_path: pathlib.Path
     invalid_cookie_path: pathlib.Path
+    bilibili_cookie_path: pathlib.Path
+    putio_token_path: pathlib.Path
     logs_dir: pathlib.Path
     db_path: pathlib.Path
     bangumi_dir_default: pathlib.Path
@@ -43,6 +45,12 @@ class WorkspacePaths:
         2. ``ANIGAMERPLUS_WORKSPACE_DIR`` environment variable.
         3. ``sys.frozen`` (PyInstaller bundle) → directory of ``sys.executable``.
         4. Default: ``backend/`` (two levels up from this file).
+
+        ``logs_dir`` and ``bangumi_dir_default`` default to subdirectories of
+        the resolved root, but can be pointed at separate mount points (e.g.
+        Docker volumes distinct from the config volume) via the
+        ``ANIGAMERPLUS_LOGS_DIR`` and ``ANIGAMERPLUS_BANGUMI_DIR`` environment
+        variables respectively.
         """
         import os
 
@@ -56,15 +64,28 @@ class WorkspacePaths:
             # app/persistence/paths.py -> app/persistence -> app -> backend
             root = pathlib.Path(__file__).resolve().parents[2]
 
+        logs_dir = (
+            pathlib.Path(env_logs_dir).resolve()
+            if (env_logs_dir := os.environ.get('ANIGAMERPLUS_LOGS_DIR', ''))
+            else root / 'logs'
+        )
+        bangumi_dir_default = (
+            pathlib.Path(env_bangumi_dir).resolve()
+            if (env_bangumi_dir := os.environ.get('ANIGAMERPLUS_BANGUMI_DIR', ''))
+            else root / 'bangumi'
+        )
+
         return cls(
             working_dir=root,
             config_path=root / 'config.json',
             sn_list_path=root / 'sn_list.txt',
             cookie_path=root / 'cookie.txt',
             invalid_cookie_path=root / 'invalid_cookie.txt',
-            logs_dir=root / 'logs',
+            bilibili_cookie_path=root / 'bilibili_cookie.txt',
+            putio_token_path=root / 'putio_token.txt',
+            logs_dir=logs_dir,
             db_path=root / 'aniGamer.db',
-            bangumi_dir_default=root / 'bangumi',
+            bangumi_dir_default=bangumi_dir_default,
             temp_dir_default=root / 'temp',
             ssl_cert_path=root / 'sslkey' / 'server.crt',
             ssl_key_path=root / 'sslkey' / 'server.key',

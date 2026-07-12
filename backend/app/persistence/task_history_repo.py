@@ -43,6 +43,8 @@ class TaskHistoryEntry:
     started_at: datetime.datetime | None  # UTC-aware
     finished_at: datetime.datetime | None  # UTC-aware
     retries: int
+    source: str | None = None
+    external_id: str | None = None
 
 
 def _parse_iso(value: str | None) -> datetime.datetime | None:
@@ -68,6 +70,8 @@ def _to_entry(row: TaskHistoryRow) -> TaskHistoryEntry:
         started_at=_parse_iso(row.started_at),
         finished_at=_parse_iso(row.finished_at),
         retries=row.retries,
+        source=row.source,
+        external_id=row.external_id,
     )
 
 
@@ -89,6 +93,8 @@ class TaskHistoryRepository:
         episode: str | None = None,
         resolution: str | None = None,
         started_at: datetime.datetime | None = None,
+        source: str | None = None,
+        external_id: str | None = None,
     ) -> int:
         """INSERT a new in-progress row and return its ``id``.
 
@@ -108,6 +114,8 @@ class TaskHistoryRepository:
             started_at=started_iso,
             finished_at=None,
             retries=0,
+            source=source,
+            external_id=external_id,
         )
         with self._db.session() as session:
             session.add(row)
@@ -212,6 +220,86 @@ class TaskHistoryRepository:
                 session.execute(stmt),
             )
             return cursor.rowcount
+
+    def delete_older_than(self, days: int) -> int:
+        """Delete rows whose ``finished_at`` is older than *days*.
+
+        In-progress rows (``finished_at IS NULL``) are never deleted —
+        retention only applies to closed/terminal rows.  Returns the number
+        of rows deleted.
+        """
+        cutoff = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)).isoformat()
+        with self._db.session() as session:
+            stmt = sqlalchemy.delete(TaskHistoryRow).where(
+                TaskHistoryRow.finished_at.is_not(None),
+                TaskHistoryRow.finished_at < cutoff,
+            )
+            cursor = T.cast(
+                'sqlalchemy.engine.CursorResult[T.Any]',
+                session.execute(stmt),
+            )
+            return cursor.rowcount
+
+    def get_latest_in_progress_by_sn(self, sn: int) -> TaskHistoryEntry | None:
+        """Most recent still-open (``final_status == '(in_progress)'``) row for *sn*.
+
+        The BT downloader pipeline has no in-memory ``ProgressBus``-style
+        ``sn -> row_id`` map (unlike animad/bilibili) because dispatch and
+        landing/failure are handled by separate service instances
+        (:class:`~app.services.bt_downloader_service.BtDownloaderService` /
+        :class:`~app.services.bt_manual_dispatch_service.BtManualDispatchService`
+        write the ``record_start`` row;
+        :class:`~app.bt_downloader.landing_worker.LandingWorker` writes the
+        matching ``record_finish`` later, possibly after a process restart).
+        This re-derives the ``row_id`` to finish by querying for the newest
+        open row instead. Ordered by ``id DESC`` so a re-dispatch (e.g. after
+        a stale-transfer reset) always resolves to its own row rather than an
+        older still-open leftover from a previous dispatch of the same ``sn``.
+        """
+        with self._db.session() as session:
+            stmt = (
+                sqlalchemy.select(TaskHistoryRow)
+                .where(TaskHistoryRow.sn == sn, TaskHistoryRow.final_status == _IN_PROGRESS_SENTINEL)
+                .order_by(TaskHistoryRow.id.desc())
+                .limit(1)
+            )
+            row = session.scalars(stmt).first()
+            return _to_entry(row) if row is not None else None
+
+    def list_stale_in_progress(self, source: str, cutoff_hours: int = 1) -> list[TaskHistoryEntry]:
+        """Still-open rows (``final_status == '(in_progress)'``) for *source*
+        whose ``started_at`` predates *cutoff_hours* ago.
+
+        Used by :class:`~app.services.bt_progress_reconciler.BtProgressReconciler`
+        at scheduler boot to catch TG downloads whose live ProgressBus/Redis-
+        mirror entry is stuck non-terminal because the process that would
+        have called ``finish()`` (via
+        ``app.tg_downloader.downloader.TgDownloadWatcher._finish_progress``)
+        died mid-download.
+
+        Unlike BT (whose ``bt_feed_entry`` row exists the moment a transfer
+        is dispatched, well before landing), ``tg_downloaded_media`` only
+        ever gains a row *after* a download completes — ``local_path`` is
+        non-nullable there, see
+        :meth:`~app.persistence.tg_downloaded_media_repo.TgDownloadedMediaRepository.insert_if_new`
+        — so it cannot represent an in-flight download at all. This
+        still-open ``task_history`` row (written by ``ProgressBus.start()``
+        at download-start time, for the same ``sn``) is the only durable
+        record of one.
+        """
+        cutoff = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=cutoff_hours)).isoformat()
+        with self._db.session() as session:
+            stmt = (
+                sqlalchemy.select(TaskHistoryRow)
+                .where(
+                    TaskHistoryRow.source == source,
+                    TaskHistoryRow.final_status == _IN_PROGRESS_SENTINEL,
+                    TaskHistoryRow.started_at.is_not(None),
+                    TaskHistoryRow.started_at < cutoff,
+                )
+                .order_by(TaskHistoryRow.id.asc())
+            )
+            return [_to_entry(r) for r in session.scalars(stmt).all()]
 
     # ------------------------------------------------------------------ reads
 

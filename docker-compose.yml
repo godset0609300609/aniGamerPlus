@@ -2,13 +2,14 @@ name: ani-gamer-plus
 
 services:
   redis:
-    image: redis:7-alpine
+    # redis:7-alpine digest resolved 2026-07-10
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     container_name: anigamerplus-redis
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}"]
     volumes:
       - ./redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -19,6 +20,8 @@ services:
     build:
       context: .
       target: backend
+      args:
+        USER_UID: ${USER_UID:-1000}
     image: anigamerplus-backend:latest
     container_name: anigamerplus-scheduler
     command: ["scheduler"]
@@ -27,14 +30,70 @@ services:
         condition: service_healthy
     environment:
       - ANIGAMERPLUS_SCHEDULER_HOST=0.0.0.0
-      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET
-        must be set in .env}
-      - ANIGAMERPLUS_REDIS_URL=redis://redis:6379/0
+      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET must be set in .env}
+      - ANIGAMERPLUS_REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - ANIGAMERPLUS_WORKSPACE_DIR=/app/config
+      - ANIGAMERPLUS_LOGS_DIR=/app/logs
+      - ANIGAMERPLUS_BANGUMI_DIR=/app/bangumi
+      # This process also serves an internal HTTP/WS surface (/internal/health).
+      - ANIGAMERPLUS_WS_PING_INTERVAL=${ANIGAMERPLUS_WS_PING_INTERVAL:-30}
+      - ANIGAMERPLUS_WS_PING_TIMEOUT=${ANIGAMERPLUS_WS_PING_TIMEOUT:-60}
+      # Telegram User API (MTProto) — entirely opt-in; empty TG_API_ID/HASH
+      # disables the feature gracefully (app.core.build_container()).
+      - TG_API_ID=${TG_API_ID:-}
+      - TG_API_HASH=${TG_API_HASH:-}
+      - ANIGAMERPLUS_FERNET_KEY=${ANIGAMERPLUS_FERNET_KEY:-}
+      - ANIGAMERPLUS_TG_LANDING_ROOT=${ANIGAMERPLUS_TG_LANDING_ROOT:-}
+      - ANIGAMERPLUS_TG_MAX_CONCURRENT_DOWNLOADS_PER_USER=${ANIGAMERPLUS_TG_MAX_CONCURRENT_DOWNLOADS_PER_USER:-3}
+      # BT downloader remote-status refresh — this process schedules the tick.
+      - ANIGAMERPLUS_BT_REMOTE_REFRESH_SECONDS=${ANIGAMERPLUS_BT_REMOTE_REFRESH_SECONDS:-600}
     volumes:
-      - ./downloads:/app/bangumi
-      - ./config.json:/app/config.json
-      - ./aniGamer.db:/app/aniGamer.db
+      # /app/config holds config.json, aniGamer.db, sn_list.txt and the
+      # cookie files together — bind-mounting the directory (rather than
+      # each file individually) avoids Docker silently creating an empty
+      # directory when a single bind-mounted file doesn't yet exist on the
+      # host.
+      - ./data:/app/config
       - ./logs:/app/logs
+      - ${DOWNLOAD_PATH:-./bangumi}:/app/bangumi
+    healthcheck:
+      test: ["CMD", "uv", "run", "python", "/app/healthcheck.py", "http://localhost:5001/internal/health", "X-Internal-Secret", "ANIGAMERPLUS_INTERNAL_SECRET"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    networks: [ internal ]
+
+  worker:
+    image: anigamerplus-backend:latest
+    container_name: anigamerplus-worker
+    command: ["worker"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - ANIGAMERPLUS_REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - ANIGAMERPLUS_WORKSPACE_DIR=/app/config
+      - ANIGAMERPLUS_LOGS_DIR=/app/logs
+      - ANIGAMERPLUS_BANGUMI_DIR=/app/bangumi
+      # Telegram User API (MTProto) — entirely opt-in; empty TG_API_ID/HASH
+      # disables the feature gracefully (app.core.build_container()).
+      - TG_API_ID=${TG_API_ID:-}
+      - TG_API_HASH=${TG_API_HASH:-}
+      - ANIGAMERPLUS_FERNET_KEY=${ANIGAMERPLUS_FERNET_KEY:-}
+      - ANIGAMERPLUS_TG_LANDING_ROOT=${ANIGAMERPLUS_TG_LANDING_ROOT:-}
+      - ANIGAMERPLUS_TG_MAX_CONCURRENT_DOWNLOADS_PER_USER=${ANIGAMERPLUS_TG_MAX_CONCURRENT_DOWNLOADS_PER_USER:-3}
+      # BT downloader remote-status refresh — this process runs the tick.
+      - ANIGAMERPLUS_BT_REMOTE_REFRESH_BATCH=${ANIGAMERPLUS_BT_REMOTE_REFRESH_BATCH:-100}
+    volumes:
+      - ./data:/app/config
+      - ./logs:/app/logs
+      - ${DOWNLOAD_PATH:-./bangumi}:/app/bangumi
+    # No HEALTHCHECK: the dramatiq worker has no HTTP surface to probe and
+    # ships no process-inspection tooling (procps) in the slim image.
+    # Liveness is covered by `restart: unless-stopped` plus the Redis
+    # broker's own consumer-heartbeat bookkeeping.
     restart: unless-stopped
     networks: [ internal ]
 
@@ -49,14 +108,40 @@ services:
         condition: service_healthy
     environment:
       - ANIGAMERPLUS_SCHEDULER_URL=http://scheduler:5001
-      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET
-        must be set in .env}
-      - ANIGAMERPLUS_REDIS_URL=redis://redis:6379/0
+      - ANIGAMERPLUS_INTERNAL_SECRET=${ANIGAMERPLUS_INTERNAL_SECRET:?ANIGAMERPLUS_INTERNAL_SECRET must be set in .env}
+      - ANIGAMERPLUS_REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - ANIGAMERPLUS_WORKSPACE_DIR=/app/config
+      - ANIGAMERPLUS_LOGS_DIR=/app/logs
+      - ANIGAMERPLUS_BANGUMI_DIR=/app/bangumi
+      # Session cookie + CORS + WebSocket surface (this process hosts them).
+      - ANIGAMERPLUS_HTTPS_ONLY=${ANIGAMERPLUS_HTTPS_ONLY:-0}
+      - ANIGAMERPLUS_CORS_ORIGINS=${ANIGAMERPLUS_CORS_ORIGINS:-}
+      - ANIGAMERPLUS_WS_ALLOWED_ORIGINS=${ANIGAMERPLUS_WS_ALLOWED_ORIGINS:-}
+      - ANIGAMERPLUS_WS_PING_INTERVAL=${ANIGAMERPLUS_WS_PING_INTERVAL:-30}
+      - ANIGAMERPLUS_WS_PING_TIMEOUT=${ANIGAMERPLUS_WS_PING_TIMEOUT:-60}
+      # Discord OAuth allowlist — empty (default) allows any authenticated
+      # Discord user; set at least one to restrict access.
+      - ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS=${ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS:-}
+      - ANIGAMERPLUS_DISCORD_ALLOWED_USER_IDS=${ANIGAMERPLUS_DISCORD_ALLOWED_USER_IDS:-}
+      # Telegram User API (MTProto) — entirely opt-in; empty TG_API_ID/HASH
+      # disables the feature gracefully (app.core.build_container()).
+      - TG_API_ID=${TG_API_ID:-}
+      - TG_API_HASH=${TG_API_HASH:-}
+      - ANIGAMERPLUS_FERNET_KEY=${ANIGAMERPLUS_FERNET_KEY:-}
+      - ANIGAMERPLUS_TG_LANDING_ROOT=${ANIGAMERPLUS_TG_LANDING_ROOT:-}
+      - ANIGAMERPLUS_TG_MAX_CONCURRENT_DOWNLOADS_PER_USER=${ANIGAMERPLUS_TG_MAX_CONCURRENT_DOWNLOADS_PER_USER:-3}
+      - ANIGAMERPLUS_RATE_LIMIT_TG_LOGIN_POLL=${ANIGAMERPLUS_RATE_LIMIT_TG_LOGIN_POLL:-30/minute}
+      - ANIGAMERPLUS_RATE_LIMIT_TG_LOGIN_SUBMIT=${ANIGAMERPLUS_RATE_LIMIT_TG_LOGIN_SUBMIT:-10/minute}
     volumes:
-      - ./downloads:/app/bangumi
-      - ./config.json:/app/config.json
-      - ./aniGamer.db:/app/aniGamer.db
+      - ./data:/app/config
       - ./logs:/app/logs
+      - ${DOWNLOAD_PATH:-./bangumi}:/app/bangumi
+    healthcheck:
+      test: ["CMD", "uv", "run", "python", "/app/healthcheck.py", "http://localhost:5000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
     networks: [ internal ]
 
@@ -75,3 +160,13 @@ services:
 networks:
   internal:
     driver: bridge
+    # Deliberately NOT `internal: true`. The scheduler/worker/api containers
+    # need egress: yt-dlp fetches from bilibili, the animad HTTP client
+    # fetches from ani.gamer.com.tw, feed_fetcher pulls the dmhy RSS feed,
+    # plus outbound calls to Put.io, the Telegram Bot API and Discord OAuth.
+    # `internal: true` blocks all of that. Only `web` publishes a host port
+    # (8080) — every other service is already unreachable from outside the
+    # bridge network regardless of egress, so `internal: true` would add no
+    # inbound protection here while breaking the app. If egress isolation is
+    # required, enforce it at the host/network firewall, not the Docker
+    # bridge.

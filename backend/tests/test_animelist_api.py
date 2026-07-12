@@ -231,16 +231,17 @@ def test_admin_get_returns_all_users_entries_with_owner_fields(
     assert dl_entry['owner_username'] == _downloader_user.username
 
 
-def test_non_admin_get_returns_all_entries_with_owner_fields(
+def test_non_admin_get_returns_only_own_entries_with_owner_fields(
     fake_container: T.Any,
     client: fastapi.testclient.TestClient,
     _admin_user: UserRow,
     _downloader_user: UserRow,
 ) -> None:
-    """Non-admin GET /api/anime-list now returns all entries with owner_id + owner_username.
+    """Non-admin GET /api/anime-list returns only the caller's own entries (fix #15).
 
-    Feature A: both admin and non-admin receive the full list so the
-    frontend can render the owner-grouped section view for everyone.
+    Returning every user's watchlist to any downloader would leak other
+    users' private anime lists, so the response is scoped to the caller's
+    own ``owner_id`` — the admin's entry seeded below must not appear.
     """
     _seed_entries_for_user(
         client.app,
@@ -262,19 +263,14 @@ def test_non_admin_get_returns_all_entries_with_owner_fields(
     assert r.status_code == 200
     entries = r.json()['entries']
 
-    # Now sees all three entries (own + admin's).
-    assert len(entries) == 3
+    # Only the downloader's own two entries — the admin's sn=10002 must not leak.
+    assert len(entries) == 2
     sns = {e['sn'] for e in entries}
-    assert sns == {10002, 20002, 20003}
+    assert sns == {20002, 20003}
 
-    # Every entry must carry owner_id.
+    # Every entry must carry owner_id, scoped to the caller.
     for e in entries:
-        assert e.get('owner_id') is not None
-
-    # The downloader's own entries have their username resolved.
-    dl_entries = [e for e in entries if e['owner_id'] == _downloader_user.id]
-    assert len(dl_entries) == 2
-    for e in dl_entries:
+        assert e['owner_id'] == _downloader_user.id
         assert e['owner_username'] == _downloader_user.username
 
 

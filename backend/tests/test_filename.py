@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pathlib
 
+import pytest
+
 from app.downloader.filename import FilenameBuilder
 from app.downloader.metadata import AnimeMetadata
 from app.models import AppSettings
@@ -58,6 +60,34 @@ def test_legalize_replaces_reserved_chars() -> None:
     # Full-width equivalents all appear
     for full in '｜？＊＜＞＂：＼／':
         assert full in out
+
+
+# ---------------------------------------------------------------------------
+# legalize — bare-dot path traversal components (fix #18)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('raw', ['.', '..', '...', '....'])
+def test_legalize_replaces_all_dots_name_with_underscore(raw: str) -> None:
+    assert FilenameBuilder.legalize(raw) == '_'
+
+
+def test_legalize_dotdot_via_slash_separators_is_neutralised(tmp_path: pathlib.Path) -> None:
+    """``../../etc/passwd`` has no traversal meaning once ``/`` is full-widthed
+    (the all-dots check only fires for a name that is *entirely* dots)."""
+    out = FilenameBuilder.legalize('../../etc/passwd')
+    assert '/' not in out
+    assert '\\' not in out
+    joined = (tmp_path / out).resolve()
+    assert joined.parent == tmp_path.resolve()
+
+
+def test_legalize_leaves_ordinary_dotted_filename_untouched() -> None:
+    assert FilenameBuilder.legalize('episode.01.mp4') == 'episode.01.mp4'
+
+
+def test_legalize_leaves_leading_dot_filename_untouched() -> None:
+    assert FilenameBuilder.legalize('.hidden_but_has_more') == '.hidden_but_has_more'
 
 
 def test_classify_dir_without_classify_returns_bangumi_dir(
@@ -410,6 +440,81 @@ def test_classify_dir_falls_back_to_bangumi_name_when_no_custom(tmp_path: pathli
         classify=True,
     )
     assert out == tmp_path / '偵測名'
+
+
+# ---------------------------------------------------------------------------
+# language_tag tests (bilingual 中文配音 support)
+# ---------------------------------------------------------------------------
+
+
+def test_build_with_language_tag_appends_after_episode() -> None:
+    """language_tag='中' is appended immediately after the episode marker."""
+    settings = AppSettings(
+        customized_video_filename_prefix='',
+        add_bangumi_name_to_video_filename=True,
+        add_resolution_to_video_filename=False,
+        video_filename_extension='mp4',
+    )
+    fb = FilenameBuilder(settings)
+    name = fb.build(
+        _meta(bangumi_name='測試番劇', episode='1'),
+        resolution='1080',
+        season=1,
+        language_tag='中',
+    )
+    assert name == '測試番劇 - S01E01[中].mp4'
+
+
+def test_build_without_language_tag_omits_bracket() -> None:
+    """Default (language_tag=None) leaves the filename unchanged."""
+    settings = AppSettings(
+        customized_video_filename_prefix='',
+        add_bangumi_name_to_video_filename=True,
+        add_resolution_to_video_filename=False,
+        video_filename_extension='mp4',
+    )
+    fb = FilenameBuilder(settings)
+    name = fb.build(_meta(bangumi_name='測試番劇', episode='1'), resolution='1080', season=1)
+    assert name == '測試番劇 - S01E01.mp4'
+    assert '[' not in name
+
+
+def test_build_with_language_tag_no_bangumi_name() -> None:
+    """language_tag still applies when add_bangumi_name_to_video_filename=False."""
+    settings = AppSettings(
+        customized_video_filename_prefix='',
+        add_bangumi_name_to_video_filename=False,
+        add_resolution_to_video_filename=False,
+        video_filename_extension='mp4',
+    )
+    fb = FilenameBuilder(settings)
+    name = fb.build(
+        _meta(bangumi_name='測試番劇', episode='5'),
+        resolution='1080',
+        season=1,
+        language_tag='中',
+    )
+    assert name == 'S01E05[中].mp4'
+
+
+def test_build_temp_carries_language_tag() -> None:
+    """build_temp threads language_tag through so concurrent bilingual
+    downloads don't collide on their temp/merging filenames either."""
+    settings = AppSettings(
+        add_bangumi_name_to_video_filename=True,
+        add_resolution_to_video_filename=True,
+        video_filename_extension='mp4',
+    )
+    fb = FilenameBuilder(settings)
+    name = fb.build_temp(
+        _meta(bangumi_name='測試番劇', episode='1'),
+        resolution='1080',
+        temp_suffix='MERGING',
+        season=1,
+        language_tag='中',
+    )
+    assert '[中]' in name
+    assert 'MERGING' in name
 
 
 def test_build_temp_uses_custom_name(tmp_path: pathlib.Path) -> None:

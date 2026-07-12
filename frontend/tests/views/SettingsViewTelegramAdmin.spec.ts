@@ -7,6 +7,9 @@
  * - Clicking "重新註冊 Webhook" calls the API + shows result
  * - Clicking "驗證 Bot Token" calls getBotMe + shows username
  * - Clicking "查看 Webhook 狀態" opens dialog with parsed fields
+ * - Bot Token / Webhook Secret are write-only (draft input + status badge +
+ *   dedicated save button) — bot_token/webhook_secret are NOT part of the
+ *   WebSettings.telegram shape returned by GET /config.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
@@ -28,6 +31,16 @@ vi.mock('@/stores/auth', () => ({
 }))
 
 // ---------------------------------------------------------------------------
+// vue-router stub — SettingsView.vue reads/writes ?tab= via useRoute /
+// useRouter. Mirrors the pattern used by BtView.spec.ts.
+// ---------------------------------------------------------------------------
+const mockRoute = { query: {} as Record<string, string | undefined> }
+vi.mock('vue-router', () => ({
+  useRoute: () => mockRoute,
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+}))
+
+// ---------------------------------------------------------------------------
 // ConfigApi stub
 // ---------------------------------------------------------------------------
 const mockLoad = vi.fn()
@@ -45,6 +58,7 @@ const BASE_SETTINGS = {
   default_download_mode: 'latest',
   check_frequency: 5,
   'multi-thread': 1,
+  'bilibili-concurrent-parts': 2,
   multi_downloading_segment: 2,
   customized_video_filename_prefix: '',
   customized_video_filename_suffix: '',
@@ -62,14 +76,36 @@ const BASE_SETTINGS = {
   parse_cd: 3,
   telegram: {
     enabled: false,
-    bot_token: '',
-    webhook_secret: '',
     public_url: '',
+    bot_username: '',
     notify_on: ['completed', 'failed', 'cancelled'],
     admin_broadcast: true,
     rate_limit_per_minute: 30,
+    health_alerts: true,
+  },
+  'bt-downloader': {
+    enabled: false,
+    'poll-interval-seconds': 300,
+    'landing-poll-seconds': 60,
+    'hanzi-convert': true,
+    'landing-dir': '',
+    'entry-retention-days': 90,
+    'task-history-retention-days': 180,
+    'auto-delete-remote-on-landed': true,
   },
 }
+
+const {
+  mockSetTelegramBotToken,
+  mockGetTelegramBotTokenStatus,
+  mockSetTelegramWebhookSecret,
+  mockGetTelegramWebhookSecretStatus,
+} = vi.hoisted(() => ({
+  mockSetTelegramBotToken: vi.fn(),
+  mockGetTelegramBotTokenStatus: vi.fn(),
+  mockSetTelegramWebhookSecret: vi.fn(),
+  mockGetTelegramWebhookSecretStatus: vi.fn(),
+}))
 
 vi.mock('@/api/config', () => ({
   ConfigApi: vi.fn().mockImplementation(() => ({
@@ -77,9 +113,41 @@ vi.mock('@/api/config', () => ({
     save: mockSave,
     setCookie: vi.fn().mockResolvedValue(undefined),
     getCookieStatus: vi.fn().mockResolvedValue({ configured: false }),
+    setBilibiliCookie: vi.fn().mockResolvedValue({ status: 'ok' }),
+    getBilibiliCookieStatus: vi.fn().mockResolvedValue({ configured: false }),
+    setPutioToken: vi.fn().mockResolvedValue({ status: 'ok' }),
+    getPutioTokenStatus: vi.fn().mockResolvedValue({ configured: false }),
+    setTelegramBotToken: mockSetTelegramBotToken,
+    getTelegramBotTokenStatus: mockGetTelegramBotTokenStatus,
+    setTelegramWebhookSecret: mockSetTelegramWebhookSecret,
+    getTelegramWebhookSecretStatus: mockGetTelegramWebhookSecretStatus,
   })),
   parseProxy: vi.fn().mockReturnValue({ protocol: 'HTTP', ip: '', port: '', user: '', password: '' }),
   serializeProxy: vi.fn().mockReturnValue(''),
+}))
+
+// ---------------------------------------------------------------------------
+// TgApi stub — prevents SettingsView.vue's Telegram 帳號 section (and the
+// always-mounted TgBindDialog child) from making a real fetch on mount.
+// ---------------------------------------------------------------------------
+vi.mock('@/api/tg', () => ({
+  TgApi: vi.fn().mockImplementation(() => ({
+    getSessionStatus: vi.fn().mockResolvedValue({
+      status: 'no_session',
+      phone_tail4: null,
+      telegram_user_id: null,
+      telegram_handle: null,
+      last_active_at: null,
+      notification_bound: false,
+    }),
+    deleteSession: vi.fn().mockResolvedValue({ status: 'ok' }),
+    startQrLogin: vi.fn(),
+    pollQrLogin: vi.fn(),
+    submitQrPassword: vi.fn(),
+    startPhoneLogin: vi.fn(),
+    submitPhoneCode: vi.fn(),
+    submitPhonePassword: vi.fn(),
+  })),
 }))
 
 // ---------------------------------------------------------------------------
@@ -160,6 +228,12 @@ function mountView() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  localStorage.clear()
+  // Every test in this file exercises the admin Telegram Bot 設定
+  // subsection, which now lives under the Telegram tab (id "telegram")
+  // rather than the default 一般 tab — deep-link straight into it via
+  // ?tab= instead of clicking through nav.
+  mockRoute.query = { tab: 'telegram' }
   isAdminRef.value = true
   userRef.value = { id: 'admin-1', username: 'Admin', role: 'admin' }
   mockLoad.mockResolvedValue(JSON.parse(JSON.stringify(BASE_SETTINGS)))
@@ -171,6 +245,10 @@ beforeEach(() => {
     last_error_message: null,
   })
   mockGetBotMe.mockResolvedValue({ id: 123, username: 'testbot' })
+  mockSetTelegramBotToken.mockResolvedValue({ status: 'ok' })
+  mockGetTelegramBotTokenStatus.mockResolvedValue({ configured: false })
+  mockSetTelegramWebhookSecret.mockResolvedValue({ status: 'ok' })
+  mockGetTelegramWebhookSecretStatus.mockResolvedValue({ configured: false })
 })
 
 // ---------------------------------------------------------------------------
@@ -255,8 +333,9 @@ describe('SettingsView Admin Telegram Bot section — verify bot token', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    // Auto-verify is triggered on mount only if bot_token is set; settings mock has empty token.
-    // Manually click the button.
+    // Auto-verify is only triggered on mount when a bot token is actually
+    // configured server-side (mockGetTelegramBotTokenStatus defaults to
+    // configured: false in this suite) — manually click the button instead.
     const buttons = wrapper.findAll('button')
     const verifyBtn = buttons.find((b) => b.text().includes('驗證 Bot Token'))
     expect(verifyBtn).toBeDefined()
@@ -266,6 +345,31 @@ describe('SettingsView Admin Telegram Bot section — verify bot token', () => {
     expect(mockGetBotMe).toHaveBeenCalledTimes(1)
     // Username should now appear
     expect(wrapper.text()).toContain('testbot')
+  })
+
+  it('auto-verifies on mount when telegram enabled and bot token is configured', async () => {
+    mockLoad.mockResolvedValue(
+      JSON.parse(JSON.stringify({ ...BASE_SETTINGS, telegram: { ...BASE_SETTINGS.telegram, enabled: true } })),
+    )
+    mockGetTelegramBotTokenStatus.mockResolvedValue({ configured: true })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(mockGetBotMe).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('testbot')
+  })
+
+  it('does NOT auto-verify on mount when no bot token is configured', async () => {
+    mockLoad.mockResolvedValue(
+      JSON.parse(JSON.stringify({ ...BASE_SETTINGS, telegram: { ...BASE_SETTINGS.telegram, enabled: true } })),
+    )
+    mockGetTelegramBotTokenStatus.mockResolvedValue({ configured: false })
+
+    mountView()
+    await flushPromises()
+
+    expect(mockGetBotMe).not.toHaveBeenCalled()
   })
 
   it('getBotMe failure shows error', async () => {
@@ -326,7 +430,7 @@ describe('SettingsView Admin Telegram Bot section — webhook status dialog', ()
 })
 
 // ---------------------------------------------------------------------------
-// Dirty detection + save (telegram fields)
+// Dirty detection (telegram fields)
 // ---------------------------------------------------------------------------
 
 describe('SettingsView Admin Telegram Bot section — dirty detection', () => {
@@ -336,19 +440,6 @@ describe('SettingsView Admin Telegram Bot section — dirty detection', () => {
 
     const vm = wrapper.vm as unknown as { dirty: boolean }
     expect(vm.dirty).toBe(false)
-  })
-
-  it('dirty becomes true after changing bot_token', async () => {
-    const wrapper = mountView()
-    await flushPromises()
-
-    const vm = wrapper.vm as unknown as {
-      dirty: boolean
-      settings: { telegram: { bot_token: string } } | null
-    }
-    if (vm.settings) vm.settings.telegram.bot_token = 'new-token-value'
-    await wrapper.vm.$nextTick()
-    expect(vm.dirty).toBe(true)
   })
 
   it('dirty becomes true after changing enabled', async () => {
@@ -365,43 +456,467 @@ describe('SettingsView Admin Telegram Bot section — dirty detection', () => {
   })
 })
 
-describe('SettingsView Admin Telegram Bot section — save includes telegram', () => {
-  it('save payload includes telegram.bot_token when changed', async () => {
+// ---------------------------------------------------------------------------
+// GET /config never exposes bot_token / webhook_secret (fix #1 CRITICAL)
+// ---------------------------------------------------------------------------
+
+describe('SettingsView Admin Telegram Bot section — secrets are write-only', () => {
+  it('settings.telegram loaded from GET /config has no bot_token / webhook_secret keys', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const vm = wrapper.vm as unknown as {
-      save: () => Promise<void>
-      settings: { telegram: { bot_token: string } } | null
-    }
-    if (vm.settings) vm.settings.telegram.bot_token = 'abc123token'
+    const vm = wrapper.vm as unknown as { settings: { telegram: Record<string, unknown> } | null }
+    expect(vm.settings?.telegram).toBeDefined()
+    expect(vm.settings?.telegram).not.toHaveProperty('bot_token')
+    expect(vm.settings?.telegram).not.toHaveProperty('webhook_secret')
+  })
+
+  it('save payload never contains a bot_token / webhook_secret key', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { save: () => Promise<void> }
     await vm.save()
     await flushPromises()
 
     expect(mockSave).toHaveBeenCalledTimes(1)
-    const savedPayload = mockSave.mock.calls[0][0] as { telegram: { bot_token: string } }
-    expect(savedPayload.telegram.bot_token).toBe('abc123token')
+    const savedTelegram = mockSave.mock.calls[0][0].telegram as Record<string, unknown>
+    expect(savedTelegram).not.toHaveProperty('bot_token')
+    expect(savedTelegram).not.toHaveProperty('webhook_secret')
   })
+})
 
-  it('after save, load is called again and inputs reflect persisted value', async () => {
+// ---------------------------------------------------------------------------
+// Bot Token — write-only draft + status badge
+// ---------------------------------------------------------------------------
+
+describe('SettingsView Admin Telegram Bot section — bot token write-only field', () => {
+  it('shows "尚未設定" when no bot token is configured', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    // Simulate save re-loading settings that now have the new token
-    mockLoad.mockResolvedValue({
-      ...JSON.parse(JSON.stringify(BASE_SETTINGS)),
-      telegram: { ...BASE_SETTINGS.telegram, bot_token: 'persisted-token' },
-    })
+    expect(wrapper.text()).toContain('尚未設定')
+  })
 
-    const vm = wrapper.vm as unknown as {
-      save: () => Promise<void>
-      settings: { telegram: { bot_token: string } } | null
-    }
-    if (vm.settings) vm.settings.telegram.bot_token = 'persisted-token'
+  it('shows "目前已設定" when a bot token is configured', async () => {
+    mockGetTelegramBotTokenStatus.mockResolvedValue({ configured: true })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('目前已設定')
+  })
+
+  it('clicking 儲存 calls setTelegramBotToken with the draft value and clears the draft', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = wrapper
+      .findAll('input.el-input')
+      .find((i) => i.attributes('placeholder') === '輸入新的 Bot Token')
+    expect(input).toBeDefined()
+    await input!.setValue('123456:NEW-TOKEN')
+
+    const row = wrapper
+      .findAll('.cookie-row')
+      .find((r) => r.find('input.el-input').attributes('placeholder') === '輸入新的 Bot Token')
+    expect(row).toBeDefined()
+    const saveBtn = row!.findAll('button').find((b) => b.text().includes('儲存'))
+    expect(saveBtn).toBeDefined()
+    await saveBtn!.trigger('click')
+    await flushPromises()
+
+    expect(mockSetTelegramBotToken).toHaveBeenCalledWith('123456:NEW-TOKEN')
+    expect(mockElMessageSuccess).toHaveBeenCalledWith('Bot Token 已更新')
+    expect((input!.element as HTMLInputElement).value).toBe('')
+  })
+
+  it('shows an error message when setTelegramBotToken rejects', async () => {
+    mockSetTelegramBotToken.mockRejectedValue(new Error('invalid token'))
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = wrapper
+      .findAll('input.el-input')
+      .find((i) => i.attributes('placeholder') === '輸入新的 Bot Token')!
+    await input.setValue('bad-token')
+
+    const row = wrapper
+      .findAll('.cookie-row')
+      .find((r) => r.find('input.el-input').attributes('placeholder') === '輸入新的 Bot Token')!
+    const saveBtn = row.findAll('button').find((b) => b.text().includes('儲存'))!
+    await saveBtn.trigger('click')
+    await flushPromises()
+
+    expect(mockElMessageError).toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Bot Username — plain config field (round-trips through GET/PUT /config,
+// unlike bot_token/webhook_secret which are write-only)
+// ---------------------------------------------------------------------------
+
+describe('SettingsView Admin Telegram Bot section — bot username field', () => {
+  const BOT_USERNAME_PLACEHOLDER = '@YourBotUsername'
+
+  it('renders the Bot Username input and binds it to settings.telegram.bot_username', async () => {
+    mockLoad.mockResolvedValue(
+      JSON.parse(
+        JSON.stringify({
+          ...BASE_SETTINGS,
+          telegram: { ...BASE_SETTINGS.telegram, bot_username: 'ExistingBot' },
+        }),
+      ),
+    )
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = wrapper
+      .findAll('input.el-input')
+      .find((i) => i.attributes('placeholder') === BOT_USERNAME_PLACEHOLDER)
+    expect(input).toBeDefined()
+    expect((input!.element as HTMLInputElement).value).toBe('ExistingBot')
+
+    const vm = wrapper.vm as unknown as { settings: { telegram: { bot_username: string } } | null }
+    expect(vm.settings?.telegram.bot_username).toBe('ExistingBot')
+  })
+
+  it('submits telegram.bot_username in the PUT payload when config is saved', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = wrapper
+      .findAll('input.el-input')
+      .find((i) => i.attributes('placeholder') === BOT_USERNAME_PLACEHOLDER)
+    expect(input).toBeDefined()
+    await input!.setValue('MyNotifyBot')
+
+    const vm = wrapper.vm as unknown as { save: () => Promise<void> }
     await vm.save()
     await flushPromises()
 
-    // After save, load() is called and settings.telegram.bot_token is updated
-    expect(vm.settings?.telegram.bot_token).toBe('persisted-token')
+    expect(mockSave).toHaveBeenCalledTimes(1)
+    const savedTelegram = mockSave.mock.calls[0][0].telegram as Record<string, unknown>
+    expect(savedTelegram.bot_username).toBe('MyNotifyBot')
+  })
+
+  it('clearing the field leaves bot_username as an empty string (the unset default), not null', async () => {
+    mockLoad.mockResolvedValue(
+      JSON.parse(
+        JSON.stringify({
+          ...BASE_SETTINGS,
+          telegram: { ...BASE_SETTINGS.telegram, bot_username: 'ExistingBot' },
+        }),
+      ),
+    )
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = wrapper
+      .findAll('input.el-input')
+      .find((i) => i.attributes('placeholder') === BOT_USERNAME_PLACEHOLDER)
+    expect(input).toBeDefined()
+    await input!.setValue('')
+
+    const vm = wrapper.vm as unknown as {
+      save: () => Promise<void>
+      settings: { telegram: { bot_username: string } } | null
+    }
+    expect(vm.settings?.telegram.bot_username).toBe('')
+
+    await vm.save()
+    await flushPromises()
+
+    const savedTelegram = mockSave.mock.calls[0][0].telegram as Record<string, unknown>
+    expect(savedTelegram.bot_username).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Bot Username — input normalization on blur + format validation feedback
+// ---------------------------------------------------------------------------
+
+describe('SettingsView Admin Telegram Bot section — bot username normalization', () => {
+  const BOT_USERNAME_PLACEHOLDER = '@YourBotUsername'
+
+  function findBotUsernameInput(wrapper: ReturnType<typeof mountView>) {
+    return wrapper.findAll('input.el-input').find((i) => i.attributes('placeholder') === BOT_USERNAME_PLACEHOLDER)!
+  }
+
+  it('prepends @ on blur when the typed value is missing it', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = findBotUsernameInput(wrapper)
+    await input.setValue('aniGamerPlusBot')
+    await input.trigger('blur')
+    await flushPromises()
+
+    expect((input.element as HTMLInputElement).value).toBe('@aniGamerPlusBot')
+  })
+
+  it('strips a pasted https://t.me/ prefix and converts it to @ on blur', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = findBotUsernameInput(wrapper)
+    await input.setValue('https://t.me/aniGamerPlusBot')
+    await input.trigger('blur')
+    await flushPromises()
+
+    expect((input.element as HTMLInputElement).value).toBe('@aniGamerPlusBot')
+  })
+
+  it('trims surrounding whitespace on blur', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = findBotUsernameInput(wrapper)
+    await input.setValue('  aniGamerPlusBot  ')
+    await input.trigger('blur')
+    await flushPromises()
+
+    expect((input.element as HTMLInputElement).value).toBe('@aniGamerPlusBot')
+  })
+
+  it('leaves an empty value empty on blur (does not turn it into a lone @)', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = findBotUsernameInput(wrapper)
+    await input.setValue('')
+    await input.trigger('blur')
+    await flushPromises()
+
+    expect((input.element as HTMLInputElement).value).toBe('')
+  })
+
+  it('reports no validation error for a well-formed handle', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = findBotUsernameInput(wrapper)
+    await input.setValue('@aniGamerPlusBot')
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { botUsernameError: string }
+    expect(vm.botUsernameError).toBe('')
+  })
+
+  it('reports no validation error for an empty value (field is optional)', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { botUsernameError: string }
+    expect(vm.botUsernameError).toBe('')
+  })
+
+  it('reports a validation error for a malformed handle', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = findBotUsernameInput(wrapper)
+    await input.setValue('ab')
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { botUsernameError: string }
+    expect(vm.botUsernameError).toContain('格式錯誤')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Bot Username — proactive "尚未設定" warning banner
+// ---------------------------------------------------------------------------
+
+describe('SettingsView Admin Telegram Bot section — bot username warning banner', () => {
+  const WARNING_TITLE = 'Bot Username 尚未設定'
+  const DISMISS_KEY = 'dismissed-bot-username-warning'
+
+  it('shows the warning when telegram is enabled and bot_username is empty', async () => {
+    mockLoad.mockResolvedValue(
+      JSON.parse(
+        JSON.stringify({
+          ...BASE_SETTINGS,
+          telegram: { ...BASE_SETTINGS.telegram, enabled: true, bot_username: '' },
+        }),
+      ),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { showBotUsernameWarning: boolean }
+    expect(vm.showBotUsernameWarning).toBe(true)
+  })
+
+  it('hides the warning once bot_username is set', async () => {
+    mockLoad.mockResolvedValue(
+      JSON.parse(
+        JSON.stringify({
+          ...BASE_SETTINGS,
+          telegram: { ...BASE_SETTINGS.telegram, enabled: true, bot_username: '@aniGamerPlusBot' },
+        }),
+      ),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { showBotUsernameWarning: boolean }
+    expect(vm.showBotUsernameWarning).toBe(false)
+  })
+
+  it('hides the warning when telegram bot is disabled, even with bot_username empty', async () => {
+    mockLoad.mockResolvedValue(
+      JSON.parse(
+        JSON.stringify({
+          ...BASE_SETTINGS,
+          telegram: { ...BASE_SETTINGS.telegram, enabled: false, bot_username: '' },
+        }),
+      ),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { showBotUsernameWarning: boolean }
+    expect(vm.showBotUsernameWarning).toBe(false)
+  })
+
+  it('renders the warning title text when shown', async () => {
+    mockLoad.mockResolvedValue(
+      JSON.parse(
+        JSON.stringify({
+          ...BASE_SETTINGS,
+          telegram: { ...BASE_SETTINGS.telegram, enabled: true, bot_username: '' },
+        }),
+      ),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.html()).toContain(WARNING_TITLE)
+  })
+
+  it('dismissing the warning persists to localStorage and hides it', async () => {
+    mockLoad.mockResolvedValue(
+      JSON.parse(
+        JSON.stringify({
+          ...BASE_SETTINGS,
+          telegram: { ...BASE_SETTINGS.telegram, enabled: true, bot_username: '' },
+        }),
+      ),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { dismissBotUsernameWarning: () => void; showBotUsernameWarning: boolean }
+    expect(vm.showBotUsernameWarning).toBe(true)
+    vm.dismissBotUsernameWarning()
+    await flushPromises()
+
+    expect(vm.showBotUsernameWarning).toBe(false)
+    expect(localStorage.getItem(DISMISS_KEY)).toBe('1')
+  })
+
+  it('does not show the warning again in a fresh mount after dismissal was persisted', async () => {
+    localStorage.setItem(DISMISS_KEY, '1')
+    mockLoad.mockResolvedValue(
+      JSON.parse(
+        JSON.stringify({
+          ...BASE_SETTINGS,
+          telegram: { ...BASE_SETTINGS.telegram, enabled: true, bot_username: '' },
+        }),
+      ),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { showBotUsernameWarning: boolean }
+    expect(vm.showBotUsernameWarning).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Webhook Secret — write-only draft + status badge + generate button
+// ---------------------------------------------------------------------------
+
+describe('SettingsView Admin Telegram Bot section — webhook secret write-only field', () => {
+  it('shows "尚未設定" when no webhook secret is configured', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('尚未設定')
+  })
+
+  it('shows "目前已設定" when a webhook secret is configured', async () => {
+    mockGetTelegramWebhookSecretStatus.mockResolvedValue({ configured: true })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('目前已設定')
+  })
+
+  it('clicking "產生" fills the draft input with a random hex string', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const buttons = wrapper.findAll('button')
+    const genBtn = buttons.find((b) => b.text().includes('產生'))
+    expect(genBtn).toBeDefined()
+    await genBtn!.trigger('click')
+    await flushPromises()
+
+    const input = wrapper
+      .findAll('input.el-input')
+      .find((i) => i.attributes('placeholder') === '輸入新的 Webhook 密鑰')!
+    expect((input.element as HTMLInputElement).value).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('clicking 儲存 calls setTelegramWebhookSecret with the draft value and clears the draft', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = wrapper
+      .findAll('input.el-input')
+      .find((i) => i.attributes('placeholder') === '輸入新的 Webhook 密鑰')
+    expect(input).toBeDefined()
+    await input!.setValue('deadbeef')
+
+    const row = wrapper
+      .findAll('.cookie-row')
+      .find((r) => r.find('input.el-input').attributes('placeholder') === '輸入新的 Webhook 密鑰')
+    expect(row).toBeDefined()
+    const saveBtn = row!.findAll('button').find((b) => b.text().includes('儲存'))
+    expect(saveBtn).toBeDefined()
+    await saveBtn!.trigger('click')
+    await flushPromises()
+
+    expect(mockSetTelegramWebhookSecret).toHaveBeenCalledWith('deadbeef')
+    expect(mockElMessageSuccess).toHaveBeenCalledWith('Webhook Secret 已更新')
+    expect((input!.element as HTMLInputElement).value).toBe('')
+  })
+
+  it('shows an error message when setTelegramWebhookSecret rejects', async () => {
+    mockSetTelegramWebhookSecret.mockRejectedValue(new Error('too short'))
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const input = wrapper
+      .findAll('input.el-input')
+      .find((i) => i.attributes('placeholder') === '輸入新的 Webhook 密鑰')!
+    await input.setValue('x')
+
+    const row = wrapper
+      .findAll('.cookie-row')
+      .find((r) => r.find('input.el-input').attributes('placeholder') === '輸入新的 Webhook 密鑰')!
+    const saveBtn = row.findAll('button').find((b) => b.text().includes('儲存'))!
+    await saveBtn.trigger('click')
+    await flushPromises()
+
+    expect(mockElMessageError).toHaveBeenCalled()
   })
 })

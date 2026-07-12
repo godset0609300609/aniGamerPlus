@@ -10,6 +10,15 @@ Both endpoints require admin role.
 
 In single-user mode (auth disabled) the sentinel admin is used, so all
 log records are always visible.
+
+Hardening
+---------
+* Origin allowlist — the ``Origin`` header (when present) must match
+  :func:`app.api.ws_guard.allowed_ws_origins`, or the connection is closed
+  with 1008 before accepting.
+* Per-user connection cap — shared with ``/api/ws/tasks_progress`` via
+  :func:`app.api.ws_guard.get_ws_connection_registry`; a connection over the
+  cap is closed with :data:`app.api.ws_guard.WS_CLOSE_TOO_MANY_CONNECTIONS`.
 """
 
 from __future__ import annotations
@@ -24,6 +33,7 @@ import fastapi
 from ..log_config import get_ring_buffer_handler
 from ..persistence.user_repo import UserRow
 from .deps import current_user_opt, require_admin_user
+from .ws_guard import WS_CLOSE_TOO_MANY_CONNECTIONS, get_ws_connection_registry, is_origin_allowed
 
 router = fastapi.APIRouter(tags=['logs'])
 
@@ -94,15 +104,24 @@ async def stream_logs(
        records) immediately after accepting.
     2. Pushes each new record as it is emitted by the logging system.
 
-    Requires admin role.  Rejects unauthenticated connections with close
-    code 4401; rejects non-admin (authenticated) connections with close
-    code 1008 (Policy Violation).
+    Requires admin role.  Rejects a mismatched ``Origin`` header and
+    non-admin (authenticated) connections with close code 1008 (Policy
+    Violation); rejects unauthenticated connections with close code 4401;
+    rejects a per-user connection count over the cap with 4429.
     """
+    if not is_origin_allowed(ws.headers.get('origin')):
+        await ws.close(code=_WS_CLOSE_FORBIDDEN)
+        return
     if user is None:
         await ws.close(code=_WS_CLOSE_UNAUTHENTICATED)
         return
     if user.role != 'admin':
         await ws.close(code=_WS_CLOSE_FORBIDDEN)
+        return
+
+    registry = get_ws_connection_registry()
+    if not registry.try_acquire(user.id):
+        await ws.close(code=WS_CLOSE_TOO_MANY_CONNECTIONS)
         return
 
     handler = get_ring_buffer_handler()
@@ -152,6 +171,7 @@ async def stream_logs(
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await watchdog
         handler.unsubscribe(q)
+        registry.release(user.id)
 
 
 @router.get('/logs')

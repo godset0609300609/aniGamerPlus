@@ -264,6 +264,62 @@ def test_list_recent_returns_parsed_datetimes(repo: TaskHistoryRepository) -> No
 
 
 # ---------------------------------------------------------------------------
+# delete_older_than (fix #31 — DB retention)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_older_than_removes_old_finished_rows(repo: TaskHistoryRepository) -> None:
+    _seed(repo, sn=800, days_ago=200.0)
+    deleted = repo.delete_older_than(days=180)
+    assert deleted == 1
+    assert repo.list_recent(days=365) == []
+
+
+def test_delete_older_than_keeps_recent_finished_rows(repo: TaskHistoryRepository) -> None:
+    _seed(repo, sn=801, days_ago=10.0)
+    deleted = repo.delete_older_than(days=180)
+    assert deleted == 0
+    assert any(e.sn == 801 for e in repo.list_recent(days=30))
+
+
+def test_delete_older_than_never_deletes_in_progress_rows(repo: TaskHistoryRepository, db: Database) -> None:
+    """In-progress rows (finished_at IS NULL) must survive regardless of started_at age."""
+    from app.persistence.models import TaskHistoryRow
+
+    row_id = repo.record_start(sn=802, filename='ep802.mp4')
+    old_started = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=400)).isoformat()
+    with db.session() as session:
+        import sqlalchemy
+
+        session.execute(
+            sqlalchemy.update(TaskHistoryRow).where(TaskHistoryRow.id == row_id).values(started_at=old_started)
+        )
+
+    deleted = repo.delete_older_than(days=180)
+    assert deleted == 0
+    with db.session() as session:
+        row = session.get(TaskHistoryRow, row_id)
+        assert row is not None
+
+
+def test_delete_older_than_mixed_rows_only_removes_matching(repo: TaskHistoryRepository) -> None:
+    _seed(repo, sn=803, days_ago=200.0)  # stale — deleted
+    _seed(repo, sn=804, days_ago=5.0)  # fresh — kept
+    repo.record_start(sn=805, filename='ep805.mp4')  # in-progress — kept
+
+    deleted = repo.delete_older_than(days=180)
+    assert deleted == 1
+
+    remaining_sns = {e.sn for e in repo.list_recent(days=365)}
+    assert 803 not in remaining_sns
+    assert 804 in remaining_sns
+
+
+def test_delete_older_than_returns_zero_when_nothing_to_delete(repo: TaskHistoryRepository) -> None:
+    assert repo.delete_older_than(days=180) == 0
+
+
+# ---------------------------------------------------------------------------
 # mark_interrupted_on_boot
 # ---------------------------------------------------------------------------
 
@@ -439,3 +495,87 @@ def test_normalize_legacy_statuses_is_idempotent(
 def db_from_repo(repo: TaskHistoryRepository) -> Database:
     """Extract the Database from a repository (white-box helper for tests only)."""
     return repo._db  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# get_latest_in_progress_by_sn (BT downloader task_history bridge)
+# ---------------------------------------------------------------------------
+
+
+def test_get_latest_in_progress_by_sn_returns_the_open_row(repo: TaskHistoryRepository) -> None:
+    row_id = repo.record_start(sn=1000, filename='bt-entry-1.mkv')
+    entry = repo.get_latest_in_progress_by_sn(1000)
+    assert entry is not None
+    assert entry.id == row_id
+    assert entry.sn == 1000
+
+
+def test_get_latest_in_progress_by_sn_returns_none_when_no_row(repo: TaskHistoryRepository) -> None:
+    assert repo.get_latest_in_progress_by_sn(99999) is None
+
+
+def test_get_latest_in_progress_by_sn_ignores_finished_rows(repo: TaskHistoryRepository) -> None:
+    row_id = repo.record_start(sn=1001, filename='bt-entry-2.mkv')
+    repo.record_finish(row_id, final_status='下載完成', finished_at=datetime.datetime.now(datetime.UTC))
+
+    assert repo.get_latest_in_progress_by_sn(1001) is None
+
+
+def test_get_latest_in_progress_by_sn_picks_the_newest_open_row_after_redispatch(
+    repo: TaskHistoryRepository,
+) -> None:
+    """Simulates a BT entry that was dispatched, reset (404), and re-dispatched:
+    two 'record_start' rows share the same sn (task_id_map allocates the same
+    task_sn per entry_id). The newer row_id must win."""
+    first_row_id = repo.record_start(sn=1002, filename='bt-entry-3.mkv')
+    second_row_id = repo.record_start(sn=1002, filename='bt-entry-3.mkv')
+    assert second_row_id > first_row_id
+
+    entry = repo.get_latest_in_progress_by_sn(1002)
+    assert entry is not None
+    assert entry.id == second_row_id
+
+
+# ---------------------------------------------------------------------------
+# list_stale_in_progress (BtProgressReconciler's TG stale-ghost sweep)
+# ---------------------------------------------------------------------------
+
+
+def test_list_stale_in_progress_returns_old_open_row_for_source(repo: TaskHistoryRepository) -> None:
+    stale_start = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=2)
+    repo.record_start(sn=2000, filename='movie.mkv', source='tg', started_at=stale_start)
+
+    result = repo.list_stale_in_progress('tg', cutoff_hours=1)
+    assert [e.sn for e in result] == [2000]
+
+
+def test_list_stale_in_progress_excludes_rows_within_cutoff(repo: TaskHistoryRepository) -> None:
+    """A row started moments ago is still within the cutoff window — not yet stale."""
+    repo.record_start(sn=2001, filename='fresh.mkv', source='tg', started_at=datetime.datetime.now(datetime.UTC))
+
+    assert repo.list_stale_in_progress('tg', cutoff_hours=1) == []
+
+
+def test_list_stale_in_progress_excludes_finished_rows(repo: TaskHistoryRepository) -> None:
+    """A row that already reached a terminal final_status is not in-progress anymore."""
+    stale_start = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=2)
+    row_id = repo.record_start(sn=2002, filename='done.mkv', source='tg', started_at=stale_start)
+    repo.record_finish(row_id, final_status='下載完成', finished_at=datetime.datetime.now(datetime.UTC))
+
+    assert repo.list_stale_in_progress('tg', cutoff_hours=1) == []
+
+
+def test_list_stale_in_progress_excludes_other_sources(repo: TaskHistoryRepository) -> None:
+    """A stale BT row must not leak into a TG-scoped stale sweep, and vice versa."""
+    stale_start = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=2)
+    repo.record_start(sn=2003, filename='bt-entry.mkv', source='bt', started_at=stale_start)
+
+    assert repo.list_stale_in_progress('tg', cutoff_hours=1) == []
+    assert [e.sn for e in repo.list_stale_in_progress('bt', cutoff_hours=1)] == [2003]
+
+
+def test_list_stale_in_progress_excludes_rows_with_null_started_at(repo: TaskHistoryRepository) -> None:
+    """A row with no started_at recorded can never be judged stale by age."""
+    repo.record_start(sn=2004, filename='no-start.mkv', source='tg')
+
+    assert repo.list_stale_in_progress('tg', cutoff_hours=0) == []

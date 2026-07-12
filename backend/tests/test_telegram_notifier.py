@@ -24,7 +24,7 @@ from app.services.telegram_client import (
     TelegramBotBlockedError,
     TelegramChatNotFoundError,
 )
-from app.services.telegram_notifier import TelegramNotifier, _format_message
+from app.services.telegram_notifier import TelegramNotifier, _format_bt_message, _format_message
 
 # ---------------------------------------------------------------------------
 # Event-loop management
@@ -183,6 +183,33 @@ class FakeLiveMessages:
         self.cleared.append((sn, chat_id))
 
 
+class FakeBtLiveMessages:
+    """In-memory BtLiveMessageRegistry stand-in."""
+
+    def __init__(self) -> None:
+        self._store: dict[tuple[int, int], int] = {}
+        self._last_edit_at: dict[tuple[int, int], float] = {}
+        self.cleared: list[tuple[int, int]] = []
+
+    async def set(self, entry_id: int, chat_id: int, *, message_id: int, last_edit_at: float | None = None) -> None:
+        self._store[(entry_id, chat_id)] = message_id
+        self._last_edit_at[(entry_id, chat_id)] = last_edit_at if last_edit_at is not None else 0.0
+
+    async def get(self, entry_id: int, chat_id: int) -> int | None:
+        return self._store.get((entry_id, chat_id))
+
+    async def get_with_timestamp(self, entry_id: int, chat_id: int) -> tuple[int, float] | None:
+        message_id = self._store.get((entry_id, chat_id))
+        if message_id is None:
+            return None
+        return (message_id, self._last_edit_at.get((entry_id, chat_id), 0.0))
+
+    async def clear(self, entry_id: int, chat_id: int) -> None:
+        self._store.pop((entry_id, chat_id), None)
+        self._last_edit_at.pop((entry_id, chat_id), None)
+        self.cleared.append((entry_id, chat_id))
+
+
 def _settings(**kwargs: object) -> TelegramSettings:
     base: dict[str, object] = {
         'enabled': True,
@@ -200,6 +227,7 @@ def _notifier(
     settings: TelegramSettings,
     tmp_path: pathlib.Path,
     live_messages: FakeLiveMessages | None = None,
+    bt_live_messages: FakeBtLiveMessages | None = None,
 ) -> TelegramNotifier:
     logger = Logger(tmp_path / 'logs', save_logs=False, quantity_of_logs=7)
     return TelegramNotifier(
@@ -207,6 +235,7 @@ def _notifier(
         user_repo=repo,  # type: ignore[arg-type]
         settings_provider=lambda: settings,
         live_messages=live_messages,  # type: ignore[arg-type]
+        bt_live_messages=bt_live_messages,  # type: ignore[arg-type]
         logger=logger,
     )
 
@@ -383,6 +412,570 @@ def test_format_name_line_default_season_1() -> None:
     )
     assert '第 1 季' in msg
     assert '第 3 集' in msg
+
+
+# ---------------------------------------------------------------------------
+# BT downloader event formatting — animad-style header + name_line + metadata
+# ---------------------------------------------------------------------------
+
+
+def test_format_bt_dispatched() -> None:
+    msg = _format_bt_message(
+        event='bt_dispatched',
+        title='Some Show - 01',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status=None,
+        local_path=None,
+        error_message=None,
+    )
+    assert msg.startswith('📥 *送出 Put\\.io*')
+    assert '\\[BT\\]' not in msg  # the old '[BT] {title}' prefix is gone
+    assert 'Some Show \\- 01' in msg
+    assert '過濾器' in msg
+    assert 'my\\-filter' in msg
+    assert '來源' in msg
+    assert 'my\\-feed' in msg
+
+
+def test_bt_dispatched_message_uses_new_animad_style_header() -> None:
+    """Header, blank line, title, then key:value metadata — mirrors _format_message."""
+    msg = _format_bt_message(
+        event='bt_dispatched',
+        title='Some Show - 01',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status=None,
+        local_path=None,
+        error_message=None,
+    )
+    lines = msg.split('\n')
+    assert lines[0] == '📥 *送出 Put\\.io*'
+    assert lines[1] == ''
+    assert lines[2] == 'Some Show \\- 01'
+    assert lines[3] == '過濾器: my\\-filter'
+    assert lines[4] == '來源: my\\-feed'
+
+
+def test_format_bt_status_update_in_queue_header() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status='IN_QUEUE',
+        local_path=None,
+        error_message=None,
+    )
+    assert msg.startswith('⏳ *Put\\.io 排隊中*')
+
+
+def test_bt_status_update_downloading_shows_percent_done_from_putio() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status='DOWNLOADING',
+        local_path=None,
+        error_message=None,
+        percent_done=42,
+    )
+    assert msg.startswith('⬇️ *Put\\.io 下載中*')
+    assert 'Put\\.io 進度: 42%' in msg
+
+
+def test_format_bt_status_update_downloading_omits_percent_when_zero() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status='DOWNLOADING',
+        local_path=None,
+        error_message=None,
+        percent_done=0,
+    )
+    assert '進度' not in msg
+
+
+def test_format_bt_status_update_completed_header_and_size() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02b',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status='COMPLETED',
+        local_path=None,
+        error_message=None,
+        file_size_mb=250,
+    )
+    assert msg.startswith('📦 *Put\\.io 完成，準備落地*')
+    assert '檔案大小: 250 MB' in msg
+
+
+def test_format_bt_status_update_seeding_header_and_size() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02c',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status='SEEDING',
+        local_path=None,
+        error_message=None,
+        file_size_mb=250,
+    )
+    assert msg.startswith('📦 *Put\\.io Seeding，準備落地*')
+    assert '檔案大小: 250 MB' in msg
+
+
+def test_format_bt_status_update_unknown_status_falls_back_to_raw() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02d',
+        feed_name='my-feed',
+        filter_name=None,
+        putio_transfer_id=None,
+        putio_status='WEIRD_NEW_STATUS',
+        local_path=None,
+        error_message=None,
+    )
+    assert 'WEIRD\\_NEW\\_STATUS' in msg
+
+
+def test_bt_landing_progress_shows_percent_and_mb() -> None:
+    msg = _format_bt_message(
+        event='bt_landing_progress',
+        title='Some Show - 06',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        local_path=None,
+        error_message=None,
+        bytes_written=50 * 1024 * 1024,
+        total_bytes=200 * 1024 * 1024,
+    )
+    assert msg.startswith('⏬ *落地中*')
+    assert '落地進度: 50/200 MB \\(25%\\)' in msg
+
+
+def test_bt_landing_progress_zero_total_bytes_renders_zero_percent() -> None:
+    """Defensive: total_bytes=0/None (e.g. missing Content-Length) must not divide by zero."""
+    msg = _format_bt_message(
+        event='bt_landing_progress',
+        title='Some Show - 06b',
+        feed_name='my-feed',
+        filter_name=None,
+        putio_transfer_id=None,
+        local_path=None,
+        error_message=None,
+        bytes_written=1024 * 1024,
+        total_bytes=0,
+    )
+    assert '落地進度: 1/0 MB \\(0%\\)' in msg
+
+
+def test_format_bt_landed() -> None:
+    msg = _format_bt_message(
+        event='bt_landed',
+        title='Some Show - 03',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status=None,
+        local_path='Some Show - 03.mp4',
+        error_message=None,
+    )
+    assert msg.startswith('✅ *下載完成*')
+    assert '落地路徑' in msg
+    assert 'Some Show \\- 03\\.mp4' in msg
+
+
+def test_bt_landed_includes_resolution_when_parseable_from_title() -> None:
+    msg = _format_bt_message(
+        event='bt_landed',
+        title='[Group] Some Show - 05 [1080p][BIG5]',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        local_path='Some Show - 05.mp4',
+        error_message=None,
+    )
+    assert '解析度: 1080p' in msg
+
+
+def test_bt_landed_omits_resolution_when_unparseable() -> None:
+    msg = _format_bt_message(
+        event='bt_landed',
+        title='[Group] Some Show - 05 [BIG5]',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        local_path='Some Show - 05.mp4',
+        error_message=None,
+    )
+    assert '解析度' not in msg
+
+
+def test_bt_landed_resolution_4k_is_uppercased() -> None:
+    msg = _format_bt_message(
+        event='bt_landed',
+        title='[Group] Some Show - 05 [4k][BIG5]',
+        feed_name='my-feed',
+        filter_name=None,
+        putio_transfer_id=None,
+        local_path='Some Show - 05.mp4',
+        error_message=None,
+    )
+    assert '解析度: 4K' in msg
+
+
+def test_bt_landed_includes_file_size_when_known() -> None:
+    msg = _format_bt_message(
+        event='bt_landed',
+        title='Some Show - 05',
+        feed_name='my-feed',
+        filter_name=None,
+        putio_transfer_id=None,
+        local_path='Some Show - 05.mp4',
+        error_message=None,
+        file_size_mb=401,
+    )
+    assert '檔案大小: 401 MB' in msg
+
+
+def test_format_bt_failed_includes_reason_and_filter() -> None:
+    msg = _format_bt_message(
+        event='bt_failed',
+        title='Some Show - 04',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=None,
+        putio_status=None,
+        local_path=None,
+        error_message='Put.io token rejected (401)',
+    )
+    assert msg.startswith('❌ *下載失敗*')
+    assert '原因' in msg
+    assert '過濾器' in msg
+    assert 'my\\-filter' in msg
+    assert 'token rejected' in msg
+
+
+def test_format_bt_failed_omits_filter_line_when_none() -> None:
+    msg = _format_bt_message(
+        event='bt_failed',
+        title='Some Show - 05',
+        feed_name='my-feed',
+        filter_name=None,
+        putio_transfer_id=None,
+        putio_status=None,
+        local_path=None,
+        error_message='boom',
+    )
+    assert '過濾器' not in msg
+
+
+def test_format_bt_escapes_markdown_special_chars() -> None:
+    msg = _format_bt_message(
+        event='bt_dispatched',
+        title='進_擊*的[巨人]',
+        feed_name='feed',
+        filter_name=None,
+        putio_transfer_id=None,
+        putio_status=None,
+        local_path=None,
+        error_message=None,
+    )
+    assert '\\_' in msg
+    assert '\\*' in msg
+    assert '\\[' in msg
+
+
+# ---------------------------------------------------------------------------
+# BT downloader event routing — admin-only, no owner
+# ---------------------------------------------------------------------------
+
+
+def test_notify_bt_event_sends_to_admins_only(tmp_path: pathlib.Path) -> None:
+    client = FakeTelegramClient()
+    repo = FakeUserRepo()
+    repo.add('owner', chat_id=100)  # non-admin — must NOT receive a BT DM
+    repo.add('admin1', role='admin', chat_id=200)
+    repo.add('admin2', role='admin', chat_id=300)
+
+    n = _notifier(client, repo, _settings(), tmp_path)
+    _run(
+        n.notify_bt_event(
+            event='bt_failed',
+            title='Some Show - 01',
+            feed_name='my-feed',
+            filter_name='my-filter',
+            error_message='boom',
+            entry_id=1,
+        )
+    )
+
+    send_calls = [c for c in _actor_calls if c[0] == 'send_message_actor']
+    assert len(send_calls) == 2
+    chat_ids = {c[1][0] for c in send_calls}
+    assert chat_ids == {200, 300}
+
+
+def test_notify_bt_event_skips_when_disabled(tmp_path: pathlib.Path) -> None:
+    client = FakeTelegramClient()
+    repo = FakeUserRepo()
+    repo.add('admin1', role='admin', chat_id=200)
+
+    n = _notifier(client, repo, _settings(enabled=False), tmp_path)
+    _run(
+        n.notify_bt_event(
+            event='bt_landed',
+            title='Some Show - 01',
+            feed_name='my-feed',
+            filter_name='my-filter',
+            local_path='Some Show - 01.mp4',
+            entry_id=1,
+        )
+    )
+
+    assert _actor_calls == []
+    assert client.send_calls == []
+
+
+def test_notify_bt_event_not_gated_by_notify_on(tmp_path: pathlib.Path) -> None:
+    """BT events fire even when 'bt_dispatched' etc. aren't in notify_on —
+    that list only enumerates per-download owner events (see notify_bt_event's
+    docstring)."""
+    client = FakeTelegramClient()
+    repo = FakeUserRepo()
+    repo.add('admin1', role='admin', chat_id=200)
+
+    n = _notifier(client, repo, _settings(notify_on=['failed']), tmp_path)
+    _run(
+        n.notify_bt_event(
+            event='bt_failed',
+            title='Some Show - 01',
+            feed_name='my-feed',
+            filter_name='my-filter',
+            error_message='boom',
+            entry_id=1,
+        )
+    )
+
+    send_calls = [c for c in _actor_calls if c[0] == 'send_message_actor']
+    assert len(send_calls) == 1
+
+
+def test_notify_bt_event_no_admins_bound_sends_nothing(tmp_path: pathlib.Path) -> None:
+    client = FakeTelegramClient()
+    repo = FakeUserRepo()
+    repo.add('owner', chat_id=100)
+
+    n = _notifier(client, repo, _settings(), tmp_path)
+    _run(
+        n.notify_bt_event(
+            event='bt_failed',
+            title='Some Show - 01',
+            feed_name='my-feed',
+            filter_name='my-filter',
+            error_message='boom',
+            entry_id=1,
+        )
+    )
+
+    assert _actor_calls == []
+
+
+# ---------------------------------------------------------------------------
+# C-2 (security audit) — TG User API downloader event routing (stub)
+# ---------------------------------------------------------------------------
+
+
+def test_notify_tg_event_is_a_clean_no_op(tmp_path: pathlib.Path) -> None:
+    """notify_tg_event must never raise and must never dispatch any DM —
+    it's a logging-only stub until a real TG live-message registry exists
+    (see its docstring's TODO)."""
+    client = FakeTelegramClient()
+    repo = FakeUserRepo()
+    repo.add('owner', chat_id=100)
+    repo.add('admin1', role='admin', chat_id=200)
+
+    n = _notifier(client, repo, _settings(), tmp_path)
+    _run(
+        n.notify_tg_event(
+            event='tg_landed',
+            chat_title='測試頻道',
+            chat_id=-100999,
+            message_id=42,
+            file_name='ep01.mp4',
+            file_size=100,
+            local_path='/data/tg/ep01.mp4',
+        )
+    )
+
+    assert _actor_calls == []
+    assert client.send_calls == []
+
+
+def test_notify_event_actor_dispatch_table_routes_tg_events_to_notify_tg_event() -> None:
+    """Wiring check for the notify_event_actor dispatch table itself — a TG
+    event must land on notify_tg_event, not notify_download_event (which
+    requires sn/bangumi_name the TG payload never carries and would raise
+    TypeError — the exact bug this fix addresses). Exercises the actual
+    dispatch branches directly rather than through
+    ``notify_event_actor`` itself, which — being a dramatiq async actor —
+    requires the AsyncIO middleware's event-loop thread to invoke at all
+    (not set up in this unit-test process)."""
+    from app.tasks import telegram as tg_tasks
+
+    assert 'tg_failed' not in tg_tasks._BT_EVENTS
+    assert 'tg_failed' in tg_tasks._TG_EVENTS
+    for bt_event in tg_tasks._BT_EVENTS:
+        assert bt_event not in tg_tasks._TG_EVENTS
+    for tg_event in tg_tasks._TG_EVENTS:
+        assert tg_event not in tg_tasks._BT_EVENTS
+
+
+# ---------------------------------------------------------------------------
+# BT lifecycle — in-place message editing (mirrors 'started'/terminal below)
+# ---------------------------------------------------------------------------
+
+
+def test_bt_dispatched_creates_new_message_and_registers(tmp_path: pathlib.Path) -> None:
+    """'bt_dispatched' must send via direct client (not actor) and store message_id."""
+    client = FakeTelegramClient()
+    repo = FakeUserRepo()
+    repo.add('admin1', role='admin', chat_id=200)
+    bt_live = FakeBtLiveMessages()
+
+    n = _notifier(client, repo, _settings(), tmp_path, bt_live_messages=bt_live)
+    _run(
+        n.notify_bt_event(
+            event='bt_dispatched',
+            title='Some Show - 01',
+            feed_name='my-feed',
+            filter_name='my-filter',
+            putio_transfer_id=123,
+            entry_id=7,
+        )
+    )
+
+    assert len(client.send_calls) == 1
+    assert client.send_calls[0][0] == 200
+    assert bt_live._store[(7, 200)] == 42  # FakeTelegramClient's next_message_id starts at 42
+    assert _actor_calls == []
+
+
+def test_bt_status_update_edits_registered_message(tmp_path: pathlib.Path) -> None:
+    client = FakeTelegramClient()
+    repo = FakeUserRepo()
+    repo.add('admin1', role='admin', chat_id=200)
+    bt_live = FakeBtLiveMessages()
+    _run(bt_live.set(7, 200, message_id=555))
+
+    n = _notifier(client, repo, _settings(), tmp_path, bt_live_messages=bt_live)
+    _run(
+        n.notify_bt_event(
+            event='bt_status_update',
+            title='Some Show - 01',
+            feed_name='my-feed',
+            filter_name='my-filter',
+            putio_status='DOWNLOADING',
+            entry_id=7,
+        )
+    )
+
+    edit_calls = [c for c in _actor_calls if c[0] == 'edit_message_actor']
+    assert len(edit_calls) == 1
+    assert edit_calls[0][1][0] == 200  # chat_id
+    assert edit_calls[0][1][1] == 555  # message_id
+    # No fresh direct send — the existing message was edited in place.
+    assert client.send_calls == []
+    # Registry entry untouched (still points at the same message).
+    assert bt_live._store[(7, 200)] == 555
+
+
+def test_bt_intermediate_falls_through_to_send_when_registry_empty(tmp_path: pathlib.Path) -> None:
+    """Regression guard: if the initial 'bt_dispatched' send never registered
+    (or the Redis TTL expired), a status update must still reach the user —
+    send fresh + register, rather than silently dropping the update."""
+    client = FakeTelegramClient()
+    repo = FakeUserRepo()
+    repo.add('admin1', role='admin', chat_id=200)
+    bt_live = FakeBtLiveMessages()
+
+    n = _notifier(client, repo, _settings(), tmp_path, bt_live_messages=bt_live)
+    _run(
+        n.notify_bt_event(
+            event='bt_status_update',
+            title='Some Show - 01',
+            feed_name='my-feed',
+            filter_name='my-filter',
+            putio_status='DOWNLOADING',
+            entry_id=7,
+        )
+    )
+
+    assert len(client.send_calls) == 1
+    assert bt_live._store[(7, 200)] == 42
+    assert [c for c in _actor_calls if c[0] == 'edit_message_actor'] == []
+
+
+def test_bt_terminal_edits_and_clears_registry(tmp_path: pathlib.Path) -> None:
+    """Terminal ('bt_landed'/'bt_failed') with existing live message → edit + clear."""
+    client = FakeTelegramClient()
+    repo = FakeUserRepo()
+    repo.add('admin1', role='admin', chat_id=200)
+    bt_live = FakeBtLiveMessages()
+    _run(bt_live.set(7, 200, message_id=555))
+
+    n = _notifier(client, repo, _settings(), tmp_path, bt_live_messages=bt_live)
+    _run(
+        n.notify_bt_event(
+            event='bt_landed',
+            title='Some Show - 01',
+            feed_name='my-feed',
+            filter_name='my-filter',
+            local_path='Some Show - 01.mp4',
+            entry_id=7,
+        )
+    )
+
+    assert (7, 200) not in bt_live._store
+    assert (7, 200) in bt_live.cleared
+    edit_calls = [c for c in _actor_calls if c[0] == 'edit_message_actor']
+    assert len(edit_calls) == 1
+    assert edit_calls[0][1][1] == 555
+    assert client.send_calls == []
+
+
+def test_bt_terminal_falls_back_to_send_when_no_live_message(tmp_path: pathlib.Path) -> None:
+    """Terminal with no live message on record → fresh send_message_actor."""
+    client = FakeTelegramClient()
+    repo = FakeUserRepo()
+    repo.add('admin1', role='admin', chat_id=200)
+
+    n = _notifier(client, repo, _settings(), tmp_path, bt_live_messages=FakeBtLiveMessages())
+    _run(
+        n.notify_bt_event(
+            event='bt_failed',
+            title='Some Show - 01',
+            feed_name='my-feed',
+            filter_name='my-filter',
+            error_message='boom',
+            entry_id=7,
+        )
+    )
+
+    assert 'send_message_actor' in _actor_names()
 
 
 # ---------------------------------------------------------------------------

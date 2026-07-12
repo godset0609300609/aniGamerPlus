@@ -167,6 +167,7 @@ class UpdateLoop:
 
             mode = info.get('mode') or settings.default_download_mode
             owner_id: str | None = info.get('owner_id') or None
+            bilingual = info.get('bilingual') == '1'
 
             # Cache the series name on the list entry so the UI can show it
             # before any episode finishes downloading.
@@ -180,8 +181,15 @@ class UpdateLoop:
             # Build inverse lookup once per metadata fetch so we can resolve
             # target_sn → episode label without a second fetch inside the loop.
             sn_to_episode: dict[int, str] = {ep_sn: ep for ep, ep_sn in metadata.episode_list.items()}
+            # Per-sn language tag ('中' for 中文配音 entries, else None) — only
+            # sns that survive the bilingual filter in _select_target_sns are
+            # ever looked up here.
+            sn_to_language_tag: dict[int, str | None] = {
+                ep_sn: ('中' if label.startswith('中文配音') else None)
+                for label, ep_sn in metadata.episode_list.items()
+            }
 
-            target_sns = self._select_target_sns(int(sn), mode, metadata.episode_list)
+            target_sns = self._select_target_sns(int(sn), mode, metadata.episode_list, bilingual=bilingual)
 
             for target_sn in target_sns:
                 target_episode = sn_to_episode.get(target_sn)
@@ -194,7 +202,7 @@ class UpdateLoop:
                 if self._queue.contains(target_sn):
                     continue
 
-                task_info = self._make_task_info(target_sn, info, mode)
+                task_info = self._make_task_info(target_sn, info, mode, language_tag=sn_to_language_tag.get(target_sn))
                 self._queue.add(target_sn, task_info)
                 newly_added += 1
                 self._logger.info(
@@ -291,6 +299,7 @@ class UpdateLoop:
                 'season': str(row.season),
                 'owner_id': row.user_id or '',
                 'custom_name': row.custom_name or '',
+                'bilingual': '1' if row.bilingual else '0',
             }
 
         if not result and not self._legacy_warning_emitted:
@@ -314,9 +323,19 @@ class UpdateLoop:
         root_sn: int,
         mode: str,
         episode_list: dict[str, int],
+        *,
+        bilingual: bool = False,
     ) -> list[int]:
-        """Return the list of sns to enqueue for this root sn + mode."""
-        episode_sns = list(episode_list.values())
+        """Return the list of sns to enqueue for this root sn + mode.
+
+        中文配音-labeled entries are dropped BEFORE mode selection unless
+        ``bilingual`` is True, so ``latest``/``largest-sn`` never pick a
+        dubbed variant by accident when the entry has not opted in (dub
+        entries are always inserted last by the mobile-API extractor, so
+        an unfiltered ``episode_sns[-1]`` could otherwise silently select
+        the dub SN as "the latest episode").
+        """
+        episode_sns = [ep_sn for label, ep_sn in episode_list.items() if bilingual or not label.startswith('中文配音')]
         if not episode_sns:
             return [root_sn]
 
@@ -337,6 +356,8 @@ class UpdateLoop:
         sn: int,
         info: dict[str, str],
         mode: str,
+        *,
+        language_tag: str | None = None,
     ) -> TaskInfo:
         from .queue_ import TaskInfo
 
@@ -348,6 +369,7 @@ class UpdateLoop:
             season=int(info.get('season') or '1'),
             custom_name=raw_custom or None,
             owner_id=info.get('owner_id') or None,
+            language_tag=language_tag,
         )
 
     def _announce_waiting(

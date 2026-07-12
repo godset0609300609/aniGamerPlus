@@ -30,6 +30,19 @@ vi.mock('@/stores/auth', () => ({
 }))
 
 // ---------------------------------------------------------------------------
+// useBreakpoint stub — controllable isMobile so the card-mode switch can be
+// tested without real matchMedia/viewport plumbing.
+// ---------------------------------------------------------------------------
+const isMobileRef = ref(false)
+
+vi.mock('@/composables/useBreakpoint', () => ({
+  useBreakpoint: () => ({
+    isMobile: isMobileRef,
+    isTablet: ref(false),
+  }),
+}))
+
+// ---------------------------------------------------------------------------
 // AnimeListApi stub — list() returns controllable data.
 // ---------------------------------------------------------------------------
 const mockList = vi.fn()
@@ -70,6 +83,7 @@ vi.mock('element-plus', () =>
 
 // Import component AFTER mocks are set up.
 import AnimeListView from '@/views/AnimeListView.vue'
+import BrowserExtensionDialog from '@/components/animeList/BrowserExtensionDialog.vue'
 
 const stubs = createElementPlusStubs()
 
@@ -82,6 +96,7 @@ function makeEntry(
 ): AnimeListEntry {
   return {
     enabled: true,
+    bilingual: false,
     mode: null,
     tag: '',
     season: 1,
@@ -111,6 +126,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   isAdminRef.value = false
   userRef.value = null
+  isMobileRef.value = false
   mockReplaceAll.mockResolvedValue({ status: 'ok' })
   mockElMessageBoxConfirm.mockResolvedValue(undefined)
 })
@@ -589,6 +605,33 @@ describe('AnimeListView — Fix 2: localStorage collapse persistence', () => {
 })
 
 // ---------------------------------------------------------------------------
+// addEntry() via the top-level 新增項目 button must stamp owner_username,
+// not just owner_id — otherwise the section header falls back to the raw
+// Discord snowflake ID until the entry round-trips through save/reload.
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — addEntry via toolbar button sets owner_username', () => {
+  it("newly added row shows current user's username, not id", async () => {
+    isAdminRef.value = false
+    userRef.value = { id: 'discord_snowflake', username: 'ed_yan', avatar_url: null, role: 'downloader' }
+
+    mockList.mockResolvedValue({ entries: [] })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const addBtn = wrapper.findAll('button').find((b) => b.text().trim() === '新增項目')!
+    await addBtn.trigger('click')
+    await flushPromises()
+
+    const userName = wrapper.find('.ag-user-name')
+    expect(userName.exists()).toBe(true)
+    expect(userName.text()).toBe('ed_yan')
+    expect(userName.text()).not.toBe('discord_snowflake')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Truncation + tooltip on long anime names
 // ---------------------------------------------------------------------------
 
@@ -652,5 +695,172 @@ describe('AnimeListView — long anime_name: tooltip + truncation', () => {
     expect(wrapper.find('.ag-truncate').exists()).toBe(false)
     // The muted placeholder should show instead.
     expect(wrapper.find('.ag-muted').exists()).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Browser-extension quick-add toolbar button + dialog
+// ---------------------------------------------------------------------------
+
+describe('AnimeListView — browser extension dialog', () => {
+  beforeEach(() => {
+    // navigator.clipboard is not implemented by happy-dom by default.
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+    })
+  })
+
+  it('opens the BrowserExtensionDialog when the toolbar button is clicked', async () => {
+    userRef.value = { id: 'dl-1', username: 'bob', avatar_url: null, role: 'downloader' }
+    mockList.mockResolvedValue({ entries: [] })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const dialog = wrapper.findComponent(BrowserExtensionDialog)
+    expect(dialog.props('modelValue')).toBe(false)
+
+    const extBtn = wrapper.findAll('button').find((b) => b.text().trim() === '瀏覽器擴充')!
+    await extBtn.trigger('click')
+    await flushPromises()
+
+    expect(dialog.props('modelValue')).toBe(true)
+  })
+
+  it('shows both the userscript and bookmarklet code blocks', async () => {
+    userRef.value = { id: 'dl-1', username: 'bob', avatar_url: null, role: 'downloader' }
+    mockList.mockResolvedValue({ entries: [] })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const extBtn = wrapper.findAll('button').find((b) => b.text().trim() === '瀏覽器擴充')!
+    await extBtn.trigger('click')
+    await flushPromises()
+
+    const codeBlocks = wrapper.findAll('.ag-code-block')
+    expect(codeBlocks).toHaveLength(2)
+    expect(codeBlocks[0].text()).toContain('==UserScript==')
+    expect(codeBlocks[0].text()).toContain('/#/quick-add?sn=')
+    expect(codeBlocks[1].text()).toContain('javascript:(function(){')
+    expect(codeBlocks[1].text()).toContain('/#/quick-add?sn=')
+
+    // Draggable bookmarklet link is also present.
+    const bookmarkletLink = wrapper.find('.ag-bookmarklet-link')
+    expect(bookmarkletLink.exists()).toBe(true)
+    expect(bookmarkletLink.attributes('href')).toContain('javascript:(function(){')
+  })
+
+  it('embeds the current window origin (ORIGIN_PLACEHOLDER substitution) in the userscript', async () => {
+    userRef.value = { id: 'dl-1', username: 'bob', avatar_url: null, role: 'downloader' }
+    mockList.mockResolvedValue({ entries: [] })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const extBtn = wrapper.findAll('button').find((b) => b.text().trim() === '瀏覽器擴充')!
+    await extBtn.trigger('click')
+    await flushPromises()
+
+    const codeBlocks = wrapper.findAll('.ag-code-block')
+    const origin = window.location.origin
+    expect(codeBlocks[0].text()).toContain(`${origin}/#/quick-add?sn=`)
+    expect(codeBlocks[0].text()).not.toContain('ORIGIN_PLACEHOLDER')
+    expect(codeBlocks[1].text()).toContain(`${origin}/#/quick-add?sn=`)
+    expect(codeBlocks[1].text()).not.toContain('ORIGIN_PLACEHOLDER')
+  })
+
+  it('copies the userscript to the clipboard when the copy button is clicked', async () => {
+    userRef.value = { id: 'dl-1', username: 'bob', avatar_url: null, role: 'downloader' }
+    mockList.mockResolvedValue({ entries: [] })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const extBtn = wrapper.findAll('button').find((b) => b.text().trim() === '瀏覽器擴充')!
+    await extBtn.trigger('click')
+    await flushPromises()
+
+    const copyBtn = wrapper.findAll('button').find((b) => b.text().includes('複製腳本'))!
+    await copyBtn.trigger('click')
+    await flushPromises()
+
+    expect(window.navigator.clipboard.writeText).toHaveBeenCalledTimes(1)
+    const copiedText = (window.navigator.clipboard.writeText as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as string
+    expect(copiedText).toContain('==UserScript==')
+  })
+})
+
+describe('AnimeListView — mobile card mode', () => {
+  it('test_table_switches_to_card_mode_on_mobile: renders the el-table on desktop', async () => {
+    userRef.value = { id: 'dl-1', username: 'bob', avatar_url: null, role: 'downloader' }
+    isMobileRef.value = false
+    mockList.mockResolvedValue({
+      entries: [makeEntry({ sn: 1001, anime_name: '測試番劇', owner_id: 'dl-1', owner_username: 'bob' })],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('.ag-anime-table').exists()).toBe(true)
+    expect(wrapper.find('.ag-anime-cards').exists()).toBe(false)
+  })
+
+  it('test_table_switches_to_card_mode_on_mobile: hides the table and renders stacked cards on mobile', async () => {
+    userRef.value = { id: 'dl-1', username: 'bob', avatar_url: null, role: 'downloader' }
+    isMobileRef.value = true
+    mockList.mockResolvedValue({
+      entries: [makeEntry({ sn: 1001, anime_name: '測試番劇', owner_id: 'dl-1', owner_username: 'bob' })],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('.ag-anime-table').exists()).toBe(false)
+    expect(wrapper.find('.ag-anime-cards').exists()).toBe(true)
+
+    const cards = wrapper.findAll('.ag-anime-card')
+    expect(cards).toHaveLength(1)
+    expect(cards[0].text()).toContain('測試番劇')
+  })
+
+  it('renders one card per row and still exposes the delete action for own rows', async () => {
+    userRef.value = { id: 'dl-1', username: 'bob', avatar_url: null, role: 'downloader' }
+    isMobileRef.value = true
+    mockList.mockResolvedValue({
+      entries: [
+        makeEntry({ sn: 1001, anime_name: 'A', owner_id: 'dl-1', owner_username: 'bob' }),
+        makeEntry({ sn: 1002, anime_name: 'B', owner_id: 'dl-1', owner_username: 'bob' }),
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const cards = wrapper.findAll('.ag-anime-card')
+    expect(cards).toHaveLength(2)
+    for (const card of cards) {
+      const deleteBtn = card.findAll('button').find((b) => b.text().trim() === '刪除')
+      expect(deleteBtn).toBeTruthy()
+    }
+  })
+
+  it('omits the delete action on a card for a row the current (non-admin) user does not own', async () => {
+    userRef.value = { id: 'dl-1', username: 'bob', avatar_url: null, role: 'downloader' }
+    isMobileRef.value = true
+    isAdminRef.value = false
+    mockList.mockResolvedValue({
+      entries: [makeEntry({ sn: 2001, anime_name: 'Other', owner_id: 'dl-2', owner_username: 'carol' })],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const card = wrapper.find('.ag-anime-card')
+    expect(card.exists()).toBe(true)
+    const deleteBtn = card.findAll('button').find((b) => b.text().trim() === '刪除')
+    expect(deleteBtn).toBeUndefined()
   })
 })

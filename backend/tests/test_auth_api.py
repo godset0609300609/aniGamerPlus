@@ -17,6 +17,7 @@ import urllib.parse
 
 import fastapi
 import fastapi.testclient
+import pytest
 import starlette.middleware.sessions
 
 from app.api.auth_api import (
@@ -115,6 +116,8 @@ class FakeOAuthClient:
         token_response: dict | None = None,
         user_response: dict | None = None,
         exchange_error: Exception | None = None,
+        guilds_response: list[dict] | None = None,
+        guilds_error: Exception | None = None,
     ) -> None:
         self._token = token_response or {'access_token': 'fake_token'}
         self._user = user_response or {
@@ -124,6 +127,9 @@ class FakeOAuthClient:
             'avatar_url': None,
         }
         self._exchange_error = exchange_error
+        self._guilds = guilds_response or []
+        self._guilds_error = guilds_error
+        self.fetch_user_guilds_calls: list[str] = []
 
     def build_authorize_url(self, state: str) -> str:
         return f'https://discord.com/oauth2/authorize?state={state}&client_id=CID'
@@ -136,6 +142,12 @@ class FakeOAuthClient:
     async def fetch_user_info(self, access_token: str) -> dict:  # noqa: ARG002
         return self._user
 
+    async def fetch_user_guilds(self, access_token: str) -> list[dict]:
+        self.fetch_user_guilds_calls.append(access_token)
+        if self._guilds_error is not None:
+            raise self._guilds_error
+        return self._guilds
+
 
 def _build_client(
     settings: AppSettings,
@@ -144,11 +156,14 @@ def _build_client(
     settings_repo: FakeSettingsRepo | None = None,
 ) -> fastapi.testclient.TestClient:
     """Build a TestClient for the auth router with overridden dependencies."""
+    from app import rate_limit
+
     app = fastapi.FastAPI()
     app.add_middleware(
         starlette.middleware.sessions.SessionMiddleware,
         secret_key='test-secret-key',
     )
+    rate_limit.install(app)
     app.include_router(auth_router)
 
     if user_repo is None:
@@ -279,6 +294,158 @@ def test_callback_non_bootstrap_id_stays_downloader() -> None:
     user = user_repo.get('111')
     assert user is not None
     assert user.role == 'downloader'
+
+
+# ---------------------------------------------------------------------------
+# /callback — Discord allowlist gate (fix #16)
+# ---------------------------------------------------------------------------
+
+
+def _login_then_callback(
+    client: fastapi.testclient.TestClient,
+) -> fastapi.Response:
+    resp = client.get('/api/auth/login')
+    state = resp.headers['location'].split('state=')[1].split('&')[0]
+    return client.get(f'/api/auth/callback?code=mycode&state={state}')
+
+
+def test_callback_not_configured_warns_and_allows(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Neither allowlist env var set — permissive default, but a warning is logged."""
+    import logging
+
+    monkeypatch.delenv('ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS', raising=False)
+    monkeypatch.delenv('ANIGAMERPLUS_DISCORD_ALLOWED_USER_IDS', raising=False)
+
+    settings = _make_settings(enabled=True)
+    user_repo = FakeUserRepo()
+    oauth = FakeOAuthClient(user_response={'id': '111', 'username': 'alice', 'avatar': None, 'avatar_url': None})
+    client = _build_client(settings, user_repo=user_repo, oauth_client=oauth)
+
+    with caplog.at_level(logging.WARNING):
+        resp = _login_then_callback(client)
+
+    assert resp.status_code == 302
+    assert len(user_repo.upsert_calls) == 1
+    assert any('allowlist not configured' in record.message for record in caplog.records)
+    # Not configured — fetch_user_guilds must never be called.
+    assert oauth.fetch_user_guilds_calls == []
+
+
+def test_callback_user_id_allowlist_allows_listed_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('ANIGAMERPLUS_DISCORD_ALLOWED_USER_IDS', '111,222')
+    monkeypatch.delenv('ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS', raising=False)
+
+    settings = _make_settings(enabled=True)
+    user_repo = FakeUserRepo()
+    oauth = FakeOAuthClient(user_response={'id': '111', 'username': 'alice', 'avatar': None, 'avatar_url': None})
+    client = _build_client(settings, user_repo=user_repo, oauth_client=oauth)
+
+    resp = _login_then_callback(client)
+
+    assert resp.status_code == 302
+    assert len(user_repo.upsert_calls) == 1
+    # User-id allowlist short-circuits — guild fetch never happens.
+    assert oauth.fetch_user_guilds_calls == []
+
+
+def test_callback_user_id_allowlist_rejects_unlisted_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('ANIGAMERPLUS_DISCORD_ALLOWED_USER_IDS', '999')
+    monkeypatch.delenv('ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS', raising=False)
+
+    settings = _make_settings(enabled=True)
+    user_repo = FakeUserRepo()
+    oauth = FakeOAuthClient(user_response={'id': '111', 'username': 'alice', 'avatar': None, 'avatar_url': None})
+    client = _build_client(settings, user_repo=user_repo, oauth_client=oauth)
+
+    resp = _login_then_callback(client)
+
+    assert resp.status_code == 403
+    # Rejected before the user row was ever touched.
+    assert user_repo.upsert_calls == []
+
+
+def test_callback_guild_allowlist_allows_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS', '555,666')
+    monkeypatch.delenv('ANIGAMERPLUS_DISCORD_ALLOWED_USER_IDS', raising=False)
+
+    settings = _make_settings(enabled=True)
+    user_repo = FakeUserRepo()
+    oauth = FakeOAuthClient(
+        user_response={'id': '111', 'username': 'alice', 'avatar': None, 'avatar_url': None},
+        guilds_response=[{'id': '666', 'name': 'My Server'}, {'id': '777', 'name': 'Other'}],
+    )
+    client = _build_client(settings, user_repo=user_repo, oauth_client=oauth)
+
+    resp = _login_then_callback(client)
+
+    assert resp.status_code == 302
+    assert len(user_repo.upsert_calls) == 1
+    assert oauth.fetch_user_guilds_calls == ['fake_token']
+
+
+def test_callback_guild_allowlist_rejects_non_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS', '555')
+    monkeypatch.delenv('ANIGAMERPLUS_DISCORD_ALLOWED_USER_IDS', raising=False)
+
+    settings = _make_settings(enabled=True)
+    user_repo = FakeUserRepo()
+    oauth = FakeOAuthClient(
+        user_response={'id': '111', 'username': 'alice', 'avatar': None, 'avatar_url': None},
+        guilds_response=[{'id': '777', 'name': 'Unrelated Server'}],
+    )
+    client = _build_client(settings, user_repo=user_repo, oauth_client=oauth)
+
+    resp = _login_then_callback(client)
+
+    assert resp.status_code == 403
+    assert user_repo.upsert_calls == []
+
+
+def test_callback_both_allowlists_configured_user_id_fallback_still_allows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A user not in any allowed guild but directly allowlisted by ID is still let in."""
+    monkeypatch.setenv('ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS', '555')
+    monkeypatch.setenv('ANIGAMERPLUS_DISCORD_ALLOWED_USER_IDS', '111')
+
+    settings = _make_settings(enabled=True)
+    user_repo = FakeUserRepo()
+    oauth = FakeOAuthClient(
+        user_response={'id': '111', 'username': 'alice', 'avatar': None, 'avatar_url': None},
+        guilds_response=[{'id': '777', 'name': 'Unrelated Server'}],
+    )
+    client = _build_client(settings, user_repo=user_repo, oauth_client=oauth)
+
+    resp = _login_then_callback(client)
+
+    assert resp.status_code == 302
+    assert len(user_repo.upsert_calls) == 1
+    # Allowed via the user-id fallback without ever needing the guild fetch.
+    assert oauth.fetch_user_guilds_calls == []
+
+
+def test_callback_guild_fetch_error_returns_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    monkeypatch.setenv('ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS', '555')
+    monkeypatch.delenv('ANIGAMERPLUS_DISCORD_ALLOWED_USER_IDS', raising=False)
+
+    settings = _make_settings(enabled=True)
+    user_repo = FakeUserRepo()
+    oauth = FakeOAuthClient(
+        user_response={'id': '111', 'username': 'alice', 'avatar': None, 'avatar_url': None},
+        guilds_error=httpx.HTTPStatusError('bad', request=MagicMock(), response=MagicMock(status_code=503)),
+    )
+    client = _build_client(settings, user_repo=user_repo, oauth_client=oauth)
+
+    resp = _login_then_callback(client)
+
+    assert resp.status_code == 502
+    assert user_repo.upsert_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -441,3 +608,49 @@ def test_telegram_webapp_login_503_when_bot_token_unset() -> None:
     resp = client.post('/api/auth/telegram-webapp', json={'initData': 'anything'})
 
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting (fix #17)
+# ---------------------------------------------------------------------------
+
+
+def test_login_burst_past_limit_returns_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('ANIGAMERPLUS_RATE_LIMIT_AUTH', '2/minute')
+    settings = _make_settings(enabled=True)
+    client = _build_client(settings)
+
+    r1 = client.get('/api/auth/login')
+    r2 = client.get('/api/auth/login')
+    r3 = client.get('/api/auth/login')
+
+    assert r1.status_code == 302
+    assert r2.status_code == 302
+    assert r3.status_code == 429
+    assert 'error' in r3.json()
+
+
+def test_callback_has_its_own_rate_limit_bucket_from_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exhausting /login's bucket must not affect /callback's separate bucket."""
+    monkeypatch.setenv('ANIGAMERPLUS_RATE_LIMIT_AUTH', '1/minute')
+    settings = _make_settings(enabled=True)
+    user_repo = FakeUserRepo()
+    oauth = FakeOAuthClient(user_response={'id': '111', 'username': 'alice', 'avatar': None, 'avatar_url': None})
+    client = _build_client(settings, user_repo=user_repo, oauth_client=oauth)
+
+    login_resp = client.get('/api/auth/login')
+    assert login_resp.status_code == 302
+    # /login's 1/minute bucket is now exhausted.
+    assert client.get('/api/auth/login').status_code == 429
+
+    # /callback is a distinct URL — its own bucket is still fresh.
+    state = login_resp.headers['location'].split('state=')[1].split('&')[0]
+    callback_resp = client.get(f'/api/auth/callback?code=c&state={state}')
+    assert callback_resp.status_code == 302
+
+
+def test_auth_rate_limit_env_var_default_allows_five_per_minute() -> None:
+    """With the env var unset, the documented default of 5/minute applies."""
+    from app.rate_limit import auth_rate_limit
+
+    assert auth_rate_limit() == '5/minute'

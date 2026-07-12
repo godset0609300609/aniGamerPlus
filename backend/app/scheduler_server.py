@@ -38,6 +38,32 @@ if T.TYPE_CHECKING:
 _SECRET_ENV_VAR = 'ANIGAMERPLUS_INTERNAL_SECRET'
 _RESOLVED_SECRET: str | None = None
 
+# ---------------------------------------------------------------------------
+# WebSocket keepalive-ping tuning
+# ---------------------------------------------------------------------------
+
+#: Env-vars that override uvicorn's WebSocket keepalive ping cadence. Same
+#: rationale as ``app.main`` — this process also serves an HTTP/WS surface
+#: (``/internal/health``) behind the internal docker network, and matching
+#: the API process's forgiving keepalive avoids the same 1011 ERROR-level
+#: traceback spam under a slow/buffering hop. See ``app.main`` for details.
+WS_PING_INTERVAL_ENV_VAR = 'ANIGAMERPLUS_WS_PING_INTERVAL'
+WS_PING_TIMEOUT_ENV_VAR = 'ANIGAMERPLUS_WS_PING_TIMEOUT'
+_DEFAULT_WS_PING_INTERVAL = 30.0
+_DEFAULT_WS_PING_TIMEOUT = 60.0
+
+
+def _ws_ping_interval() -> float:
+    """Return the WS ping interval in seconds (env-overridable, default 30.0)."""
+    raw = os.environ.get(WS_PING_INTERVAL_ENV_VAR, '')
+    return float(raw) if raw else _DEFAULT_WS_PING_INTERVAL
+
+
+def _ws_ping_timeout() -> float:
+    """Return the WS ping timeout in seconds (env-overridable, default 60.0)."""
+    raw = os.environ.get(WS_PING_TIMEOUT_ENV_VAR, '')
+    return float(raw) if raw else _DEFAULT_WS_PING_TIMEOUT
+
 
 def _get_internal_secret() -> str:
     """Return the shared secret.
@@ -103,13 +129,16 @@ def build_scheduler_app(container: Container) -> fastapi.FastAPI:
                 display=False,
             )
 
-        secret = _get_internal_secret()
+        _get_internal_secret()
         env_set = bool(os.environ.get(_SECRET_ENV_VAR, ''))
         if not env_set:
-            container.logger.info(
+            container.logger.error(
                 None,
                 'Scheduler',
-                (f'ANIGAMERPLUS_INTERNAL_SECRET not set — using generated secret: {secret}'),
+                (
+                    'ANIGAMERPLUS_INTERNAL_SECRET not set — using generated ephemeral secret. '
+                    'Set the env var for stable inter-process auth.'
+                ),
             )
         # Mark any tasks that were left in-progress by the previous process
         # (e.g. due to a kill signal) as interrupted so the history UI does
@@ -133,6 +162,18 @@ def build_scheduler_app(container: Container) -> fastapi.FastAPI:
                     'Scheduler',
                     f'修正 {normalized} 筆歷史紀錄的非終態 final_status → 中斷',
                 )
+
+        # Ghost-task reconciliation: a scheduler killed mid-BT-landing or
+        # mid-TG-download leaves its live ProgressBus/Redis-mirror entry
+        # stuck non-terminal even though the DB row (bt_feed_entry /
+        # tg_downloaded_media) already reflects the real, finished outcome.
+        # See BtProgressReconciler's docstring for the full story. Never
+        # allowed to block boot — any failure here (Redis hiccup, DB error)
+        # is swallowed so the scheduler still starts.
+        bt_progress_reconciler = getattr(container, 'bt_progress_reconciler', None)
+        if bt_progress_reconciler is not None:
+            with contextlib.suppress(Exception):
+                await bt_progress_reconciler.reconcile_on_boot()
 
         container.logger.info(None, 'Scheduler', 'Starting APScheduler…')
         aps = ApsScheduler(container.settings_repo)
@@ -203,6 +244,8 @@ def serve() -> None:
         port=port,
         log_level='info',
         log_config=build_log_config(_paths, save_logs=True, quantity_of_logs=7),
+        ws_ping_interval=_ws_ping_interval(),
+        ws_ping_timeout=_ws_ping_timeout(),
     )
 
 

@@ -19,6 +19,7 @@ _DISCORD_API_BASE = 'https://discord.com/api/v10'
 _DISCORD_AUTHORIZE_URL = 'https://discord.com/oauth2/authorize'
 _DISCORD_TOKEN_URL = f'{_DISCORD_API_BASE}/oauth2/token'
 _DISCORD_USER_URL = f'{_DISCORD_API_BASE}/users/@me'
+_DISCORD_USER_GUILDS_URL = f'{_DISCORD_API_BASE}/users/@me/guilds'
 
 
 class DiscordOAuthClient:
@@ -43,7 +44,12 @@ class DiscordOAuthClient:
     def build_authorize_url(self, state: str) -> str:
         """Return the Discord authorize URL the browser should be sent to.
 
-        Scope is ``identify`` only — we just need the user's ID + username.
+        Scope is ``identify guilds`` — ``identify`` for the user's ID +
+        username, ``guilds`` so :meth:`fetch_user_guilds` can back the
+        ``ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS`` allowlist gate (fix #16).
+        Requesting ``guilds`` unconditionally (rather than only when that
+        env var is set) keeps this method free of env-var plumbing; an
+        unused granted scope is harmless.
         """
         import urllib.parse
 
@@ -51,7 +57,7 @@ class DiscordOAuthClient:
             'client_id': self._settings.client_id,
             'redirect_uri': self._settings.redirect_uri,
             'response_type': 'code',
-            'scope': 'identify',
+            'scope': 'identify guilds',
             'state': state,
         }
         return f'{_DISCORD_AUTHORIZE_URL}?{urllib.parse.urlencode(params)}'
@@ -127,3 +133,23 @@ class DiscordOAuthClient:
             data['avatar_url'] = None
 
         return data
+
+    # ------------------------------------------------------------------
+    # Allowlist gate (fix #16) — fetch the guilds the user belongs to
+
+    async def fetch_user_guilds(self, access_token: str) -> list[dict[str, object]]:
+        """Call Discord ``/users/@me/guilds`` and return the raw guild list.
+
+        Requires the ``guilds`` scope in addition to ``identify`` — used only
+        by the ``ANIGAMERPLUS_DISCORD_ALLOWED_GUILDS`` allowlist gate in
+        ``auth_api.callback``. Each item has at least an ``id`` key::
+
+            [{"id": "123456789012345678", "name": "My Server", ...}, ...]
+        """
+        response = await self._http.get(
+            _DISCORD_USER_GUILDS_URL,
+            headers={'Authorization': f'Bearer {access_token}'},
+        )
+        response.raise_for_status()
+        result: list[dict[str, object]] = response.json()
+        return result

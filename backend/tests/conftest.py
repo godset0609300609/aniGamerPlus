@@ -12,13 +12,13 @@ a service bound to the fake container's fields.
 
 from __future__ import annotations
 
-import asyncio
 import collections.abc
 import contextlib
 import dataclasses
 import json
 import logging
 import pathlib
+import socket
 import sys
 from typing import Any
 
@@ -28,6 +28,104 @@ import pytest
 BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Undo hydrogram's import-time global uvloop event-loop-policy hijack.
+
+    hydrogram/__init__.py sets uvloop as the process-wide asyncio event loop
+    policy at import time. On Linux CI (uvloop present) this silently swaps
+    the loop implementation for the entire test session the moment any TG
+    test module is collected, which made an async test elsewhere hang for
+    24+ min. Reset to the stdlib default here — after collection has imported
+    every test module (so hydrogram has already run) but before any test
+    body executes — so the suite runs under the same deterministic default
+    loop as local dev (Windows has no uvloop, so it always did).
+
+    Passing ``None`` (rather than constructing ``asyncio.DefaultEventLoopPolicy``
+    directly) clears the explicit policy so ``get_event_loop_policy()`` lazily
+    recreates the platform default on next use. This sidesteps a second,
+    narrower Python 3.14 deprecation: unlike ``set_event_loop_policy`` itself
+    (already ignored below because hydrogram triggers it too),
+    ``asyncio.DefaultEventLoopPolicy`` has no matching ``ignore:`` entry in
+    ``filterwarnings``, and with ``filterwarnings = ["error", ...]`` that
+    warning would abort collection with an INTERNALERROR instead of just
+    resetting the policy.
+    """
+    import asyncio
+
+    asyncio.set_event_loop_policy(None)
+
+
+@pytest.fixture(autouse=True)
+def _stub_url_guard_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the SSRF guard's DNS resolution so tests never depend on real network.
+
+    ``app.security.url_guard.is_safe_public_url`` calls ``socket.getaddrinfo``
+    for any hostname that isn't an IP literal, to defend against DNS
+    rebinding. Fixture URLs across the suite use throwaway hostnames
+    (``a.example``, ``dmhy.org``, ...) that may not resolve — or may resolve
+    differently — outside this sandbox, so every hostname resolves to a
+    fixed public IP here. Tests that specifically exercise guard
+    rejection/DNS-rebinding behaviour re-patch ``socket.getaddrinfo`` (or use
+    an IP-literal URL, which never reaches this code path) within the test
+    itself, which takes precedence over this fixture.
+    """
+
+    def _fake_getaddrinfo(_host: str, *_args: object, **_kwargs: object) -> list[tuple[Any, ...]]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 0))]
+
+    monkeypatch.setattr('app.security.url_guard.socket.getaddrinfo', _fake_getaddrinfo)
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter() -> None:
+    """Reset slowapi's in-memory limiter storage before each test.
+
+    ``app.rate_limit.limiter`` is a process-wide singleton — every
+    ``@limiter.limit(...)``-decorated route (auth login/callback/telegram-
+    webapp, tasks/manual, bt feeds/probe) shares it across the whole test
+    session. Without a reset, request counts from an earlier test would
+    carry over (every ``TestClient`` request looks like it comes from the
+    same "testclient" IP) and cause flaky 429s on tests that never intended
+    to exercise rate limiting.
+    """
+    from app.rate_limit import limiter
+
+    limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_ws_connection_registry() -> None:
+    """Reset the module-level WS connection-registry singleton between tests.
+
+    ``app.api.ws_guard.get_ws_connection_registry()`` returns a process-wide
+    singleton so ``/api/ws/tasks_progress`` and ``/api/ws/logs`` share one
+    per-user connection cap. Without resetting it, a per-user count left
+    over from one test (e.g. an unclosed WS in a failed assertion) would
+    leak into the next test's cap check.
+    """
+    import app.api.ws_guard as _wg
+
+    _wg._registry = None
+
+
+@pytest.fixture(autouse=True)
+def _tg_fernet_key(monkeypatch: pytest.MonkeyPatch) -> collections.abc.Iterator[None]:
+    """Provide a valid ``ANIGAMERPLUS_FERNET_KEY`` for every test.
+
+    ``app.security.crypto`` memoises the parsed ``Fernet`` instance via
+    ``functools.lru_cache``, so this both sets a fixed test key and clears
+    that cache before/after each test — otherwise a test that runs after
+    one which monkeypatched a *different* key would silently reuse the
+    first test's cached ``Fernet`` instance.
+    """
+    from app.security import crypto
+
+    monkeypatch.setenv(crypto.FERNET_KEY_ENV_VAR, 'KDLS-BvBYw4KYpq9qsWXC9Q9Dt8MuQrRdjz63WOpyYI=')
+    crypto.reset_fernet_cache()
+    yield
+    crypto.reset_fernet_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -66,46 +164,6 @@ class FakeManualRunner:
 
 
 # ---------------------------------------------------------------------------
-# FakeSchedulerProxy — stand-in for SchedulerProxy in tests.
-# ---------------------------------------------------------------------------
-
-
-class FakeSchedulerProxy:
-    """Captures enqueue/cancel calls; is_scheduler_up is controllable.
-
-    ``enqueue_raises``: when set to a :class:`SchedulerUnreachable` instance,
-    :meth:`enqueue_manual` raises it instead of recording a call.  This lets
-    tests exercise the 503 path without the real HTTP client.
-    """
-
-    def __init__(self, *, up: bool = True) -> None:
-        self._up = up
-        self.enqueue_calls: list[dict[str, Any]] = []
-        self.cancel_calls: list[int] = []
-        self.enqueue_raises: Exception | None = None
-
-    def is_scheduler_up(self) -> bool:
-        return self._up
-
-    async def enqueue_manual(self, request: Any, owner_id: str) -> None:
-        if self.enqueue_raises is not None:
-            raise self.enqueue_raises
-        self.enqueue_calls.append({'request': request, 'owner_id': owner_id})
-
-    async def cancel_task(self, sn: int) -> None:
-        self.cancel_calls.append(sn)
-
-    def latest_snapshot(self) -> dict[int, Any]:
-        return {}
-
-    async def run_progress_subscription(self) -> None:
-        await asyncio.sleep(9999)
-
-    async def close(self) -> None:
-        pass
-
-
-# ---------------------------------------------------------------------------
 # FakeContainer — composition root for tests.
 # ---------------------------------------------------------------------------
 
@@ -124,15 +182,22 @@ class FakeContainer:
     settings_repo: Any
     sn_list_repo: Any
     cookie_repo: Any
+    bilibili_cookie_repo: Any
     database: Any
     anime_repo: Any
     user_repo: Any
     anime_list_entry_repo: Any
     task_history_repo: Any
+    task_id_map_repo: Any
     progress_bus: Any
     manual_runner: FakeManualRunner
-    # None = no proxy wired (tasks go in-process via manual_runner).
-    scheduler_proxy: FakeSchedulerProxy | None = None
+    putio_token_repo: Any = None
+    bt_feed_repo: Any = None
+    bt_filter_repo: Any = None
+    bt_feed_entry_repo: Any = None
+    tg_session_repo: Any = None
+    tg_watched_chat_repo: Any = None
+    tg_downloaded_media_repo: Any = None
 
 
 @pytest.fixture
@@ -151,13 +216,22 @@ def fake_container(
     from app.logging_ import Logger
     from app.models import AppSettings
     from app.persistence.anime_list_repo import AnimeListEntryRepository
+    from app.persistence.bilibili_cookie_repo import BilibiliCookieRepository
+    from app.persistence.bt_feed_entry_repo import BtFeedEntryRepository
+    from app.persistence.bt_feed_repo import BtFeedRepository
+    from app.persistence.bt_filter_repo import BtFilterRepository
     from app.persistence.cookie_repo import CookieRepository
     from app.persistence.db import Database
     from app.persistence.paths import WorkspacePaths
+    from app.persistence.putio_token_repo import PutioTokenRepository
     from app.persistence.repositories import AnimeRepository
     from app.persistence.settings_repo import SettingsRepository
     from app.persistence.sn_list_repo import SnListRepository
     from app.persistence.task_history_repo import TaskHistoryRepository
+    from app.persistence.task_id_map_repo import TaskIdMapRepository
+    from app.persistence.tg_downloaded_media_repo import TgDownloadedMediaRepository
+    from app.persistence.tg_session_repo import TgSessionRepository
+    from app.persistence.tg_watched_chat_repo import TgWatchedChatRepository
     from app.persistence.user_repo import UserRepository
 
     paths = WorkspacePaths.detect(working_dir=tmp_path)
@@ -174,6 +248,8 @@ def fake_container(
     settings_repo = SettingsRepository(paths, logger)
     sn_list_repo = SnListRepository(paths, logger)
     cookie_repo = CookieRepository(paths, logger)
+    bilibili_cookie_repo = BilibiliCookieRepository(paths)
+    putio_token_repo = PutioTokenRepository(paths)
 
     database = Database(f'sqlite:///{paths.db_path.as_posix()}', logger)
     database.run_baseline_migrations()
@@ -181,6 +257,13 @@ def fake_container(
     user_repo = UserRepository(database)
     anime_list_entry_repo = AnimeListEntryRepository(database)
     task_history_repo = TaskHistoryRepository(database)
+    task_id_map_repo = TaskIdMapRepository(database)
+    bt_feed_repo = BtFeedRepository(database)
+    bt_filter_repo = BtFilterRepository(database)
+    bt_feed_entry_repo = BtFeedEntryRepository(database)
+    tg_session_repo = TgSessionRepository(database)
+    tg_watched_chat_repo = TgWatchedChatRepository(database)
+    tg_downloaded_media_repo = TgDownloadedMediaRepository(database)
 
     progress_bus = ProgressBus()
     manual_runner = FakeManualRunner()
@@ -191,26 +274,27 @@ def fake_container(
         settings_repo=settings_repo,
         sn_list_repo=sn_list_repo,
         cookie_repo=cookie_repo,
+        bilibili_cookie_repo=bilibili_cookie_repo,
         database=database,
         anime_repo=anime_repo,
         user_repo=user_repo,
         anime_list_entry_repo=anime_list_entry_repo,
         task_history_repo=task_history_repo,
+        task_id_map_repo=task_id_map_repo,
         progress_bus=progress_bus,
         manual_runner=manual_runner,
-        # Default: no proxy — tasks go in-process (existing test behaviour).
-        scheduler_proxy=None,
+        putio_token_repo=putio_token_repo,
+        bt_feed_repo=bt_feed_repo,
+        bt_filter_repo=bt_filter_repo,
+        bt_feed_entry_repo=bt_feed_entry_repo,
+        tg_session_repo=tg_session_repo,
+        tg_watched_chat_repo=tg_watched_chat_repo,
+        tg_downloaded_media_repo=tg_downloaded_media_repo,
     )
     try:
         yield container
     finally:
         database.dispose()
-
-
-@pytest.fixture()
-def fake_scheduler_proxy() -> FakeSchedulerProxy:
-    """Return a :class:`FakeSchedulerProxy` with ``is_scheduler_up=True``."""
-    return FakeSchedulerProxy(up=True)
 
 
 # ---------------------------------------------------------------------------
@@ -241,13 +325,11 @@ def client(
     from app.main import DashboardApp
     from app.services import (
         AnimeListService,
-        AuthService,
         ConfigService,
         ProgressService,
         SnListService,
         TaskService,
         get_animelist_service,
-        get_auth_service,
         get_config_service,
         get_progress_service,
         get_snlist_service,
@@ -271,14 +353,11 @@ def client(
     task_service = TaskService(
         fake_container.settings_repo,
         fake_container.manual_runner,
-        fake_container.scheduler_proxy,
     )
     progress_service = ProgressService(
         fake_container.progress_bus,
         fake_container.user_repo,
-        fake_container.scheduler_proxy,
     )
-    auth_service = AuthService(fake_container.settings_repo)
     health_service = HealthService(fake_container.paths)
 
     # Override every service dependency.
@@ -287,7 +366,6 @@ def client(
     app.dependency_overrides[get_animelist_service] = lambda: animelist_service
     app.dependency_overrides[get_task_service] = lambda: task_service
     app.dependency_overrides[get_progress_service] = lambda: progress_service
-    app.dependency_overrides[get_auth_service] = lambda: auth_service
     app.dependency_overrides[get_health_service] = lambda: health_service
 
     # Auth bypass: always return the sentinel admin so auth.enabled=True
@@ -313,16 +391,18 @@ def _container_proxy(fake: FakeContainer) -> Any:
         settings_repo=fake.settings_repo,
         sn_list_repo=fake.sn_list_repo,
         cookie_repo=fake.cookie_repo,
+        bilibili_cookie_repo=fake.bilibili_cookie_repo,
         database=fake.database,
         anime_repo=fake.anime_repo,
         user_repo=fake.user_repo,
         anime_list_entry_repo=fake.anime_list_entry_repo,
         task_history_repo=fake.task_history_repo,
+        task_id_map_repo=fake.task_id_map_repo,
         progress_bus=fake.progress_bus,
         manual_runner=fake.manual_runner,
-        scheduler_proxy=fake.scheduler_proxy,
         # telegram_client None by default; tests that need it override via
         # dependency_overrides.
         telegram_client=None,
+        bilibili_runner=None,
     )
     return proxy

@@ -312,6 +312,27 @@ def test_snapshot_includes_completed_entries() -> None:
     assert snap[2001].status == '下載完成'
 
 
+def test_finish_forces_rate_to_1_when_status_is_terminal() -> None:
+    """finish() must snap ``rate`` to 1.0 for a genuine success terminal status.
+
+    Regression guard: BT's ``bt_landed`` event finishes the task via
+    ``update_status(sn, '下載完成')`` followed by ``finish(sn)`` without ever
+    publishing a final ``rate=1.0`` update — the last rate on record is
+    whatever the throttled ``landing_progress`` callback last wrote (e.g.
+    0.01). Without this normalisation the card would show the "下載完成"
+    label next to a near-empty progress bar.
+    """
+    bus = ProgressBus()
+    bus.start(2050, 'ep50.mp4', status='落地中')
+    bus.update_rate(2050, 0.01)
+    bus.update_status(2050, '下載完成')
+    bus.finish(2050)
+
+    snap = bus.snapshot()
+    assert snap[2050].status == '下載完成'
+    assert snap[2050].rate == 1.0
+
+
 def test_prune_removes_entries_older_than_7d() -> None:
     """_prune_stale must delete entries whose finished_at is beyond 7 days."""
     from app.downloader.progress import _COMPLETION_TTL_SECONDS
@@ -724,3 +745,32 @@ def test_start_preserves_metadata_from_pre_parse() -> None:
     assert entry.bangumi_name == '進擊的巨人'
     assert entry.episode == '第01話'
     assert entry.resolution == '1080p'
+
+
+# ---------------------------------------------------------------------------
+# Regression: source / external_id must survive the start() → snapshot() path
+# ---------------------------------------------------------------------------
+
+
+def test_start_with_source_and_external_id_propagates_to_snapshot() -> None:
+    """source and external_id passed to start() must appear in the snapshot entry.
+
+    Guards against the regression where TaskProgress lacked these fields so
+    they were silently dropped before reaching the API / WebSocket layer.
+    """
+    bus = ProgressBus()
+    bus.start(7001, 'BV1xxx.mp4', source='bilibili', external_id='BV1xxx')
+    snap = bus.snapshot()
+    assert 7001 in snap
+    entry = snap[7001]
+    assert entry.source == 'bilibili'
+    assert entry.external_id == 'BV1xxx'
+
+
+def test_start_without_source_defaults_to_none() -> None:
+    """source and external_id default to None when not provided."""
+    bus = ProgressBus()
+    bus.start(7002, 'ep.mp4')
+    snap = bus.snapshot()
+    assert snap[7002].source is None
+    assert snap[7002].external_id is None

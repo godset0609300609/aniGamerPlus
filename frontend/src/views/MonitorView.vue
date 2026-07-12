@@ -3,14 +3,52 @@ import { computed, onMounted, ref } from 'vue'
 import { CirclePlus } from '@element-plus/icons-vue'
 import { useProgressStore, TERMINAL_STATUSES } from '@/stores/progress'
 import { categorize } from '@/composables/useTaskCategory'
-import type { TaskProgressEntry } from '@/types'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import type { MonitorViewMode, TaskProgressEntry } from '@/types'
 import MonitorHeader from '@/components/monitor/MonitorHeader.vue'
 import MonitorColumn from '@/components/monitor/MonitorColumn.vue'
+import MonitorTable from '@/components/monitor/MonitorTable.vue'
 import ManualTaskDialog from '@/components/ManualTaskDialog.vue'
 
 const manualOpen = ref(false)
 
 const store = useProgressStore()
+const { isMobile } = useBreakpoint()
+
+// ---------------------------------------------------------------------------
+// View mode (table / kanban) — persisted to localStorage, following the
+// same read-on-init / guarded-write pattern as useDarkMode.ts.
+// ---------------------------------------------------------------------------
+const VIEW_MODE_STORAGE_KEY = 'monitor-view-mode'
+
+function readStoredViewMode(): MonitorViewMode {
+  if (typeof localStorage === 'undefined') return 'kanban'
+  const raw = localStorage.getItem(VIEW_MODE_STORAGE_KEY)
+  return raw === 'table' || raw === 'kanban' ? raw : 'kanban'
+}
+
+const viewMode = ref<MonitorViewMode>(readStoredViewMode())
+
+function setViewMode(mode: MonitorViewMode): void {
+  viewMode.value = mode
+  try {
+    localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode)
+  } catch {
+    /* storage may be unavailable; ignore */
+  }
+}
+
+/**
+ * Table mode is unusable at phone width, so mobile always renders kanban
+ * (stacked single-column). The underlying `viewMode` preference is left
+ * untouched while forced — the toggle is hidden on mobile so nothing can
+ * write to it anyway — so the user's real preference reappears exactly as
+ * they left it the moment the viewport crosses back above the mobile
+ * breakpoint.
+ */
+const effectiveViewMode = computed<MonitorViewMode>(() =>
+  isMobile.value ? 'kanban' : viewMode.value,
+)
 
 /** True only during the initial connect before any message has arrived. */
 const isInitialLoad = computed(
@@ -67,6 +105,18 @@ const counts = computed(() => ({
   completed: displayByCategory.value.completed.length,
 }))
 
+/**
+ * All tasks across the three categories, flattened for table mode — reuses
+ * the exact same live-vs-last-snapshot source as the kanban columns so the
+ * two views never disagree on the underlying data set or dimmed/disconnect
+ * state.
+ */
+const allTasks = computed((): TaskProgressEntry[] => [
+  ...displayByCategory.value.waiting,
+  ...displayByCategory.value.downloading,
+  ...displayByCategory.value.completed,
+])
+
 const hasAnyTask = computed(
   () =>
     counts.value.downloading + counts.value.waiting + counts.value.completed > 0,
@@ -85,6 +135,9 @@ onMounted(() => {
       :counts="counts"
       :connection-state="store.state.value"
       :show-disconnected-banner="store.showDisconnectedBanner.value"
+      :view-mode="viewMode"
+      :is-mobile="isMobile"
+      @update:view-mode="setViewMode"
     />
 
     <!-- Disconnect banner (3-second grace period before showing) -->
@@ -117,29 +170,37 @@ onMounted(() => {
         description="目前沒有任務"
       />
 
-      <div
-        v-else
-        class="monitor-grid"
-      >
-        <monitor-column
-          title="等待中"
-          variant="info"
-          :tasks="displayByCategory.waiting"
+      <template v-else>
+        <div
+          v-if="effectiveViewMode === 'kanban'"
+          class="monitor-grid"
+        >
+          <monitor-column
+            title="等待中"
+            variant="info"
+            :tasks="displayByCategory.waiting"
+            :dimmed="columnsDimmed"
+          />
+          <monitor-column
+            title="下載中"
+            variant="success"
+            :tasks="displayByCategory.downloading"
+            :dimmed="columnsDimmed"
+          />
+          <monitor-column
+            title="近期完成"
+            variant="primary"
+            :tasks="displayByCategory.completed"
+            :dimmed="columnsDimmed"
+          />
+        </div>
+
+        <monitor-table
+          v-else
+          :tasks="allTasks"
           :dimmed="columnsDimmed"
         />
-        <monitor-column
-          title="下載中"
-          variant="success"
-          :tasks="displayByCategory.downloading"
-          :dimmed="columnsDimmed"
-        />
-        <monitor-column
-          title="近期完成"
-          variant="primary"
-          :tasks="displayByCategory.completed"
-          :dimmed="columnsDimmed"
-        />
-      </div>
+      </template>
     </template>
 
     <el-button
@@ -198,6 +259,18 @@ onMounted(() => {
   gap: 16px;
   /* Reserve height for fixed nav (~72 px) + shell padding (32 px) + header (~72 px) + gap */
   height: calc(100vh - 196px);
+}
+
+/* Tablet — kanban keeps 2 columns instead of 3; the 3rd (近期完成) simply
+   wraps onto its own row below rather than cramming into a third,
+   too-narrow column. Height goes auto so the page (not each column)
+   scrolls, same rationale as the mobile rule below. */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .monitor-skeleton-grid,
+  .monitor-grid {
+    grid-template-columns: repeat(2, 1fr);
+    height: auto;
+  }
 }
 
 @media (max-width: 767px) {

@@ -30,6 +30,7 @@ _DEFAULT_UA = (
 )
 _MAX_MULTI_THREAD = 5
 _MAX_MULTI_DOWNLOADING_SEGMENT = 5
+_MAX_BILIBILI_CONCURRENT_PARTS = 5
 
 
 class SettingsRepository:
@@ -136,6 +137,9 @@ class SettingsRepository:
 
         if settings.multi_downloading_segment > _MAX_MULTI_DOWNLOADING_SEGMENT:
             changes['multi_downloading_segment'] = _MAX_MULTI_DOWNLOADING_SEGMENT
+
+        if settings.bilibili_concurrent_parts > _MAX_BILIBILI_CONCURRENT_PARTS:
+            changes['bilibili_concurrent_parts'] = _MAX_BILIBILI_CONCURRENT_PARTS
 
         if not changes:
             return settings

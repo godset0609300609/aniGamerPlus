@@ -3,21 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import datetime
 import time
+import unittest.mock
 
+import anyio
 import pytest
 
 from app.models import ManualTaskRequest, WebSettings
 from app.persistence.user_repo import UserRow
-from app.services.auth import AuthService
 from app.services.config_service import ConfigService
 from app.services.progress_service import ProgressService
 from app.services.snlist_service import SnListService
 from app.services.task_service import TaskService
 
-from .conftest import FakeContainer, FakeManualRunner, FakeSchedulerProxy
+from .conftest import FakeContainer, FakeManualRunner
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -125,10 +125,10 @@ async def test_snlist_service_roundtrip(fake_container: FakeContainer) -> None:
 async def test_task_service_enqueues_normalised_call(
     fake_container: FakeContainer,
 ) -> None:
-    """Without a proxy wired, enqueue falls back to in-process ManualRunner."""
+    """Without a dramatiq broker, enqueue falls back to in-process ManualRunner."""
     runner = FakeManualRunner()
-    # No proxy: falls back to direct ManualRunner call in a daemon thread.
-    service = TaskService(fake_container.settings_repo, runner, scheduler_proxy=None)
+    # No broker: falls back to direct ManualRunner call in a daemon thread.
+    service = TaskService(fake_container.settings_repo, runner)
     user = _admin_user()
     await service.enqueue(
         ManualTaskRequest(
@@ -159,11 +159,65 @@ async def test_task_service_enqueues_normalised_call(
 
 
 @pytest.mark.anyio
+async def test_task_service_enqueue_passes_bilingual_to_runner_fallback(
+    fake_container: FakeContainer,
+) -> None:
+    """``bilingual`` on ManualTaskRequest must reach the in-process ManualRunner fallback."""
+    runner = FakeManualRunner()
+    service = TaskService(fake_container.settings_repo, runner)
+    user = _admin_user()
+    await service.enqueue(
+        ManualTaskRequest(
+            sn='321',
+            resolution='1080',
+            mode='all',
+            bilingual=True,
+        ),
+        user,
+    )
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not runner.run_calls:
+        await asyncio.sleep(0.01)
+
+    assert len(runner.run_calls) == 1
+    assert runner.run_calls[0]['bilingual'] is True
+
+
+@pytest.mark.anyio
+async def test_task_service_enqueue_passes_bilingual_to_dramatiq_actor(
+    fake_container: FakeContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``bilingual`` on ManualTaskRequest must reach ``run_download.send_with_options`` kwargs."""
+    from app.tasks import download as download_tasks
+
+    calls: list[dict] = []
+
+    def _spy(*, kwargs: dict, **_: object) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(download_tasks.run_download, 'send_with_options', _spy)
+
+    service = TaskService(fake_container.settings_repo, fake_container.manual_runner)
+    user = _admin_user()
+    await service.enqueue(
+        ManualTaskRequest(sn='654', resolution='1080', mode='all', bilingual=True),
+        user,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]['bilingual'] is True
+    # Dramatiq dispatch succeeded — the in-process fallback must not have run.
+    assert fake_container.manual_runner.run_calls == []
+
+
+@pytest.mark.anyio
 async def test_task_service_falls_back_to_config_resolution(
     fake_container: FakeContainer,
 ) -> None:
     runner = FakeManualRunner()
-    service = TaskService(fake_container.settings_repo, runner, scheduler_proxy=None)
+    service = TaskService(fake_container.settings_repo, runner)
     user = _admin_user()
 
     # Bypass pydantic validation to exercise the service-level guard.
@@ -184,83 +238,146 @@ async def test_task_service_falls_back_to_config_resolution(
     assert runner.run_calls[0]['resolution'] == '1080'
 
 
+# ---------------------------------------------------------------------------
+# TaskService.enqueue — per-user in-flight cap (fix #7)
+# ---------------------------------------------------------------------------
+
+
+def _seed_inflight(fake_container: FakeContainer, *, count: int, owner_id: str, start_sn: int = 10_000) -> None:
+    """Seed *count* running (not finished) tasks owned by *owner_id*."""
+    for i in range(count):
+        fake_container.progress_bus.start(start_sn + i, f'ep{start_sn + i}.mp4', status='正在下載', owner_id=owner_id)
+
+
 @pytest.mark.anyio
-async def test_task_service_enqueue_bubbles_scheduler_unreachable_as_503(
+async def test_enqueue_rejects_21st_task_for_downloader(
     fake_container: FakeContainer,
 ) -> None:
-    """enqueue_manual raising SchedulerUnreachable must surface as HTTP 503.
-
-    This is the primary guard against the WS-reconnect false-positive: the
-    service must not pre-check is_scheduler_up(); instead it catches the
-    concrete HTTP error from the proxy.
-    """
+    """A downloader with 20 in-flight tasks gets 429 on the 21st submission."""
     import fastapi
 
-    from app.api._scheduler_proxy import SchedulerUnreachable
+    user = _downloader_user('cap-dl')
+    _seed_inflight(fake_container, count=20, owner_id=user.id)
 
-    # Proxy is technically "up=False" (WS stale) but that must NOT matter.
-    proxy = FakeSchedulerProxy(up=False)
-    proxy.enqueue_raises = SchedulerUnreachable('Scheduler HTTP unreachable: connect refused')
+    progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
     service = TaskService(
         fake_container.settings_repo,
         fake_container.manual_runner,
-        scheduler_proxy=proxy,
+        progress_service=progress_service,
     )
+
     with pytest.raises(fastapi.HTTPException) as exc_info:
-        await service.enqueue(
-            ManualTaskRequest(sn='1', resolution='1080', mode='single'),
-            _admin_user(),
-        )
-    assert exc_info.value.status_code == 503
-    assert '排程服務暫時無回應' in exc_info.value.detail
+        await service.enqueue(ManualTaskRequest(sn='1', resolution='1080', mode='single'), user)
+    assert exc_info.value.status_code == 429
+    assert '任務過多' in exc_info.value.detail
 
 
 @pytest.mark.anyio
-async def test_task_service_enqueue_succeeds_even_when_ws_stale(
+async def test_enqueue_allows_task_under_the_cap(
     fake_container: FakeContainer,
 ) -> None:
-    """enqueue must succeed when WS is stale but HTTP call succeeds.
+    """A downloader with 19 in-flight tasks can still submit a 20th."""
+    runner = FakeManualRunner()
+    user = _downloader_user('cap-dl-ok')
+    _seed_inflight(fake_container, count=19, owner_id=user.id)
 
-    This is the core fix: a short WS reconnect window (is_scheduler_up=False)
-    must no longer block task submission if the HTTP round-trip works.
-    """
-    # Proxy has stale WS (up=False) but enqueue_manual will succeed.
-    proxy = FakeSchedulerProxy(up=False)
+    progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
     service = TaskService(
         fake_container.settings_repo,
-        fake_container.manual_runner,
-        scheduler_proxy=proxy,
+        runner,
+        progress_service=progress_service,
     )
-    user = _admin_user('uid-ws-stale')
-    # Should not raise — HTTP succeeds even though WS is considered stale.
-    await service.enqueue(
-        ManualTaskRequest(sn='777', resolution='1080', mode='single'),
-        user,
-    )
-    assert len(proxy.enqueue_calls) == 1
-    assert proxy.enqueue_calls[0]['owner_id'] == 'uid-ws-stale'
+    await service.enqueue(ManualTaskRequest(sn='2', resolution='1080', mode='single'), user)
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not runner.run_calls:
+        await asyncio.sleep(0.01)
+    assert len(runner.run_calls) == 1
 
 
 @pytest.mark.anyio
-async def test_task_service_delegates_to_proxy_when_up(
+async def test_enqueue_downloader_cap_is_scoped_to_own_tasks(
     fake_container: FakeContainer,
 ) -> None:
-    """When proxy is up, enqueue_manual is called (not the local runner)."""
-    proxy = FakeSchedulerProxy(up=True)
+    """Another user's in-flight tasks never count against a downloader's cap."""
+    runner = FakeManualRunner()
+    user = _downloader_user('cap-dl-scoped')
+    _seed_inflight(fake_container, count=20, owner_id='someone-else')
+
+    progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
+    service = TaskService(
+        fake_container.settings_repo,
+        runner,
+        progress_service=progress_service,
+    )
+    await service.enqueue(ManualTaskRequest(sn='3', resolution='1080', mode='single'), user)
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not runner.run_calls:
+        await asyncio.sleep(0.01)
+    assert len(runner.run_calls) == 1
+
+
+@pytest.mark.anyio
+async def test_enqueue_admin_has_a_higher_cap(
+    fake_container: FakeContainer,
+) -> None:
+    """Admin's cap (50) is higher than a downloader's (20) — 21 tasks are fine."""
+    runner = FakeManualRunner()
+    user = _admin_user('cap-admin')
+    _seed_inflight(fake_container, count=21, owner_id='some-dl')
+
+    progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
+    service = TaskService(
+        fake_container.settings_repo,
+        runner,
+        progress_service=progress_service,
+    )
+    await service.enqueue(ManualTaskRequest(sn='4', resolution='1080', mode='single'), user)
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not runner.run_calls:
+        await asyncio.sleep(0.01)
+    assert len(runner.run_calls) == 1
+
+
+@pytest.mark.anyio
+async def test_enqueue_admin_rejects_51st_task(
+    fake_container: FakeContainer,
+) -> None:
+    """Admin's cap (50) still applies once enough tasks are in flight across all users."""
+    import fastapi
+
+    user = _admin_user('cap-admin-over')
+    _seed_inflight(fake_container, count=50, owner_id='some-dl')
+
+    progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
     service = TaskService(
         fake_container.settings_repo,
         fake_container.manual_runner,
-        scheduler_proxy=proxy,
+        progress_service=progress_service,
     )
-    user = _admin_user('uid-999')
-    await service.enqueue(
-        ManualTaskRequest(sn='888', resolution='720', mode='single'),
-        user,
-    )
-    assert len(proxy.enqueue_calls) == 1
-    assert proxy.enqueue_calls[0]['owner_id'] == 'uid-999'
-    # Local runner should NOT have been called.
-    assert not fake_container.manual_runner.run_calls
+
+    with pytest.raises(fastapi.HTTPException) as exc_info:
+        await service.enqueue(ManualTaskRequest(sn='5', resolution='1080', mode='single'), user)
+    assert exc_info.value.status_code == 429
+
+
+@pytest.mark.anyio
+async def test_enqueue_no_cap_check_without_progress_service(
+    fake_container: FakeContainer,
+) -> None:
+    """Without a progress_service wired (CLI / stub env), the cap check is skipped."""
+    runner = FakeManualRunner()
+    user = _downloader_user('cap-no-svc')
+    service = TaskService(fake_container.settings_repo, runner)  # no progress_service
+
+    await service.enqueue(ManualTaskRequest(sn='6', resolution='1080', mode='single'), user)
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not runner.run_calls:
+        await asyncio.sleep(0.01)
+    assert len(runner.run_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -366,53 +483,6 @@ async def test_progress_service_admin_sees_all_tasks(
 
 
 # ---------------------------------------------------------------------------
-# AuthService
-# ---------------------------------------------------------------------------
-
-
-def _flip_basic_auth(fake_container: FakeContainer, *, user: str = 'u', pw: str = 'p') -> None:
-    current = fake_container.settings_repo.load()
-    fake_container.settings_repo.save(
-        current.model_copy(
-            update={
-                'dashboard': current.dashboard.model_copy(update={'BasicAuth': True, 'username': user, 'password': pw})
-            }
-        )
-    )
-
-
-@pytest.mark.anyio
-async def test_auth_service_anonymous_when_disabled(
-    fake_container: FakeContainer,
-) -> None:
-    auth = AuthService(fake_container.settings_repo)
-    assert not await auth.is_enabled()
-    assert await auth.verify_http(None) == 'anonymous'
-    assert await auth.verify_ws(None) is True
-
-
-@pytest.mark.anyio
-async def test_auth_service_rejects_bad_ws_header(
-    fake_container: FakeContainer,
-) -> None:
-    _flip_basic_auth(fake_container)
-    auth = AuthService(fake_container.settings_repo)
-    assert await auth.verify_ws(None) is False
-    assert await auth.verify_ws('Bearer xyz') is False
-    assert await auth.verify_ws('Basic !!!not-base64!!!') is False
-
-
-@pytest.mark.anyio
-async def test_auth_service_accepts_valid_ws_header(
-    fake_container: FakeContainer,
-) -> None:
-    _flip_basic_auth(fake_container, user='u', pw='p')
-    auth = AuthService(fake_container.settings_repo)
-    header = 'Basic ' + base64.b64encode(b'u:p').decode()
-    assert await auth.verify_ws(header) is True
-
-
-# ---------------------------------------------------------------------------
 # TaskService.cancel_task
 # ---------------------------------------------------------------------------
 
@@ -427,19 +497,16 @@ async def test_cancel_task_owner_can_cancel(
     user = _downloader_user('dl-owner')
     fake_container.progress_bus.start(300, 'ep300.mp4', status='正在下載', owner_id=user.id)
 
-    proxy = FakeSchedulerProxy(up=True)
-    # ProgressService reads from the local bus (no proxy) so the seeded task
-    # is visible; TaskService still delegates cancel to the proxy.
     progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
     service = TaskService(
         fake_container.settings_repo,
         fake_container.manual_runner,
-        scheduler_proxy=proxy,
+        progress_bus=fake_container.progress_bus,
         progress_service=progress_service,
     )
     await service.cancel_task(300, user)
 
-    assert 300 in proxy.cancel_calls
+    assert fake_container.progress_bus.snapshot()[300].status == '已取消'
 
 
 @pytest.mark.anyio
@@ -456,22 +523,19 @@ async def test_cancel_task_non_owner_gets_404(
     # Seed the task as owned by 'owner', not 'caller'.
     fake_container.progress_bus.start(400, 'ep400.mp4', status='正在下載', owner_id=owner.id)
 
-    proxy = FakeSchedulerProxy(up=True)
-    # ProgressService reads from the local bus (no proxy) so the seeded task
-    # is visible; TaskService still delegates cancel to the proxy.
     progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
     service = TaskService(
         fake_container.settings_repo,
         fake_container.manual_runner,
-        scheduler_proxy=proxy,
+        progress_bus=fake_container.progress_bus,
         progress_service=progress_service,
     )
 
     with pytest.raises(fastapi.HTTPException) as exc_info:
         await service.cancel_task(400, caller)
     assert exc_info.value.status_code == 404
-    # Proxy should NOT have been called.
-    assert 400 not in proxy.cancel_calls
+    # The task must not have been touched.
+    assert fake_container.progress_bus.snapshot()[400].status == '正在下載'
 
 
 @pytest.mark.anyio
@@ -484,44 +548,164 @@ async def test_cancel_task_admin_can_cancel_any(
     user = _admin_user()
     fake_container.progress_bus.start(500, 'ep500.mp4', status='正在下載', owner_id='some-dl-user')
 
-    proxy = FakeSchedulerProxy(up=True)
-    # ProgressService reads from the local bus (no proxy) so the seeded task
-    # is visible; TaskService still delegates cancel to the proxy.
     progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
     service = TaskService(
         fake_container.settings_repo,
         fake_container.manual_runner,
-        scheduler_proxy=proxy,
+        progress_bus=fake_container.progress_bus,
         progress_service=progress_service,
     )
     await service.cancel_task(500, user)
 
-    assert 500 in proxy.cancel_calls
+    assert fake_container.progress_bus.snapshot()[500].status == '已取消'
+
+
+# ---------------------------------------------------------------------------
+# TaskService — Bilibili source branch
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_cancel_task_raises_503_when_scheduler_down(
+async def test_task_service_bilibili_dispatches_via_runner(
     fake_container: FakeContainer,
 ) -> None:
-    """cancel_task raises 503 when the proxy reports scheduler is down."""
-    import fastapi
+    """source='bilibili' branch allocates task_sn and calls bilibili_runner.run()."""
+    bilibili_run_calls: list[dict] = []
 
-    from app.services.progress_service import ProgressService
+    class FakeBilibiliRunner:
+        def run(self, task_sn: int, *, bvid: str, resolution: str, classify: bool, owner_id: str | None = None) -> None:
+            bilibili_run_calls.append({'task_sn': task_sn, 'bvid': bvid, 'resolution': resolution})
 
-    user = _admin_user()
-    fake_container.progress_bus.start(600, 'ep600.mp4', status='正在下載', owner_id=user.id)
-
-    proxy = FakeSchedulerProxy(up=False)
-    # ProgressService reads from the local bus (no proxy) so the seeded task
-    # is visible; TaskService still delegates cancel to the proxy (which is down).
-    progress_service = ProgressService(fake_container.progress_bus, fake_container.user_repo)
+    user = _admin_user('bilibili-user')
     service = TaskService(
         fake_container.settings_repo,
         fake_container.manual_runner,
-        scheduler_proxy=proxy,
-        progress_service=progress_service,
+        task_id_map_repo=fake_container.task_id_map_repo,
+        bilibili_runner=FakeBilibiliRunner(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(fastapi.HTTPException) as exc_info:
-        await service.cancel_task(600, user)
-    assert exc_info.value.status_code == 503
+    request = ManualTaskRequest(
+        sn='BV1xx411c7mD',
+        resolution='1080',
+        mode='single',
+        thread=1,
+        classify=True,
+        danmu=False,
+        source='bilibili',
+    )
+
+    with unittest.mock.patch('app.downloader.bilibili.url_parser.parse_bilibili_input') as mock_parse:
+        mock_parse.return_value = ('BV1xx411c7mD', 170001, False)
+        await service.enqueue(request, user)
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and not bilibili_run_calls:
+        await asyncio.sleep(0.01)
+
+    assert bilibili_run_calls, 'bilibili_runner.run was never called'
+    call = bilibili_run_calls[0]
+    assert call['bvid'] == 'BV1xx411c7mD'
+    assert call['task_sn'] > 2**31
+
+
+@pytest.mark.anyio
+async def test_task_service_bilibili_bad_url_returns_400(
+    fake_container: FakeContainer,
+) -> None:
+    """Invalid Bilibili URL → 400 HTTPException."""
+    import fastapi
+
+    service = TaskService(
+        fake_container.settings_repo,
+        fake_container.manual_runner,
+        task_id_map_repo=fake_container.task_id_map_repo,
+    )
+
+    request = ManualTaskRequest(
+        sn='not-a-bilibili-url',
+        resolution='1080',
+        mode='single',
+        thread=1,
+        classify=True,
+        danmu=False,
+        source='bilibili',
+    )
+
+    with (
+        unittest.mock.patch('app.downloader.bilibili.url_parser.parse_bilibili_input', side_effect=ValueError('bad')),
+        pytest.raises(fastapi.HTTPException) as exc_info,
+    ):
+        await service.enqueue(request, user=_admin_user())
+
+    assert exc_info.value.status_code == 400
+    assert '無法解析' in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_task_service_b23_link_defers_resolution_off_request_path(
+    fake_container: FakeContainer,
+) -> None:
+    """fix #20: a b23.tv short link must NOT be resolved synchronously inside
+    enqueue() — that requires a synchronous HTTP redirect (up to 10s). The
+    resolution is deferred to the fallback thread (no broker in tests, so the
+    in-process path runs); task_sn is allocated against the raw link since
+    the bvid isn't known yet at allocation time."""
+    import threading
+
+    bilibili_run_calls: list[dict] = []
+    resolve_event = threading.Event()
+
+    class FakeBilibiliRunner:
+        def run(self, task_sn: int, *, bvid: str, resolution: str, classify: bool, owner_id: str | None = None) -> None:
+            bilibili_run_calls.append({'task_sn': task_sn, 'bvid': bvid, 'resolution': resolution})
+
+    user = _admin_user('b23-user')
+    service = TaskService(
+        fake_container.settings_repo,
+        fake_container.manual_runner,
+        task_id_map_repo=fake_container.task_id_map_repo,
+        bilibili_runner=FakeBilibiliRunner(),  # type: ignore[arg-type]
+    )
+
+    raw_link = 'https://b23.tv/abcd1234'
+    request = ManualTaskRequest(
+        sn=raw_link,
+        resolution='1080',
+        mode='single',
+        thread=1,
+        classify=True,
+        danmu=False,
+        source='bilibili',
+    )
+
+    def _blocking_parse(s: str) -> tuple[str, int, bool]:
+        # Simulates the network-bound b23 redirect: blocks until the test
+        # signals it (bounded by its own 2s timeout so a regression here
+        # can't hang the suite — if enqueue() awaited this synchronously,
+        # the "not bilibili_run_calls" assertion below would simply fail
+        # once the internal wait times out and returns anyway).
+        resolve_event.wait(timeout=2.0)
+        return 'BV1yy422d8nE', 280002, False
+
+    with unittest.mock.patch('app.downloader.bilibili.url_parser.parse_bilibili_input', side_effect=_blocking_parse):
+        await service.enqueue(request, user)
+
+        # enqueue() returned already, but resolve_event hasn't been set yet —
+        # proves the resolution (and thus bilibili_runner.run) hasn't run.
+        assert not bilibili_run_calls, 'resolution must not complete before enqueue() returns'
+
+        resolve_event.set()  # let the deferred resolution + run proceed
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not bilibili_run_calls:
+            await anyio.sleep(0.01)  # anyio (not asyncio) sleep — must work under both the asyncio and trio backends
+
+    assert bilibili_run_calls, 'bilibili_runner.run was never called after deferred resolution'
+    call = bilibili_run_calls[0]
+    assert call['bvid'] == 'BV1yy422d8nE'
+
+    # task_sn was allocated against the raw b23 link (the resolved bvid
+    # wasn't known yet at allocation time) — allocate() is idempotent per
+    # (source, external_id), so calling it again returns the same task_sn.
+    mapped_sn = fake_container.task_id_map_repo.allocate(source='bilibili', external_id=raw_link)
+    assert mapped_sn == call['task_sn']

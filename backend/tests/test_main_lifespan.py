@@ -191,3 +191,158 @@ def test_container_telegram_client_instantiated_when_token_set(
         loop.run_until_complete(client.close())
     finally:
         loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Session cookie ``Secure`` flag — env-driven via ANIGAMERPLUS_HTTPS_ONLY
+# ---------------------------------------------------------------------------
+
+
+def test_https_only_defaults_to_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the env-var unset, https_only defaults to False (backward compat)."""
+    from app.main import _https_only
+
+    monkeypatch.delenv('ANIGAMERPLUS_HTTPS_ONLY', raising=False)
+    assert _https_only() is False
+
+
+@pytest.mark.parametrize('value', ['0', '', 'false', 'no'])
+def test_https_only_falsy_values_stay_disabled(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """Only the sentinel "0" (or unset) disables it; anything else enables it.
+
+    This mirrors the exact contract from the task: ``!= '0'`` is truthy, so
+    only the literal string "0" (or an unset var, defaulted to "0") counts
+    as disabled. Other falsy-looking strings like "false"/"no" are NOT
+    treated as disabled — documented here so a future refactor doesn't
+    silently "fix" this into a stricter boolean parse without noticing the
+    behaviour change.
+    """
+    from app.main import _https_only
+
+    monkeypatch.setenv('ANIGAMERPLUS_HTTPS_ONLY', value)
+    if value == '0':
+        assert _https_only() is False
+    else:
+        assert _https_only() is True
+
+
+def test_https_only_enabled_when_set_to_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.main import _https_only
+
+    monkeypatch.setenv('ANIGAMERPLUS_HTTPS_ONLY', '1')
+    assert _https_only() is True
+
+
+def _session_middleware_kwargs(app: fastapi.FastAPI) -> dict[str, Any]:
+    """Extract the ``SessionMiddleware`` kwargs from the built app's middleware stack."""
+    import starlette.middleware.sessions
+
+    for mw in app.user_middleware:
+        if mw.cls is starlette.middleware.sessions.SessionMiddleware:
+            return dict(mw.kwargs)
+    raise AssertionError('SessionMiddleware not found in app.user_middleware')
+
+
+def test_session_middleware_https_only_follows_env_var(
+    fake_container: FakeContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SessionMiddleware wired by DashboardApp must reflect the env var."""
+    import types
+
+    proxy = types.SimpleNamespace(settings_repo=fake_container.settings_repo)
+
+    monkeypatch.delenv('ANIGAMERPLUS_HTTPS_ONLY', raising=False)
+    app_default = DashboardApp(proxy).app
+    assert _session_middleware_kwargs(app_default)['https_only'] is False
+
+    monkeypatch.setenv('ANIGAMERPLUS_HTTPS_ONLY', '1')
+    app_enabled = DashboardApp(proxy).app
+    assert _session_middleware_kwargs(app_enabled)['https_only'] is True
+
+
+# ---------------------------------------------------------------------------
+# WebSocket keepalive-ping tuning — env-driven via ANIGAMERPLUS_WS_PING_*
+#
+# uvicorn's own defaults (ping every 20s, drop the connection after 20s
+# without a pong) are too aggressive behind a public reverse proxy — see
+# ``app.main._ws_ping_interval`` / ``_ws_ping_timeout`` docstrings.
+# ---------------------------------------------------------------------------
+
+
+def test_uvicorn_config_defaults_to_30_ping_interval_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the env-vars unset, the ws ping helpers return the forgiving 30s/60s defaults."""
+    from app.main import _ws_ping_interval, _ws_ping_timeout
+
+    monkeypatch.delenv('ANIGAMERPLUS_WS_PING_INTERVAL', raising=False)
+    monkeypatch.delenv('ANIGAMERPLUS_WS_PING_TIMEOUT', raising=False)
+
+    assert _ws_ping_interval() == 30.0
+    assert _ws_ping_timeout() == 60.0
+
+
+def test_uvicorn_config_reads_ws_ping_interval_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ANIGAMERPLUS_WS_PING_INTERVAL / _TIMEOUT override the defaults."""
+    from app.main import _ws_ping_interval, _ws_ping_timeout
+
+    monkeypatch.setenv('ANIGAMERPLUS_WS_PING_INTERVAL', '15')
+    monkeypatch.setenv('ANIGAMERPLUS_WS_PING_TIMEOUT', '45')
+
+    assert _ws_ping_interval() == 15.0
+    assert _ws_ping_timeout() == 45.0
+
+
+def test_dashboard_run_forwards_ws_ping_config_to_uvicorn(
+    fake_container: FakeContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DashboardApp.run() must forward the resolved ws_ping_* kwargs to uvicorn.run."""
+    import app.main as main_module
+
+    monkeypatch.setenv('ANIGAMERPLUS_WS_PING_INTERVAL', '12')
+    monkeypatch.setenv('ANIGAMERPLUS_WS_PING_TIMEOUT', '34')
+
+    captured: dict[str, Any] = {}
+
+    def _fake_uvicorn_run(app: Any, **kwargs: Any) -> None:  # noqa: ARG001
+        captured.update(kwargs)
+
+    monkeypatch.setattr(main_module.uvicorn, 'run', _fake_uvicorn_run)
+
+    proxy = types.SimpleNamespace(
+        paths=fake_container.paths,
+        logger=fake_container.logger,
+        settings_repo=fake_container.settings_repo,
+    )
+    main_module.DashboardApp(proxy).run()
+
+    assert captured.get('ws_ping_interval') == 12.0
+    assert captured.get('ws_ping_timeout') == 34.0
+
+
+def test_dashboard_run_defaults_ws_ping_config_when_env_unset(
+    fake_container: FakeContainer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DashboardApp.run() falls back to 30s/60s when the env-vars are unset."""
+    import app.main as main_module
+
+    monkeypatch.delenv('ANIGAMERPLUS_WS_PING_INTERVAL', raising=False)
+    monkeypatch.delenv('ANIGAMERPLUS_WS_PING_TIMEOUT', raising=False)
+
+    captured: dict[str, Any] = {}
+
+    def _fake_uvicorn_run(app: Any, **kwargs: Any) -> None:  # noqa: ARG001
+        captured.update(kwargs)
+
+    monkeypatch.setattr(main_module.uvicorn, 'run', _fake_uvicorn_run)
+
+    proxy = types.SimpleNamespace(
+        paths=fake_container.paths,
+        logger=fake_container.logger,
+        settings_repo=fake_container.settings_repo,
+    )
+    main_module.DashboardApp(proxy).run()
+
+    assert captured.get('ws_ping_interval') == 30.0
+    assert captured.get('ws_ping_timeout') == 60.0

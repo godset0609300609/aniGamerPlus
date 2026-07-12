@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
 import type { TaskProgressEntry } from '@/types'
-import { formatEta, formatRelative } from '@/utils/format'
-import { cancelTask } from '@/api/client'
+import { clampPercentage, formatEta, formatRelative, ownerInitials, taskDisplayTitle } from '@/utils/format'
+import { sourceBadgeInfo } from '@/utils/sourceBadge'
+import { dismissTask } from '@/utils/taskActions'
 
 /** Card display variants — superset of TaskCategory for backward compat. */
 type CardVariant = 'downloading' | 'waiting' | 'completed' | 'retry' | 'other'
@@ -20,17 +20,15 @@ const borderColor = computed<string>(() => {
   return 'var(--el-color-info)'
 })
 
-const title = computed<string>(() => {
-  if (props.task.bangumi_name) {
-    const ep = props.task.episode ? ` - EP ${props.task.episode}` : ''
-    return `《${props.task.bangumi_name}》${ep}`
-  }
-  return props.task.filename
-})
+const title = computed<string>(() => taskDisplayTitle(props.task))
 
-const percentage = computed<number>(() =>
-  Math.min(100, Math.max(0, Math.round(props.task.rate))),
+const sourceBadge = computed(() => sourceBadgeInfo(props.task.source))
+
+const ownerInitialsText = computed<string>(() =>
+  props.task.owner_username ? ownerInitials(props.task.owner_username) : '',
 )
+
+const percentage = computed<number>(() => clampPercentage(props.task.rate))
 
 const etaText = computed<string>(() => formatEta(props.task.eta_seconds))
 const relativeTime = computed<string>(() => formatRelative(props.task.started_at))
@@ -66,27 +64,8 @@ const cooldownRemainingText = computed<string>(() => {
   return `冷卻 ${Math.ceil(remaining / 1000)}s`
 })
 
-async function confirmCancel(): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      `確定要取消任務 sn=${props.task.sn} 嗎？`,
-      '取消任務',
-      {
-        confirmButtonText: '確定取消',
-        cancelButtonText: '保留',
-        type: 'warning',
-      },
-    )
-  } catch {
-    // User dismissed the dialog — no action needed.
-    return
-  }
-
-  try {
-    await cancelTask(props.task.sn)
-  } catch (err) {
-    ElMessage.error(`取消失敗: ${err instanceof Error ? err.message : String(err)}`)
-  }
+async function dismissCard(): Promise<void> {
+  await dismissTask(props.task.sn)
 }
 </script>
 
@@ -104,6 +83,13 @@ async function confirmCancel(): Promise<void> {
         <span class="task-card__title">{{ title }}</span>
       </el-tooltip>
       <span
+        class="task-card__badge task-card__badge--source"
+        :class="`task-card__badge--${sourceBadge.key}`"
+        :style="{ backgroundColor: sourceBadge.color, color: sourceBadge.textColor }"
+        :data-color="sourceBadge.color"
+        :title="sourceBadge.label"
+      >{{ sourceBadge.label }}</span>
+      <span
         v-if="task.resolution"
         class="task-card__badge task-card__badge--resolution"
       >{{ task.resolution }}</span>
@@ -117,7 +103,7 @@ async function confirmCancel(): Promise<void> {
         size="small"
         class="cancel-btn"
         title="取消任務"
-        @click.stop="confirmCancel"
+        @click.stop="dismissCard"
       >
         ✕
       </el-button>
@@ -141,11 +127,20 @@ async function confirmCancel(): Promise<void> {
     />
 
     <div class="task-card__footer">
-      <span
-        v-if="relativeTime"
-        class="task-card__relative-time"
-      >
-        {{ relativeTime }}
+      <span class="task-card__footer-left">
+        <el-avatar
+          v-if="task.owner_username"
+          :size="20"
+          :src="task.owner_avatar_url"
+          class="task-card__avatar"
+          :title="task.owner_username"
+        >{{ ownerInitialsText }}</el-avatar>
+        <span
+          v-if="relativeTime"
+          class="task-card__relative-time"
+        >
+          {{ relativeTime }}
+        </span>
       </span>
       <span class="task-card__metrics">
         <span
@@ -169,6 +164,12 @@ async function confirmCancel(): Promise<void> {
   padding: 10px 14px;
   margin-bottom: 8px;
   box-shadow: var(--el-box-shadow-lighter);
+  transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
+}
+
+.task-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--el-box-shadow-light);
 }
 
 .task-card__header {
@@ -200,6 +201,14 @@ async function confirmCancel(): Promise<void> {
 .task-card__badge--resolution {
   background: var(--el-fill-color-light);
   color: var(--el-text-color-secondary);
+}
+
+/* Source badges (animad/bilibili/bt/other) get their background/text
+   color inline from sourceBadge.ts so TaskCard and MonitorTable always
+   agree on the exact same colors — this rule just sets the shared
+   typography. */
+.task-card__badge--source {
+  font-weight: 700;
 }
 
 .task-card__badge--retry {
@@ -235,6 +244,12 @@ async function confirmCancel(): Promise<void> {
   margin-top: 4px;
 }
 
+/* Element Plus already animates the fill, but this reinforces a
+   consistent glide (rather than a jump) whenever `percentage` changes. */
+.task-card__progress :deep(.el-progress-bar__inner) {
+  transition: width 0.3s ease-out;
+}
+
 .task-card__footer {
   display: flex;
   align-items: baseline;
@@ -242,6 +257,21 @@ async function confirmCancel(): Promise<void> {
   gap: 8px;
   font-size: 0.78em;
   color: var(--el-text-color-placeholder);
+}
+
+.task-card__footer-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.task-card__avatar {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--el-color-primary);
+  color: #fff;
 }
 
 .task-card__relative-time {
@@ -270,11 +300,28 @@ async function confirmCancel(): Promise<void> {
   margin-left: auto;
   flex-shrink: 0;
   font-size: 0.75em;
-  opacity: 0.6;
+  /* Dimmed until the card (or the button itself) is hovered/focused —
+     always present in the DOM and clickable, never `display:none`/`v-if`
+     gated, so it stays reachable without hovering first (keyboard focus,
+     touch, and tests that click it directly all still work). */
+  opacity: 0.45;
   transition: opacity 0.15s;
 }
 
-.cancel-btn:hover {
+.task-card:hover .cancel-btn,
+.cancel-btn:hover,
+.cancel-btn:focus-visible {
   opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-card,
+  .task-card__progress :deep(.el-progress-bar__inner),
+  .cancel-btn {
+    transition: none !important;
+  }
+  .task-card:hover {
+    transform: none !important;
+  }
 }
 </style>

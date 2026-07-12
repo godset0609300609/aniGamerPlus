@@ -39,14 +39,13 @@ class HealthService:
 
     async def snapshot(self) -> Health:
         # The legacy ``aniGamerPlus_version`` key lived in ``config.json``;
-        # the new :class:`AppSettings` schema drops it. We still surface the
-        # workspace root via ``working_dir`` so ops can confirm the service
-        # is reading the expected directory.
-        return Health(
-            status='ok',
-            version=None,
-            working_dir=str(self._paths.working_dir),
-        )
+        # the new :class:`AppSettings` schema drops it.
+        #
+        # ``working_dir`` used to be surfaced here so ops could confirm the
+        # service was reading the expected directory, but ``/api/health`` is
+        # unauthenticated — leaking the on-disk install path is a needless
+        # recon aid, so it's intentionally no longer included.
+        return Health(status='ok', version=None)
 
 
 @functools.lru_cache(maxsize=1)

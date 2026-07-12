@@ -4,10 +4,10 @@ Covers:
 - app/integrations/my_anime_export.py  (HTTP error page, non-canonical href,
   resolve_sn failure, 100-page safety limit)
 - app/api/deps.py  (_get_settings caching, require_admin_user 403)
-- app/main.py  (run() SSL missing path, CORS env var, lifespan with proxy)
+- app/main.py  (run() SSL missing path, CORS env var/wildcard assertion,
+  unauth non-loopback bind warning)
 - app/downloader/filename.py  (plex extra/movie branches, decimal episodes,
   _season_root_and_sub movie/specials/season1)
-- app/services/auth.py  (verify_http missing credentials, bad credentials)
 - app/persistence/cookie_repo.py  (invalidate OSError, write, modified_at,
   exists_and_nonempty, BOM, parse_cookie_line no-equals)
 - app/scheduler/worker.py  (sn missing from queue, load TryTooManyTimeError,
@@ -19,7 +19,6 @@ Covers:
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import datetime
 import pathlib
@@ -319,7 +318,6 @@ def test_dashboard_run_raises_when_ssl_cert_missing(fake_container: Any, monkeyp
         anime_repo=fake_container.anime_repo,
         progress_bus=fake_container.progress_bus,
         manual_runner=fake_container.manual_runner,
-        scheduler_proxy=None,
     )
 
     dashboard = DashboardApp(proxy_container)
@@ -346,52 +344,118 @@ def test_env_cors_origins_default(monkeypatch: pytest.MonkeyPatch) -> None:
     assert origins == list(DashboardApp.DEFAULT_ALLOWED_ORIGINS)
 
 
-def test_lifespan_with_proxy_starts_subscription(
-    fake_container: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When a scheduler_proxy is wired the lifespan starts a WS subscription task."""
-    import asyncio
+# ---------------------------------------------------------------------------
+# app/main.py — CORS wildcard + credentials startup assertion
+# ---------------------------------------------------------------------------
+
+
+def test_build_app_raises_when_cors_wildcard_with_credentials(fake_container: Any) -> None:
+    """_build_app() refuses to start when cors_origins=['*'] (credentials are always on)."""
     import types as _types
 
-    import fastapi.testclient
-
     from app.main import DashboardApp
-
-    monkeypatch.setenv('ANIGAMERPLUS_DISABLE_SCHEDULER', '1')
-
-    # A fake proxy that records run_progress_subscription calls
-    subscription_started = [False]
-
-    class _FakeProxy:
-        async def run_progress_subscription(self) -> None:
-            subscription_started[0] = True
-            await asyncio.sleep(9999)
-
-        async def close(self) -> None:
-            pass
-
-    fake_proxy = _FakeProxy()
 
     proxy_container = _types.SimpleNamespace(
         paths=fake_container.paths,
         logger=fake_container.logger,
         settings_repo=fake_container.settings_repo,
-        sn_list_repo=fake_container.sn_list_repo,
-        cookie_repo=fake_container.cookie_repo,
-        database=fake_container.database,
-        anime_repo=fake_container.anime_repo,
-        progress_bus=fake_container.progress_bus,
-        manual_runner=fake_container.manual_runner,
-        scheduler_proxy=fake_proxy,
     )
 
-    dashboard = DashboardApp(proxy_container)
-    app = dashboard.app
+    with pytest.raises(RuntimeError, match='cannot be "\\*"'):
+        DashboardApp(proxy_container, cors_origins=['*'])
 
-    with fastapi.testclient.TestClient(app):
-        # subscription was started
-        assert subscription_started[0] is True
+
+def test_build_app_accepts_explicit_origins(fake_container: Any) -> None:
+    """_build_app() boots normally with a concrete origin list."""
+    import types as _types
+
+    from app.main import DashboardApp
+
+    proxy_container = _types.SimpleNamespace(
+        paths=fake_container.paths,
+        logger=fake_container.logger,
+        settings_repo=fake_container.settings_repo,
+    )
+
+    dashboard = DashboardApp(proxy_container, cors_origins=['http://a.example'])
+    assert dashboard.app is not None
+
+
+# ---------------------------------------------------------------------------
+# app/main.py — unauthenticated non-loopback bind warning
+# ---------------------------------------------------------------------------
+
+
+def test_warn_if_unauth_public_bind_warns_when_disabled_and_public(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Logs a WARNING when auth is disabled and host is not loopback.
+
+    Patches ``app.main._log`` directly (rather than using ``caplog``) since
+    ``app``'s ``propagate`` flag is mutated process-wide by other tests that
+    call ``logging.config.dictConfig`` (see ``test_log_config.py``), which
+    would make a propagation-based assertion order-dependent.
+    """
+    import unittest.mock
+
+    from app import main as main_module
+
+    fake_log = unittest.mock.Mock()
+    monkeypatch.setattr(main_module, '_log', fake_log)
+
+    main_module.DashboardApp._warn_if_unauth_public_bind(False, '0.0.0.0')
+
+    fake_log.warning.assert_called_once()
+    assert 'WITHOUT authentication' in fake_log.warning.call_args.args[0]
+
+
+def test_warn_if_unauth_public_bind_silent_when_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No warning when host is loopback, even with auth disabled."""
+    import unittest.mock
+
+    from app import main as main_module
+
+    fake_log = unittest.mock.Mock()
+    monkeypatch.setattr(main_module, '_log', fake_log)
+
+    main_module.DashboardApp._warn_if_unauth_public_bind(False, '127.0.0.1')
+
+    fake_log.warning.assert_not_called()
+
+
+def test_warn_if_unauth_public_bind_silent_when_auth_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No warning when auth is enabled, even on a public bind."""
+    import unittest.mock
+
+    from app import main as main_module
+
+    fake_log = unittest.mock.Mock()
+    monkeypatch.setattr(main_module, '_log', fake_log)
+
+    main_module.DashboardApp._warn_if_unauth_public_bind(True, '0.0.0.0')
+
+    fake_log.warning.assert_not_called()
+
+
+def test_warn_if_unauth_public_bind_silenced_by_env_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ANIGAMERPLUS_ALLOW_UNAUTH_PUBLIC_BIND=1 suppresses the warning."""
+    import unittest.mock
+
+    from app import main as main_module
+
+    fake_log = unittest.mock.Mock()
+    monkeypatch.setattr(main_module, '_log', fake_log)
+    monkeypatch.setenv('ANIGAMERPLUS_ALLOW_UNAUTH_PUBLIC_BIND', '1')
+
+    main_module.DashboardApp._warn_if_unauth_public_bind(False, '0.0.0.0')
+
+    fake_log.warning.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -502,84 +566,6 @@ def test_season_root_and_sub_season1_fallback() -> None:
         classify=True,
     )
     assert 'Season 1' in str(out)
-
-
-# ---------------------------------------------------------------------------
-# app/services/auth.py — verify_http error paths
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_auth_service_verify_http_missing_credentials_raises_401(
-    fake_container: Any,
-) -> None:
-    """verify_http with BasicAuth enabled and credentials=None → 401."""
-    import fastapi
-
-    from app.services.auth import AuthService
-
-    current = fake_container.settings_repo.load()
-    fake_container.settings_repo.save(
-        current.model_copy(
-            update={
-                'dashboard': current.dashboard.model_copy(update={'BasicAuth': True, 'username': 'u', 'password': 'p'})
-            }
-        )
-    )
-    auth = AuthService(fake_container.settings_repo)
-    with pytest.raises(fastapi.HTTPException) as exc_info:
-        await auth.verify_http(None)
-    assert exc_info.value.status_code == 401
-
-
-@pytest.mark.anyio
-async def test_auth_service_verify_http_bad_credentials_raises_401(
-    fake_container: Any,
-) -> None:
-    """verify_http with wrong password → 401."""
-    import fastapi
-    import fastapi.security
-
-    from app.services.auth import AuthService
-
-    current = fake_container.settings_repo.load()
-    fake_container.settings_repo.save(
-        current.model_copy(
-            update={
-                'dashboard': current.dashboard.model_copy(
-                    update={'BasicAuth': True, 'username': 'u', 'password': 'correct'}
-                )
-            }
-        )
-    )
-    auth = AuthService(fake_container.settings_repo)
-    creds = fastapi.security.HTTPBasicCredentials(username='u', password='wrong')
-    with pytest.raises(fastapi.HTTPException) as exc_info:
-        await auth.verify_http(creds)
-    assert exc_info.value.status_code == 401
-
-
-@pytest.mark.anyio
-async def test_auth_service_verify_ws_no_colon_in_decoded(
-    fake_container: Any,
-) -> None:
-    """verify_ws with valid base64 but no ':' in decoded string → False."""
-    import base64
-
-    from app.services.auth import AuthService
-
-    current = fake_container.settings_repo.load()
-    fake_container.settings_repo.save(
-        current.model_copy(
-            update={
-                'dashboard': current.dashboard.model_copy(update={'BasicAuth': True, 'username': 'u', 'password': 'p'})
-            }
-        )
-    )
-    auth = AuthService(fake_container.settings_repo)
-    # No colon in the decoded value
-    header = 'Basic ' + base64.b64encode(b'usernameonly').decode()
-    assert await auth.verify_ws(header) is False
 
 
 # ---------------------------------------------------------------------------
@@ -965,65 +951,3 @@ def test_manual_runner_multi_mode_with_sn_not_in_list(tmp_path: pathlib.Path) ->
     runner.run(10, mode='multi', ep_range=['20'], thread_limit=1)
     assert any(c[0] == 'download' for c in fakes[10].calls)
     assert any(c[0] == 'download' for c in fakes[20].calls)
-
-
-# ---------------------------------------------------------------------------
-# app/api/_scheduler_proxy.py — fetch_health + run_progress_subscription backoff
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_proxy_fetch_health_returns_json() -> None:
-    """fetch_health() should return parsed JSON from the scheduler."""
-    import httpx
-
-    from app.api._scheduler_proxy import SchedulerProxy
-
-    proxy = SchedulerProxy(base_url='http://127.0.0.1:9999', secret='s')
-
-    async def _mock_get(url: str, **kw: Any) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={'status': 'ok', 'tasks': 0},
-            request=httpx.Request('GET', 'http://127.0.0.1:9999/internal/health'),
-        )
-
-    with patch.object(proxy._client, 'get', side_effect=_mock_get):
-        result = await proxy.fetch_health()
-
-    assert result['status'] == 'ok'
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize('anyio_backend', ['asyncio'])
-async def test_proxy_run_subscription_cancelled_during_backoff(
-    anyio_backend: str,
-) -> None:
-    """CancelledError raised during asyncio.sleep in back-off returns cleanly."""
-    import asyncio
-
-    from app.api._scheduler_proxy import SchedulerProxy
-
-    proxy = SchedulerProxy(base_url='http://127.0.0.1:9999', secret='s')
-
-    async def _always_fail() -> None:
-        raise ConnectionRefusedError('no server')
-
-    sleep_started = asyncio.Event()
-    original_sleep = asyncio.sleep
-
-    async def _fake_sleep(delay: float) -> None:
-        sleep_started.set()
-        await original_sleep(9999)  # will be cancelled
-
-    with (
-        patch.object(proxy, '_subscribe_once', side_effect=_always_fail),
-        patch('app.api._scheduler_proxy.asyncio.sleep', side_effect=_fake_sleep),
-    ):
-        task = asyncio.create_task(proxy.run_progress_subscription())
-        await sleep_started.wait()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-
-    assert not proxy.is_scheduler_up()

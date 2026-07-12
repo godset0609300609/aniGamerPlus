@@ -47,6 +47,7 @@ async def run_download(
     realtime_show: bool = False,
     cui_danmu: bool = False,
     owner_id: str | None = None,
+    bilingual: bool = False,
 ) -> None:
     """Run one download task to completion (or abort)."""
     from ..core import build_container
@@ -76,6 +77,7 @@ async def run_download(
             realtime_show=realtime_show,
             cui_danmu=cui_danmu,
             owner_id=owner_id,
+            bilingual=bilingual,
         )
     except dramatiq_abort.Abort:
         # Surfaced when TaskService.cancel_task → dramatiq_abort.abort fires
