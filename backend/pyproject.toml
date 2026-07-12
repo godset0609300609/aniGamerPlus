@@ -134,8 +134,11 @@ filterwarnings = [
     # which fires Python 3.14 deprecation warnings on both
     # `asyncio.set_event_loop_policy` and `asyncio.AbstractEventLoopPolicy`
     # (both slated for removal in 3.16). Nothing we can fix — needs upstream
-    # hydrogram + uvloop migration to the new PEP 3153/asyncio.Runner API.
-    "ignore::DeprecationWarning:hydrogram",
+    # hydrogram + uvloop migration to the new asyncio.Runner API.
+    # Module-scoped ignore (:hydrogram) does NOT match because pytest
+    # attributes the warning to asyncio._deprecated (the emitter), not to
+    # the triggering frame — so use message pattern instead.
+    "ignore:'asyncio\\.(set_event_loop_policy|AbstractEventLoopPolicy)' is deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.run]
