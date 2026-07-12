@@ -810,11 +810,25 @@ def _format_message(
 # Header line for every BT lifecycle event — mirrors _format_message's animad
 # headers (bold, MarkdownV2-escaped literal text). Keyed by 'bt_status_update'
 # putio_status for the transient (pre-landing) rows of the state machine.
+#
+# Must stay in sync with frontend/src/utils/btStatus.ts::LABEL_MAP — that
+# file's BT_STATUS_LIFECYCLE is the authoritative list of Put.io transfer
+# statuses. This dict previously covered only 4 of the 8 lifecycle statuses;
+# the missing ones (WAITING, PREPARING_DOWNLOAD, COMPLETING) fell through to
+# _bt_header's generic fallback and rendered the raw English enum in
+# Telegram messages instead of a Chinese label. When Put.io/the frontend
+# adds a new status, add it here too. ERROR is intentionally absent: it is
+# routed through the 'bt_failed' event (see landing_worker's ERROR branch,
+# which returns before reaching the 'bt_status_update' emit), never through
+# 'bt_status_update'.
 _BT_STATUS_HEADERS = {
     'IN_QUEUE': '⏳ *Put\\.io 排隊中*',
+    'WAITING': '⏳ *Put\\.io 等待中*',
+    'PREPARING_DOWNLOAD': '⚙️ *Put\\.io 準備中*',
     'DOWNLOADING': '⬇️ *Put\\.io 下載中*',
-    'COMPLETED': '📦 *Put\\.io 完成，準備落地*',
+    'COMPLETING': '📦 *Put\\.io 完成中*',
     'SEEDING': '📦 *Put\\.io Seeding，準備落地*',
+    'COMPLETED': '📦 *Put\\.io 完成，準備落地*',
 }
 
 # Resolution marker regex — first match wins; 4K/8K are upper-cased, every
@@ -865,6 +879,20 @@ def _bt_header(event: str, putio_status: str | None) -> str:
     return f'⏳ *Put\\.io {label}*'
 
 
+def _render_progress_bar(fraction: float) -> str:
+    """Render a 10-cell ▰▱ progress bar + percent, e.g. '▰▰▰▰▰▰▱▱▱▱ 60%'.
+
+    *fraction* is clamped to [0, 1]. Returns the RAW (un-escaped) string;
+    the caller escapes it for MarkdownV2. Shared by animad download
+    progress (format_progress_body) and BT landing progress
+    (_format_bt_message's bt_landing_progress branch) so both render an
+    identical bar.
+    """
+    f = max(0.0, min(1.0, fraction))
+    filled = round(f * 10)
+    return f'{"▰" * filled}{"▱" * (10 - filled)} {int(f * 100)}%'
+
+
 def _format_bt_message(
     *,
     event: str,
@@ -911,11 +939,9 @@ def _format_bt_message(
     elif event == 'bt_landing_progress':
         mb_done = int((bytes_written or 0) / (1024 * 1024))
         mb_total = int((total_bytes or 0) / (1024 * 1024))
-        percent = int((bytes_written or 0) / total_bytes * 100) if total_bytes else 0
-        lines.append(
-            f'落地進度: {escape_markdown_v2(str(mb_done))}/{escape_markdown_v2(str(mb_total))} '
-            f'MB \\({escape_markdown_v2(str(percent))}%\\)'
-        )
+        fraction = (bytes_written or 0) / total_bytes if total_bytes else 0.0
+        lines.append(escape_markdown_v2(_render_progress_bar(fraction)))
+        lines.append(f'落地進度: {escape_markdown_v2(str(mb_done))}/{escape_markdown_v2(str(mb_total))} MB')
 
     elif event == 'bt_landed':
         parsed_resolution = resolution or _parse_resolution_from_title(title)
@@ -986,10 +1012,7 @@ def format_progress_body(entry: object) -> str:
     rate = max(0.0, min(1.0, rate))
 
     # Progress bar: 10 cells — ▰/▱ render more clearly on mobile Telegram.
-    filled = round(rate * 10)
-    bar_raw = '▰' * filled + '▱' * (10 - filled)
-    pct_raw = f'{int(rate * 100)}%'
-    lines = [escape_markdown_v2(f'{bar_raw} {pct_raw}')]
+    lines = [escape_markdown_v2(_render_progress_bar(rate))]
 
     if speed_mbps is not None:
         speed_str = escape_markdown_v2(f'{speed_mbps:.1f} MB/s')

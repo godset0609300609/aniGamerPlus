@@ -1,5 +1,39 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { formatEta, formatRelative, formatRelativeBare } from '@/utils/format'
+import { clampPercentage, formatEta, formatRelative, formatRelativeBare } from '@/utils/format'
+
+describe('clampPercentage', () => {
+  // Backend progress writers use inconsistent scales: animad's
+  // segment_downloader emits 0-100, while ffmpeg / BT-landing / TG-download
+  // emit a 0-1 fraction. clampPercentage must normalize both to 0-100.
+
+  it('treats a 0-1 fraction as a fraction — the BT/TG bug (rate=0.6 must render as 60%, not 1%)', () => {
+    expect(clampPercentage(0.6)).toBe(60)
+  })
+
+  it('treats 0.0 as 0%', () => {
+    expect(clampPercentage(0.0)).toBe(0)
+  })
+
+  it('documented edge case: a literal 1 is read as 100%, not 1%', () => {
+    expect(clampPercentage(1)).toBe(100)
+  })
+
+  it('leaves an already-0-100-scale value unaffected (animad segment_downloader)', () => {
+    expect(clampPercentage(60)).toBe(60)
+  })
+
+  it('leaves 100 unaffected', () => {
+    expect(clampPercentage(100)).toBe(100)
+  })
+
+  it('clamps values above 100 down to 100', () => {
+    expect(clampPercentage(150)).toBe(100)
+  })
+
+  it('clamps negative values up to 0', () => {
+    expect(clampPercentage(-5)).toBe(0)
+  })
+})
 
 describe('formatEta', () => {
   it('returns empty string for null', () => {

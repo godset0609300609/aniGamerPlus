@@ -5,14 +5,29 @@
 import type { TaskProgressEntry } from '@/types'
 
 /**
- * Clamps a progress rate — already on a 0-100 scale, NOT a 0-1 fraction —
- * into the valid 0-100 range for `<el-progress :percentage>`. Always use
- * this instead of `rate * 100`; see git d49c1ef ("fix(telegram): clamp
- * progress bar rate to fix 7387% rendering bug") for the production bug
- * this guards against.
+ * Normalizes a progress rate and clamps it into the valid 0-100 range for
+ * `<el-progress :percentage>`.
+ *
+ * Backend progress writers use inconsistent scales: animad's
+ * segment_downloader emits 0-100, while ffmpeg / BT-landing / TG-download
+ * emit a 0-1 fraction. Normalise both to a 0-100 percentage here (the
+ * single rendering chokepoint), mirroring the backend Telegram formatter
+ * telegram_notifier.format_progress_body's `if rate > 1.0: rate /= 100`.
+ * A value <= 1 is treated as a fraction (×100); > 1 is already a
+ * percentage.
+ *
+ * Edge case (documented, accepted — matches backend): a literal
+ * `rate === 1` is read as 100%, not 1%. A true 1%-on-the-0-100-scale
+ * snapshot is rare/transient and the backend already makes this same
+ * tradeoff.
+ *
+ * Always use this instead of `rate * 100` / `Math.round(rate)`; see git
+ * d49c1ef ("fix(telegram): clamp progress bar rate to fix 7387% rendering
+ * bug") for the production bug this guards against.
  */
 export function clampPercentage(rate: number): number {
-  return Math.min(100, Math.max(0, Math.round(rate)))
+  const pct = rate <= 1 ? rate * 100 : rate
+  return Math.min(100, Math.max(0, Math.round(pct)))
 }
 
 /**

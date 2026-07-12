@@ -218,7 +218,7 @@ async function onCancel(row: TaskProgressEntry): Promise<void> {
       >
         <template #default="{ row }">
           <el-tooltip
-            :content="`${Math.round(row.rate * 100)}%`"
+            :content="`${clampPercentage(row.rate)}%`"
             placement="top"
           >
             <el-progress

@@ -473,6 +473,48 @@ def test_format_bt_status_update_in_queue_header() -> None:
     assert msg.startswith('⏳ *Put\\.io 排隊中*')
 
 
+def test_format_bt_status_update_waiting_header() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status='WAITING',
+        local_path=None,
+        error_message=None,
+    )
+    assert msg.startswith('⏳ *Put\\.io 等待中*')
+
+
+def test_format_bt_status_update_preparing_download_header() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status='PREPARING_DOWNLOAD',
+        local_path=None,
+        error_message=None,
+    )
+    assert msg.startswith('⚙️ *Put\\.io 準備中*')
+
+
+def test_format_bt_status_update_completing_header() -> None:
+    msg = _format_bt_message(
+        event='bt_status_update',
+        title='Some Show - 02',
+        feed_name='my-feed',
+        filter_name='my-filter',
+        putio_transfer_id=123,
+        putio_status='COMPLETING',
+        local_path=None,
+        error_message=None,
+    )
+    assert msg.startswith('📦 *Put\\.io 完成中*')
+
+
 def test_bt_status_update_downloading_shows_percent_done_from_putio() -> None:
     msg = _format_bt_message(
         event='bt_status_update',
@@ -563,7 +605,8 @@ def test_bt_landing_progress_shows_percent_and_mb() -> None:
         total_bytes=200 * 1024 * 1024,
     )
     assert msg.startswith('⏬ *落地中*')
-    assert '落地進度: 50/200 MB \\(25%\\)' in msg
+    assert '落地進度: 50/200 MB' in msg
+    assert '25%' in msg
 
 
 def test_bt_landing_progress_zero_total_bytes_renders_zero_percent() -> None:
@@ -579,7 +622,26 @@ def test_bt_landing_progress_zero_total_bytes_renders_zero_percent() -> None:
         bytes_written=1024 * 1024,
         total_bytes=0,
     )
-    assert '落地進度: 1/0 MB \\(0%\\)' in msg
+    assert '落地進度: 1/0 MB' in msg
+    assert '0%' in msg
+
+
+def test_bt_landing_progress_includes_bar() -> None:
+    """The BT landing message should render the same ▰▱ bar as animad progress."""
+    msg = _format_bt_message(
+        event='bt_landing_progress',
+        title='Some Show - 06c',
+        feed_name='my-feed',
+        filter_name=None,
+        putio_transfer_id=None,
+        local_path=None,
+        error_message=None,
+        bytes_written=60 * 1024 * 1024,
+        total_bytes=100 * 1024 * 1024,
+    )
+    assert '▰' in msg
+    assert '▱' in msg
+    assert '落地進度: 60/100 MB' in msg
 
 
 def test_format_bt_landed() -> None:
@@ -1359,6 +1421,27 @@ def test_started_chat_not_found_clears_binding(tmp_path: pathlib.Path) -> None:
     )
 
     assert 'owner' in repo.cleared
+
+
+# ---------------------------------------------------------------------------
+# _render_progress_bar — shared bar renderer used by both animad progress
+# (format_progress_body) and BT landing progress (_format_bt_message)
+# ---------------------------------------------------------------------------
+
+
+def test_render_progress_bar_renders_10_cells() -> None:
+    from app.services.telegram_notifier import _render_progress_bar
+
+    assert _render_progress_bar(0.6) == '▰▰▰▰▰▰▱▱▱▱ 60%'
+    assert _render_progress_bar(0.0) == '▱▱▱▱▱▱▱▱▱▱ 0%'
+    assert _render_progress_bar(1.0) == '▰▰▰▰▰▰▰▰▰▰ 100%'
+
+
+def test_render_progress_bar_clamps_out_of_range() -> None:
+    from app.services.telegram_notifier import _render_progress_bar
+
+    assert _render_progress_bar(1.5) == '▰▰▰▰▰▰▰▰▰▰ 100%'
+    assert _render_progress_bar(-0.5) == '▱▱▱▱▱▱▱▱▱▱ 0%'
 
 
 # ---------------------------------------------------------------------------
