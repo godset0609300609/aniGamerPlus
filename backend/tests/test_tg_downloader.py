@@ -409,6 +409,50 @@ async def test_download_progress_publishes_rate_speed_eta_to_progress_bus(
     assert snapshot[1].eta_seconds >= 0
 
 
+def test_finish_progress_uses_force_finish_when_entry_missing(
+    watcher: TgDownloadWatcher,
+    progress_bus: ProgressBus,
+) -> None:
+    """Simulates a worker-process restart between ``progress_bus.start()`` and
+    download-finish: this real ``ProgressBus`` has never seen sn 1 (its
+    in-memory ``_entries`` is empty, exactly as it would be in a freshly
+    restarted process), yet ``_finish_progress`` must still land a terminal
+    100% entry via ``force_finish`` rather than silently no-op'ing."""
+    assert 1 not in progress_bus.snapshot()  # confirm no local entry pre-exists
+
+    watcher._finish_progress(1, status='下載完成', filename='episode01.mp4')  # noqa: SLF001
+
+    snap = progress_bus.snapshot()
+    assert 1 in snap
+    entry = snap[1]
+    assert entry.status == '下載完成'
+    assert entry.rate == 1.0
+    assert entry.finished_at is not None
+    assert entry.filename == 'episode01.mp4'
+    assert entry.source == 'tg'
+
+
+def test_finish_progress_still_finishes_when_entry_exists(
+    watcher: TgDownloadWatcher,
+    progress_bus: ProgressBus,
+) -> None:
+    """When the local entry *does* exist (the normal, non-restarted case),
+    ``force_finish`` must still produce a full terminal finish — same
+    contract as the old ``update_status`` + ``finish`` combo."""
+    progress_bus.start(1, 'placeholder.mp4', status='下載中', source='tg')
+    assert 1 in progress_bus.snapshot()  # confirm a local entry pre-exists
+
+    watcher._finish_progress(1, status='下載完成', filename='episode01.mp4')  # noqa: SLF001
+
+    snap = progress_bus.snapshot()
+    entry = snap[1]
+    assert entry.status == '下載完成'
+    assert entry.rate == 1.0
+    assert entry.finished_at is not None
+    assert entry.filename == 'episode01.mp4'
+    assert entry.source == 'tg'
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
 async def test_download_progress_throttled_to_5s_or_5pct_jump(

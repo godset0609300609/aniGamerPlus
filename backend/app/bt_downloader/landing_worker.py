@@ -562,6 +562,17 @@ class LandingWorker:
         double-INSERT the same row (see the ``progress_bus`` constructor
         argument's docstring in ``core.py`` for why LandingWorker is wired
         with a ``history_repo=None`` ProgressBus instance).
+
+        Uses :meth:`~app.downloader.progress.ProgressBus.force_finish` rather
+        than ``update_status`` + ``finish`` — the worker process that called
+        ``progress_bus.start()`` for this sn may have restarted mid-landing
+        (e.g. a redeploy during a long Put.io transfer), leaving this
+        process's in-memory ``_entries`` without it. ``finish()`` is a silent
+        no-op when the sn isn't tracked locally, which would strand the card
+        at its last mirrored status ('落地中') forever. ``force_finish``
+        synthesises + publishes the terminal status to the Redis mirror
+        regardless of local state, and is idempotent when the entry already
+        exists.
         """
         if self._progress_bus is None:
             return
@@ -569,10 +580,7 @@ class LandingWorker:
         if sn is None:
             return
         with contextlib.suppress(Exception):
-            if filename is not None:
-                self._progress_bus.update_metadata(sn, filename=filename)
-            self._progress_bus.update_status(sn, status)
-            self._progress_bus.finish(sn)
+            self._progress_bus.force_finish(sn, status=status, filename=filename, source=_TASK_HISTORY_SOURCE)
 
     def _make_landing_progress_callback(self, row: BtFeedEntry) -> collections.abc.Callable[[int, int], None]:
         """Build the ``on_progress`` callback passed to ``PutioClient.download_file``.
