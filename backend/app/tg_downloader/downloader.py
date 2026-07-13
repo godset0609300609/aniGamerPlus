@@ -404,13 +404,21 @@ class TgDownloadWatcher:
             )
 
     def _finish_progress(self, sn: int | None, *, status: str, filename: str | None = None) -> None:
+        """Terminate the live ProgressBus entry for ``sn`` (best-effort, never raises).
+
+        Uses ``force_finish`` rather than ``update_status`` + ``finish``: the
+        worker process that called ``progress_bus.start()`` for this sn may
+        have restarted mid-download, leaving this process's in-memory
+        ``_entries`` without it. Plain ``finish()`` silently no-ops when the
+        sn isn't tracked locally, which would strand the card at its last
+        mirrored status forever. ``force_finish`` synthesises + publishes the
+        terminal status to the Redis mirror regardless of local state, and is
+        idempotent when the entry already exists.
+        """
         if self._progress_bus is None or sn is None:
             return
         with contextlib.suppress(Exception):
-            if filename is not None:
-                self._progress_bus.update_metadata(sn, filename=filename)
-            self._progress_bus.update_status(sn, status)
-            self._progress_bus.finish(sn)
+            self._progress_bus.force_finish(sn, status=status, filename=filename, source=_TASK_HISTORY_SOURCE)
 
     def _start_history(
         self,

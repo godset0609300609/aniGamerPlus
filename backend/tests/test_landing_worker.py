@@ -17,6 +17,7 @@ import unittest.mock
 
 from app.bt_downloader.landing_worker import LandingWorker
 from app.bt_downloader.putio_client import PutioClientError, PutioNotFoundError, PutioRateLimitError
+from app.downloader.progress import ProgressBus
 from app.models import BtFeed, BtFeedEntry, BtFilter
 
 
@@ -242,6 +243,7 @@ class FakeProgressBus:
         self.stats_calls: list[dict[str, object]] = []
         self.metadata_calls: list[dict[str, object]] = []
         self.finish_calls: list[int] = []
+        self.force_finish_calls: list[dict[str, object]] = []
 
     def update_status(self, sn: int, status: str) -> None:
         self.status_calls.append((sn, status))
@@ -269,6 +271,9 @@ class FakeProgressBus:
 
     def finish(self, sn: int) -> None:
         self.finish_calls.append(sn)
+
+    def force_finish(self, sn: int, *, status: str, filename: str | None = None, source: str | None = None) -> None:
+        self.force_finish_calls.append({'sn': sn, 'status': status, 'filename': filename, 'source': source})
 
 
 class FakeSettingsRepo:
@@ -1035,9 +1040,10 @@ def test_landed_finishes_progress_bus_entry(tmp_path: pathlib.Path) -> None:
     )
     worker.run_iteration()
 
-    assert expected_sn in progress_bus.finish_calls
-    assert any(status == '下載完成' for _sn, status in progress_bus.status_calls)
-    assert any(call['filename'] == 'episode.mp4' for call in progress_bus.metadata_calls)
+    assert any(
+        call['sn'] == expected_sn and call['status'] == '下載完成' and call['filename'] == 'episode.mp4'
+        for call in progress_bus.force_finish_calls
+    )
 
 
 def test_failed_finishes_progress_bus_entry_with_失敗(tmp_path: pathlib.Path) -> None:
@@ -1058,8 +1064,7 @@ def test_failed_finishes_progress_bus_entry_with_失敗(tmp_path: pathlib.Path) 
     )
     worker.run_iteration()
 
-    assert expected_sn in progress_bus.finish_calls
-    assert (expected_sn, '失敗') in progress_bus.status_calls
+    assert any(call['sn'] == expected_sn and call['status'] == '失敗' for call in progress_bus.force_finish_calls)
 
 
 def test_404_reset_finishes_progress_bus_with_中斷(tmp_path: pathlib.Path) -> None:
@@ -1079,8 +1084,69 @@ def test_404_reset_finishes_progress_bus_with_中斷(tmp_path: pathlib.Path) -> 
     )
     worker.run_iteration()  # must not raise
 
-    assert expected_sn in progress_bus.finish_calls
-    assert (expected_sn, '中斷') in progress_bus.status_calls
+    assert any(call['sn'] == expected_sn and call['status'] == '中斷' for call in progress_bus.force_finish_calls)
+
+
+def test_finish_progress_uses_force_finish_when_entry_missing(tmp_path: pathlib.Path) -> None:
+    """Simulates a worker-process restart between ``progress_bus.start()`` and
+    landing-finish: the real ``ProgressBus`` here has never seen this sn (its
+    in-memory ``_entries`` is empty, exactly as it would be in a freshly
+    restarted process), yet ``_finish_progress`` must still land a terminal
+    100% entry via ``force_finish`` rather than silently no-op'ing."""
+    row = _entry(1, transfer_id=42)
+    progress_bus = ProgressBus()
+    task_id_map_repo = FakeTaskIdMapRepo()
+    worker = LandingWorker(
+        FakePutioClient(),
+        FakeFeedEntryRepo([row]),
+        tmp_path,
+        progress_bus=progress_bus,
+        task_id_map_repo=task_id_map_repo,
+    )
+    sn = worker._bt_sn(row)  # noqa: SLF001
+    assert sn is not None
+    assert sn not in progress_bus.snapshot()  # confirm no local entry pre-exists
+
+    worker._finish_progress(row, status='下載完成', filename='episode.mp4')  # noqa: SLF001
+
+    snap = progress_bus.snapshot()
+    assert sn in snap
+    entry = snap[sn]
+    assert entry.status == '下載完成'
+    assert entry.rate == 1.0
+    assert entry.finished_at is not None
+    assert entry.filename == 'episode.mp4'
+    assert entry.source == 'bt'
+
+
+def test_finish_progress_still_finishes_when_entry_exists(tmp_path: pathlib.Path) -> None:
+    """When the local entry *does* exist (the normal, non-restarted case),
+    ``force_finish`` must still produce a full terminal finish — same
+    contract as the old ``update_status`` + ``finish`` combo."""
+    row = _entry(1, transfer_id=42)
+    progress_bus = ProgressBus()
+    task_id_map_repo = FakeTaskIdMapRepo()
+    worker = LandingWorker(
+        FakePutioClient(),
+        FakeFeedEntryRepo([row]),
+        tmp_path,
+        progress_bus=progress_bus,
+        task_id_map_repo=task_id_map_repo,
+    )
+    sn = worker._bt_sn(row)  # noqa: SLF001
+    assert sn is not None
+    progress_bus.start(sn, 'placeholder.mp4', status='落地中', source='bt')
+    assert sn in progress_bus.snapshot()  # confirm a local entry pre-exists
+
+    worker._finish_progress(row, status='下載完成', filename='episode.mp4')  # noqa: SLF001
+
+    snap = progress_bus.snapshot()
+    entry = snap[sn]
+    assert entry.status == '下載完成'
+    assert entry.rate == 1.0
+    assert entry.finished_at is not None
+    assert entry.filename == 'episode.mp4'
+    assert entry.source == 'bt'
 
 
 def test_no_progress_bus_wired_does_not_raise(tmp_path: pathlib.Path) -> None:
