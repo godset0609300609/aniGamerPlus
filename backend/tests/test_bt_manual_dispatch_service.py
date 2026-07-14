@@ -13,7 +13,7 @@ import typing as T
 
 import pytest
 
-from app.bt_downloader.putio_client import PutioAuthError, PutioClientError
+from app.bt_downloader.putio_client import PutioAuthError, PutioClientError, PutioTransferAlreadyAddedError
 from app.models import BtFeed, BtFeedEntry, BtFilter
 from app.services.bt_manual_dispatch_service import (
     BtManualDispatchService,
@@ -256,6 +256,48 @@ def test_dispatch_raises_putio_api_error_when_transfer_id_missing() -> None:
     with pytest.raises(PutioApiError):
         service.dispatch(1, 'user-1')
     assert entry_repo.mark_dispatched_manual_calls == []
+
+
+# ---------------------------------------------------------------------------
+# already-added (benign duplicate dispatch)
+# ---------------------------------------------------------------------------
+
+
+def test_already_added_returns_benign_not_failure() -> None:
+    """A PutioTransferAlreadyAddedError must NOT surface as PutioApiError
+    (which the API maps to a 502) and must NOT fire a bt_failed notification
+    — it's a benign "already remote" outcome, not a real failure."""
+    entry_repo = FakeFeedEntryRepo([_entry(putio_transfer_id=999)])
+    token_repo = FakePutioTokenRepo('tok')
+    putio_client = FakePutioClient(raise_error=PutioTransferAlreadyAddedError('already added'))
+    events: list[dict[str, object]] = []
+
+    def notify_event_send(*, kwargs: dict[str, object]) -> None:
+        events.append(kwargs)
+
+    service = BtManualDispatchService(
+        entry_repo, lambda _tok: putio_client, token_repo, notify_event_send=notify_event_send
+    )
+    result = service.dispatch(1, 'user-1')  # must not raise
+
+    assert result == {'transfer_id': 999, 'status': 'ALREADY_ADDED'}
+    assert events == []  # no bt_failed (or any other) notification fired
+    assert entry_repo.mark_dispatched_manual_calls == []  # not marked dispatched — no double-dispatch
+
+
+def test_already_added_falls_back_to_zero_transfer_id_when_never_locally_dispatched() -> None:
+    """The entry was never itself dispatched (putio_transfer_id is None) —
+    Put.io still says the underlying link is already added (e.g. a
+    different entry dispatched the same link). transfer_id falls back to 0
+    since there's no known local transfer id to report."""
+    entry_repo = FakeFeedEntryRepo([_entry(putio_transfer_id=None)])
+    token_repo = FakePutioTokenRepo('tok')
+    putio_client = FakePutioClient(raise_error=PutioTransferAlreadyAddedError('already added'))
+
+    service = BtManualDispatchService(entry_repo, lambda _tok: putio_client, token_repo)
+    result = service.dispatch(1, 'user-1')
+
+    assert result == {'transfer_id': 0, 'status': 'ALREADY_ADDED'}
 
 
 # ---------------------------------------------------------------------------

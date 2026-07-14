@@ -50,15 +50,16 @@ vi.mock('@/composables/useBreakpoint', () => ({
   }),
 }))
 
-const { mockElMessageError, mockElMessageSuccess, mockElMessageBoxConfirm } = vi.hoisted(() => ({
+const { mockElMessageError, mockElMessageSuccess, mockElMessageInfo, mockElMessageBoxConfirm } = vi.hoisted(() => ({
   mockElMessageError: vi.fn(),
   mockElMessageSuccess: vi.fn(),
+  mockElMessageInfo: vi.fn(),
   mockElMessageBoxConfirm: vi.fn(),
 }))
 
 vi.mock('element-plus', () =>
   elementPlusModuleMock({
-    ElMessage: { success: mockElMessageSuccess, error: mockElMessageError, warning: vi.fn(), info: vi.fn() },
+    ElMessage: { success: mockElMessageSuccess, error: mockElMessageError, warning: vi.fn(), info: mockElMessageInfo },
     ElMessageBox: { confirm: mockElMessageBoxConfirm, alert: vi.fn(), prompt: vi.fn() },
   }),
 )
@@ -638,6 +639,25 @@ describe('EntriesTab — 派送 Put.io manual dispatch', () => {
     expect(mockDispatchEntry).toHaveBeenCalledWith(5)
     expect(mockElMessageSuccess).toHaveBeenCalledWith('已派送至 Put.io')
     expect(mockListEntries).toHaveBeenCalledTimes(1) // table refreshed via fetchEntries()
+  })
+
+  it('shows an info message (not success/error) when Put.io reports the transfer already added', async () => {
+    mockDispatchEntry.mockResolvedValue({ transfer_id: 42, status: 'ALREADY_ADDED' })
+    const entry = makeEntry({ id: 9, putio_transfer_id: 42 })
+    mockListEntries.mockResolvedValue(makePage({ items: [entry], total: 1 }))
+    const wrapper = mountView()
+    await flushPromises()
+    mockListEntries.mockClear()
+
+    const redispatchBtn = wrapper.findAll('button').find((b) => b.text().includes('重新派送'))
+    await redispatchBtn!.trigger('click')
+    await flushPromises()
+
+    expect(mockDispatchEntry).toHaveBeenCalledWith(9)
+    expect(mockElMessageInfo).toHaveBeenCalledWith('此項目已在 Put.io，無需重複派送')
+    expect(mockElMessageSuccess).not.toHaveBeenCalled()
+    expect(mockElMessageError).not.toHaveBeenCalled()
+    expect(mockListEntries).toHaveBeenCalledTimes(1) // table still refreshed
   })
 
   it('重新派送 button shows confirmation dialog for already-dispatched entry', async () => {

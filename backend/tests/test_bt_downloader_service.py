@@ -13,7 +13,7 @@ import typing as T
 import opencc
 
 from app.bt_downloader.feed_fetcher import FeedFetchError
-from app.bt_downloader.putio_client import PutioAuthError, PutioClientError
+from app.bt_downloader.putio_client import PutioAuthError, PutioClientError, PutioTransferAlreadyAddedError
 from app.models import BtDownloaderSettings, BtFeed, BtFeedEntry, BtFilter
 from app.services.bt_downloader_service import BtDownloaderService
 
@@ -545,6 +545,41 @@ def test_failed_event_fired_when_add_transfer_raises_putio_client_error() -> Non
     assert len(events) == 1
     assert events[0]['event'] == 'bt_failed'
     assert events[0]['error_message'] == 'temporary 500'
+
+
+def test_already_added_skips_without_bt_failed() -> None:
+    """A benign PutioTransferAlreadyAddedError (duplicate dispatch of a link
+    already on Put.io) must be skipped silently — no bt_failed notification,
+    and the entry is neither marked dispatched nor stuck in a failure state."""
+    feed = _feed(1, 'feed1', 'https://feed1.example/rss')
+    feed_repo = FakeFeedRepo([feed])
+    filter_repo = FakeFilterRepo([BtFilter(id=1, name='my-filter', keywords=['Show'])])
+    entry_repo = FakeFeedEntryRepo()
+    token_repo = FakePutioTokenRepo('tok')
+    fetcher = FakeFeedFetcher({feed.url: [_entry_dict('g1', 'Some Show - 01', 'link1')]})
+    matcher = FakeFilterMatcher({'Some Show - 01'})
+    putio_client = FakePutioClient(raise_error=PutioTransferAlreadyAddedError('already added'))
+    events: list[dict[str, object]] = []
+
+    def notify_event_send(*, kwargs: dict[str, object]) -> None:
+        events.append(kwargs)
+
+    service = BtDownloaderService(
+        feed_repo,
+        filter_repo,
+        entry_repo,
+        lambda _tok: putio_client,
+        token_repo,
+        _settings(),
+        feed_fetcher=fetcher,
+        filter_matcher=matcher,
+        notify_event_send=notify_event_send,
+    )
+    service.run_iteration()
+
+    assert putio_client.add_transfer_calls == ['link1']
+    assert events == []  # no bt_failed (or any other) notification fired
+    assert entry_repo.dispatched == []  # not marked dispatched — no double-dispatch
 
 
 def test_no_notify_event_send_wired_does_not_raise() -> None:

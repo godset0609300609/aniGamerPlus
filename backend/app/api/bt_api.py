@@ -245,6 +245,11 @@ async def dispatch_entry(
     Works whether the entry has already matched a filter or not, and
     whether it was previously dispatched or not — a re-dispatch overwrites
     ``putio_transfer_id`` with the new transfer's id.
+
+    A duplicate dispatch of a link already active on Put.io (its 400
+    ``TRANSFER_ALREADY_ADDED``) is not treated as a failure — the service
+    returns a benign ``status: 'ALREADY_ADDED'`` result and this endpoint
+    still responds 200, rather than a 502.
     """
     try:
         result = await anyio.to_thread.run_sync(lambda: service.dispatch(entry_id, user.id))

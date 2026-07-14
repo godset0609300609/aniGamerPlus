@@ -11,7 +11,7 @@ import collections.abc
 import contextlib
 import typing as T
 
-from ..bt_downloader.putio_client import PutioAuthError, PutioClientError
+from ..bt_downloader.putio_client import PutioAuthError, PutioClientError, PutioTransferAlreadyAddedError
 
 if T.TYPE_CHECKING:
     from ..bt_downloader.putio_client import PutioClient
@@ -92,10 +92,15 @@ class BtManualDispatchService:
     def dispatch(self, entry_id: int, user_id: str) -> dict[str, object]:
         """Send *entry_id* to Put.io, overwriting any previous ``putio_transfer_id``.
 
-        Returns ``{'transfer_id': int, 'status': str}`` on success. Raises
+        Returns ``{'transfer_id': int, 'status': str}`` on success —
+        including the benign case where Put.io reports the link is already
+        an active transfer on the account (``status`` is ``'ALREADY_ADDED'``
+        and ``transfer_id`` is this entry's previously-known transfer id, or
+        ``0`` if it was never itself dispatched locally). Raises
         :class:`EntryNotFound`, :class:`PutioTokenMissing`,
-        :class:`PutioAuthFailed`, or :class:`PutioApiError` on failure —
-        callers (``bt_api``) translate these to the matching HTTP status.
+        :class:`PutioAuthFailed`, or :class:`PutioApiError` on a real
+        failure — callers (``bt_api``) translate these to the matching HTTP
+        status.
         """
         row = self._bt_feed_entry_repo.get(entry_id)
         if row is None:
@@ -112,6 +117,15 @@ class BtManualDispatchService:
             self._log_error(f'Put.io token 已失效: {exc}')
             self._emit('bt_failed', row=row, error_message=str(exc))
             raise PutioAuthFailed(str(exc)) from exc
+        except PutioTransferAlreadyAddedError as exc:
+            # Benign: the link is already an active transfer on Put.io
+            # (e.g. the user clicked 重新派送 while the earlier dispatch is
+            # still in flight, or a different entry already dispatched the
+            # same underlying link). Not a failure — no bt_failed
+            # notification and no PutioApiError/502: return a friendly
+            # "already remote" outcome so the API responds 200.
+            self._log_info(f'Put.io transfer 已存在，略過重複派送 (entry_id={entry_id}): {exc}')
+            return {'transfer_id': row.putio_transfer_id or 0, 'status': 'ALREADY_ADDED'}
         except PutioClientError as exc:
             self._log_error(f'Put.io 派送失敗 ({row.title}): {exc}')
             self._emit('bt_failed', row=row, error_message=str(exc))
