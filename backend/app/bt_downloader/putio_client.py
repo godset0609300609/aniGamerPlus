@@ -61,6 +61,25 @@ class PutioRateLimitError(PutioClientError):
         self.retry_after = retry_after
 
 
+class PutioTransferAlreadyAddedError(PutioClientError):
+    """Raised when Put.io's 400 for ``POST /transfers/add`` means the link is already an active transfer.
+
+    Put.io responds with ``error_type: 'TRANSFER_ALREADY_ADDED'`` (and an
+    ``error_message`` along the lines of "This transfer has already been
+    added...") when the same url/magnet is dispatched twice — e.g. two BT
+    feed entries that happen to point at the same underlying torrent, or a
+    manual re-dispatch racing the automated tick. This is a benign
+    duplicate, not a real failure: the transfer is already progressing
+    remotely under its own id. Distinct from the generic
+    :class:`PutioClientError` so callers (notably
+    :class:`~app.services.bt_downloader_service.BtDownloaderService` and
+    :class:`~app.services.bt_manual_dispatch_service.BtManualDispatchService`)
+    can skip it quietly instead of firing a user-facing ``bt_failed``
+    notification. Still a :class:`PutioClientError` subclass so a caller
+    that doesn't special-case it keeps working unchanged.
+    """
+
+
 class PutioClient:
     """Synchronous Put.io v2 API client, scoped to a single OAuth token.
 
@@ -89,7 +108,13 @@ class PutioClient:
     # ------------------------------------------------------------------ transfers
 
     def add_transfer(self, url: str) -> dict[str, object]:
-        """``POST /transfers/add`` — start downloading *url* into the user's Put.io account."""
+        """``POST /transfers/add`` — start downloading *url* into the user's Put.io account.
+
+        Raises :class:`PutioTransferAlreadyAddedError` (instead of the
+        generic :class:`PutioClientError`) when Put.io's 400 response
+        indicates *url* is already an active transfer on the account —
+        see that class's docstring.
+        """
         response = self._request('POST', '/transfers/add', data={'url': url})
         body: dict[str, object] = response.json()
         return T.cast('dict[str, object]', body.get('transfer', body))
@@ -211,8 +236,34 @@ class PutioClient:
             raise PutioRateLimitError(
                 f'Put.io rate limit (429) for {method} {url}, retry_after={retry_after}s', retry_after=retry_after
             )
+        if response.status_code == 400 and url == '/transfers/add':
+            self._raise_if_transfer_already_added(method, url, response)
         if response.status_code >= 400:
             raise PutioClientError(f'Put.io {method} {url} returned {response.status_code}: {response.text}')
+
+    def _raise_if_transfer_already_added(self, method: str, url: str, response: httpx.Response) -> None:
+        """Raise :class:`PutioTransferAlreadyAddedError` for ``POST /transfers/add``'s "already added" 400.
+
+        Only called by :meth:`_check_response`, and only for that one
+        endpoint's 400s. Detected primarily via the response body's
+        ``error_type`` field (``'TRANSFER_ALREADY_ADDED'``), falling back
+        to a case-insensitive substring match on ``error_message``
+        ('already been added') in case Put.io ever omits or renames
+        ``error_type``. Returns normally — letting ``_check_response``'s
+        generic ``>= 400`` branch raise the plain :class:`PutioClientError`
+        — for every other 400 body, including one that isn't valid JSON.
+        """
+        error_type = ''
+        error_message = ''
+        with contextlib.suppress(Exception):
+            payload = response.json()
+            if isinstance(payload, dict):
+                error_type = str(payload.get('error_type') or '')
+                error_message = str(payload.get('error_message') or '')
+        if error_type == 'TRANSFER_ALREADY_ADDED' or 'already been added' in error_message.lower():
+            raise PutioTransferAlreadyAddedError(
+                f'Put.io {method} {url} returned 400: transfer already added ({error_message or error_type})'
+            )
 
 
 def _parse_retry_after(raw: str | None) -> int:

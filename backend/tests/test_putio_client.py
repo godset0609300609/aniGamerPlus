@@ -21,6 +21,7 @@ from app.bt_downloader.putio_client import (
     PutioClientError,
     PutioNotFoundError,
     PutioRateLimitError,
+    PutioTransferAlreadyAddedError,
 )
 
 _TOKEN = 'test-oauth-token-123'
@@ -80,6 +81,69 @@ def test_add_transfer_network_error_wraps_as_putio_client_error() -> None:
     with pytest.raises(PutioClientError) as exc_info:
         client.add_transfer('magnet:?xt=urn:btih:aaa111')
     assert not isinstance(exc_info.value, PutioAuthError)
+
+
+# ---------------------------------------------------------------------------
+# add_transfer — "already added" 400 (benign duplicate dispatch)
+# ---------------------------------------------------------------------------
+
+
+def test_add_transfer_already_added_raises_specific_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return _json_response(
+            400,
+            {
+                'error_id': None,
+                'error_message': (
+                    'This transfer has already been added. You should wait for it to complete or delete it '
+                    'before trying again.'
+                ),
+                'error_type': 'TRANSFER_ALREADY_ADDED',
+            },
+        )
+
+    client = PutioClient(_TOKEN, transport=httpx.MockTransport(handler))
+    with pytest.raises(PutioTransferAlreadyAddedError) as exc_info:
+        client.add_transfer('magnet:?xt=urn:btih:aaa111')
+    assert isinstance(exc_info.value, PutioClientError)
+
+
+def test_add_transfer_already_added_via_message_fallback() -> None:
+    """error_type is missing/renamed, but the message still says 'already been added' —
+    must still be detected via the case-insensitive message substring fallback."""
+
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return _json_response(
+            400,
+            {'error_id': None, 'error_message': 'This TRANSFER Has Already Been Added, dude.', 'error_type': None},
+        )
+
+    client = PutioClient(_TOKEN, transport=httpx.MockTransport(handler))
+    with pytest.raises(PutioTransferAlreadyAddedError):
+        client.add_transfer('magnet:?xt=urn:btih:aaa111')
+
+
+def test_add_transfer_other_400_still_generic() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return _json_response(400, {'error_id': None, 'error_message': 'malformed url', 'error_type': 'BAD_REQUEST'})
+
+    client = PutioClient(_TOKEN, transport=httpx.MockTransport(handler))
+    with pytest.raises(PutioClientError) as exc_info:
+        client.add_transfer('not-a-valid-url')
+    assert not isinstance(exc_info.value, PutioTransferAlreadyAddedError)
+
+
+def test_add_transfer_400_with_non_json_body_still_generic() -> None:
+    """A 400 whose body isn't JSON at all must not blow up response.json() —
+    it just falls through to the generic PutioClientError path."""
+
+    def handler(request: httpx.Request) -> httpx.Response:  # noqa: ARG001
+        return httpx.Response(400, content=b'not json at all')
+
+    client = PutioClient(_TOKEN, transport=httpx.MockTransport(handler))
+    with pytest.raises(PutioClientError) as exc_info:
+        client.add_transfer('magnet:?xt=urn:btih:aaa111')
+    assert not isinstance(exc_info.value, PutioTransferAlreadyAddedError)
 
 
 # ---------------------------------------------------------------------------

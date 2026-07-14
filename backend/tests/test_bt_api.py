@@ -711,6 +711,21 @@ def test_dispatch_entry_returns_400_when_putio_token_missing(
     assert r.status_code == 400
 
 
+def test_dispatch_already_remote_returns_200(
+    client: fastapi.testclient.TestClient, fake_container: FakeContainer
+) -> None:
+    """The service's benign "already remote" outcome (a duplicate dispatch
+    of a link already on Put.io) must surface as a 2xx with a friendly
+    status, not a 502 — see BtManualDispatchService.dispatch's docstring."""
+    _bind_repos(client, fake_container)
+    fake_service = FakeManualDispatchService(result={'transfer_id': 999, 'status': 'ALREADY_ADDED'})
+    client.app.dependency_overrides[get_bt_manual_dispatch_service] = lambda: fake_service
+
+    r = client.post('/api/bt/entries/1/dispatch')
+    assert r.status_code == 200
+    assert r.json() == {'transfer_id': 999, 'status': 'ALREADY_ADDED'}
+
+
 def test_dispatch_entry_returns_403_when_not_admin(
     client: fastapi.testclient.TestClient, fake_container: FakeContainer
 ) -> None:

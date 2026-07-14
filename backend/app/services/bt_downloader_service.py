@@ -28,7 +28,7 @@ import opencc
 
 from ..bt_downloader.feed_fetcher import FeedFetcher, FeedFetchError
 from ..bt_downloader.filter_matcher import FilterMatcher
-from ..bt_downloader.putio_client import PutioAuthError, PutioClientError
+from ..bt_downloader.putio_client import PutioAuthError, PutioClientError, PutioTransferAlreadyAddedError
 
 if T.TYPE_CHECKING:
     from ..bt_downloader.putio_client import PutioClient
@@ -322,12 +322,23 @@ class BtDownloaderService:
         entries. A :class:`PutioClientError` (or a transfer response missing
         ``id``) is treated as a per-entry failure: logged, a ``bt_failed``
         event is emitted, and ``False`` is returned so the caller moves on
-        to the next entry.
+        to the next entry. :class:`PutioTransferAlreadyAddedError` (Put.io's
+        "transfer already added" 400 — a benign duplicate dispatch, not a
+        real failure; see that class's docstring) is handled the same way
+        except quietly: no ``bt_failed`` event is fired.
         """
         try:
             transfer = putio_client.add_transfer(row.link)
         except PutioAuthError:
             raise
+        except PutioTransferAlreadyAddedError as exc:
+            # Benign: the link is already an active transfer on Put.io
+            # (e.g. two feed entries pointing at the same underlying
+            # magnet/torrent). Not a failure — no bt_failed notification,
+            # just a quiet log and a no-op skip. Whichever entry dispatched
+            # it first will land normally on its own.
+            self._log_info(f'Put.io transfer 已存在，略過重複派送 ({row.title}): {exc}')
+            return False
         except PutioClientError as exc:
             self._log(f'Put.io 派送失敗 ({row.title}): {exc}')
             self._emit('bt_failed', row=row, feed_name=feed_name, filter_name=filter_name, error_message=str(exc))
@@ -391,6 +402,10 @@ class BtDownloaderService:
     def _log(self, message: str) -> None:
         if self._logger is not None:
             self._logger.error(None, _LOG_TAG, message, display=False)
+
+    def _log_info(self, message: str) -> None:
+        if self._logger is not None:
+            self._logger.info(None, _LOG_TAG, message, display=False)
 
     def _emit(
         self,

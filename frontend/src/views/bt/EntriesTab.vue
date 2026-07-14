@@ -179,8 +179,14 @@ function isDispatching(entryId: number): boolean {
 async function performDispatch(row: BtFeedEntry): Promise<void> {
   dispatchingIds.value.add(row.id)
   try {
-    await api.dispatchEntry(row.id)
-    ElMessage.success('已派送至 Put.io')
+    const result = await api.dispatchEntry(row.id)
+    if (result.status === 'ALREADY_ADDED') {
+      // Benign: the link was already an active transfer on Put.io — not a
+      // failure, so this reads as informational rather than a red error.
+      ElMessage.info('此項目已在 Put.io，無需重複派送')
+    } else {
+      ElMessage.success('已派送至 Put.io')
+    }
     await fetchEntries()
   } catch (err) {
     ElMessage.error(`派送失敗：${(err as Error).message}`)
