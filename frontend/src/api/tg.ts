@@ -7,6 +7,7 @@ import type {
   TgPhoneLoginResponse,
   TgQrLoginResponse,
   TgRebindNotificationResponse,
+  TgRedownloadResponse,
   TgSession,
   TgWatchedChat,
 } from '@/types'
@@ -122,5 +123,12 @@ export class TgApi {
 
   listDownloads(page: number = 1, size: number = 50): Promise<TgDownloadsPage> {
     return this.http.getJson<TgDownloadsPage>(`/tg/downloads?page=${page}&size=${size}`)
+  }
+
+  // Bypasses dedup + the watched-chat filter for this one explicitly-picked
+  // file; overwrites the existing local file in place once the background
+  // job lands. Never bypasses the server-side landing-root path guard.
+  forceRedownload(id: number): Promise<TgRedownloadResponse> {
+    return this.http.postJson<TgRedownloadResponse>(`/tg/downloads/${id}/redownload`, {})
   }
 }

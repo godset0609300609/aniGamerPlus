@@ -159,6 +159,33 @@ def _client_with_download(*, download_result: str | Exception = 'DEST_RESULT_PAT
     return client
 
 
+def _client_that_writes(
+    *, content: bytes = b'new-content', raise_exc: Exception | None = None
+) -> unittest.mock.AsyncMock:
+    """A ``client.download_media`` stand-in that actually touches the filesystem.
+
+    Unlike ``_client_with_download`` (a canned return value, fine for
+    ``enqueue_message`` tests that only assert whether download_media was
+    called), force_redownload's own logic reads the resulting file back
+    (``.exists()`` / ``.stat().st_size``) and moves it onto the original
+    path — so its tests need a fake that genuinely writes bytes to the
+    ``file_name`` it's given, exercising that real file-move logic instead
+    of just asserting on the call shape.
+    """
+
+    async def _download(_message: object, *, file_name: str, progress: object = None) -> str:
+        if raise_exc is not None:
+            raise raise_exc
+        path = pathlib.Path(file_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return str(path)
+
+    client = unittest.mock.AsyncMock()
+    client.download_media = unittest.mock.AsyncMock(side_effect=_download)
+    return client
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
 async def test_matching_video_is_downloaded_and_recorded(
@@ -727,3 +754,252 @@ async def test_concurrent_downloads_capped_per_user(
     assert client.download_media.await_count == 10
     assert max_active == 3  # confirms the cap was actually hit, not incidentally low
     assert active == 0  # every acquired slot was released
+
+
+# ---------------------------------------------------------------------------
+# force_redownload — bypasses dedup + filter, never bypasses the path guard,
+# never destroys the original file on a failed attempt.
+# ---------------------------------------------------------------------------
+
+
+def _existing_entry(
+    downloaded_media_repo: TgDownloadedMediaRepository,
+    local_path: pathlib.Path,
+    *,
+    content: bytes = b'old-content',
+    write_file: bool = True,
+):
+    """Insert a tg_downloaded_media row (as if a normal download landed it
+    earlier) and, by default, actually create the file at *local_path* so
+    tests can assert on real before/after file contents."""
+    if write_file:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(content)
+    entry = downloaded_media_repo.insert_if_new(
+        USER_ID,
+        chat_id=CHAT_ID,
+        message_id=MESSAGE_ID,
+        file_id='old-unique-id',
+        file_name='episode01.mp4',
+        file_size=len(content),
+        local_path=str(local_path),
+    )
+    assert entry is not None
+    return entry
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_force_redownload_bypasses_dedup(
+    anyio_backend: str,
+    watcher: TgDownloadWatcher,
+    watched_chat_repo: TgWatchedChatRepository,
+    downloaded_media_repo: TgDownloadedMediaRepository,
+    tmp_path: pathlib.Path,
+) -> None:
+    """exists() is True for this (user, chat, message) — enqueue_message would
+    skip it, but force_redownload must download anyway."""
+    _watch_chat(watched_chat_repo)
+    local_path = tmp_path / 'bangumi' / 'tg' / USER_ID / '測試頻道' / 'episode01.mp4'
+    entry = _existing_entry(downloaded_media_repo, local_path)
+    assert downloaded_media_repo.exists(USER_ID, CHAT_ID, MESSAGE_ID) is True
+
+    client = _client_that_writes(content=b'fresh-content')
+    message = _message(video=_real_video())
+
+    result = await watcher.force_redownload(USER_ID, client, message, entry)
+
+    assert result is True
+    client.download_media.assert_awaited_once()
+    assert local_path.read_bytes() == b'fresh-content'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_force_redownload_bypasses_filter_match(
+    anyio_backend: str,
+    watcher: TgDownloadWatcher,
+    watched_chat_repo: TgWatchedChatRepository,
+    downloaded_media_repo: TgDownloadedMediaRepository,
+    tmp_path: pathlib.Path,
+) -> None:
+    """The watched chat's filter has since narrowed to audio-only — a normal
+    enqueue_message call for this same video would be silently vetoed, but
+    force_redownload must not consult the filter at all."""
+    _watch_chat(watched_chat_repo, media_types=['audio'])
+    local_path = tmp_path / 'bangumi' / 'tg' / USER_ID / '測試頻道' / 'episode01.mp4'
+    entry = _existing_entry(downloaded_media_repo, local_path)
+
+    client = _client_that_writes()
+    message = _message(video=_real_video())
+
+    result = await watcher.force_redownload(USER_ID, client, message, entry)
+
+    assert result is True
+    client.download_media.assert_awaited_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_force_redownload_does_not_bypass_path_traversal_guard(
+    anyio_backend: str,
+    watcher: TgDownloadWatcher,
+    watched_chat_repo: TgWatchedChatRepository,
+    downloaded_media_repo: TgDownloadedMediaRepository,
+    tmp_path: pathlib.Path,
+) -> None:
+    """HIGH-1's landing-root confinement is a security control, not a
+    convenience check — force_redownload must still refuse an entry whose
+    local_path resolves outside the landing root (e.g. a stale row from
+    before ANIGAMERPLUS_TG_LANDING_ROOT was reconfigured), and must leave
+    whatever is at that outside path completely untouched."""
+    _watch_chat(watched_chat_repo)
+    outside_dir = tmp_path / 'outside'
+    outside_dir.mkdir()
+    outside_path = outside_dir / 'episode01.mp4'
+    entry = _existing_entry(downloaded_media_repo, outside_path, content=b'untouchable')
+
+    client = _client_that_writes()
+    message = _message(video=_real_video())
+
+    result = await watcher.force_redownload(USER_ID, client, message, entry)
+
+    assert result is False
+    client.download_media.assert_not_awaited()
+    assert outside_path.read_bytes() == b'untouchable'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_force_redownload_failure_preserves_original_file(
+    anyio_backend: str,
+    watcher: TgDownloadWatcher,
+    watched_chat_repo: TgWatchedChatRepository,
+    downloaded_media_repo: TgDownloadedMediaRepository,
+    task_history_repo: TaskHistoryRepository,
+    tmp_path: pathlib.Path,
+) -> None:
+    """A failed force-redownload must never destroy the still-good existing
+    file — the download goes to a temp sibling first, and only a
+    successful download ever replaces the original."""
+    _watch_chat(watched_chat_repo)
+    local_path = tmp_path / 'bangumi' / 'tg' / USER_ID / '測試頻道' / 'episode01.mp4'
+    entry = _existing_entry(downloaded_media_repo, local_path, content=b'good-original-content')
+
+    client = _client_that_writes(raise_exc=RuntimeError('network error'))
+    message = _message(video=_real_video())
+
+    result = await watcher.force_redownload(USER_ID, client, message, entry)
+
+    assert result is False
+    assert local_path.read_bytes() == b'good-original-content'  # untouched
+    # No leftover temp file next to it.
+    assert [p.name for p in local_path.parent.iterdir()] == [local_path.name]
+
+    history = task_history_repo.list_recent(days=1, user_id=USER_ID)
+    assert len(history) == 1
+    assert history[0].final_status == '下載失敗'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_force_redownload_succeeds_when_original_file_already_missing(
+    anyio_backend: str,
+    watcher: TgDownloadWatcher,
+    watched_chat_repo: TgWatchedChatRepository,
+    downloaded_media_repo: TgDownloadedMediaRepository,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Item 2's explicit edge case: the DB row survives even if the file on
+    disk was deleted out-of-band — force_redownload must still succeed and
+    (re)create the file at its recorded path."""
+    _watch_chat(watched_chat_repo)
+    local_path = tmp_path / 'bangumi' / 'tg' / USER_ID / '測試頻道' / 'episode01.mp4'
+    entry = _existing_entry(downloaded_media_repo, local_path, write_file=False)
+    assert not local_path.exists()
+
+    client = _client_that_writes(content=b'recreated-content')
+    message = _message(video=_real_video())
+
+    result = await watcher.force_redownload(USER_ID, client, message, entry)
+
+    assert result is True
+    assert local_path.read_bytes() == b'recreated-content'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_force_redownload_updates_row_in_place_keeping_id(
+    anyio_backend: str,
+    watcher: TgDownloadWatcher,
+    watched_chat_repo: TgWatchedChatRepository,
+    downloaded_media_repo: TgDownloadedMediaRepository,
+    tmp_path: pathlib.Path,
+) -> None:
+    """See TgDownloadedMediaRepository.replace_after_redownload — UPDATE in
+    place, not delete+reinsert, so the row id (and the UNIQUE dedup key)
+    survive a force-redownload untouched."""
+    _watch_chat(watched_chat_repo)
+    local_path = tmp_path / 'bangumi' / 'tg' / USER_ID / '測試頻道' / 'episode01.mp4'
+    entry = _existing_entry(downloaded_media_repo, local_path, content=b'x')
+
+    client = _client_that_writes(content=b'0123456789')  # 10 bytes
+    message = _message(video=_real_video())
+
+    await watcher.force_redownload(USER_ID, client, message, entry)
+
+    items, total = downloaded_media_repo.list_by_user(USER_ID)
+    assert total == 1  # still exactly one row
+    assert items[0].id == entry.id  # same id — updated, not replaced
+    assert items[0].file_size == 10
+    assert downloaded_media_repo.exists(USER_ID, CHAT_ID, MESSAGE_ID) is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_force_redownload_falls_back_when_watched_chat_no_longer_exists(
+    anyio_backend: str,
+    watcher: TgDownloadWatcher,
+    downloaded_media_repo: TgDownloadedMediaRepository,
+    tmp_path: pathlib.Path,
+) -> None:
+    """The chat may have been removed from the watch list entirely since the
+    file was originally downloaded — force_redownload must still work,
+    targeting the entry's own local_path rather than any watched-chat
+    save_path rule (there is none to consult)."""
+    # Deliberately no _watch_chat() call — no TgWatchedChat row exists.
+    local_path = tmp_path / 'bangumi' / 'tg' / USER_ID / '測試頻道' / 'episode01.mp4'
+    entry = _existing_entry(downloaded_media_repo, local_path)
+
+    client = _client_that_writes(content=b'still-works')
+    message = _message(video=_real_video())
+
+    result = await watcher.force_redownload(USER_ID, client, message, entry)
+
+    assert result is True
+    assert local_path.read_bytes() == b'still-works'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_force_redownload_no_downloadable_media_declines(
+    anyio_backend: str,
+    watcher: TgDownloadWatcher,
+    watched_chat_repo: TgWatchedChatRepository,
+    downloaded_media_repo: TgDownloadedMediaRepository,
+    tmp_path: pathlib.Path,
+) -> None:
+    """A message that no longer carries any tracked media (e.g. edited) has
+    nothing for force_redownload to fetch."""
+    _watch_chat(watched_chat_repo)
+    local_path = tmp_path / 'bangumi' / 'tg' / USER_ID / '測試頻道' / 'episode01.mp4'
+    entry = _existing_entry(downloaded_media_repo, local_path, content=b'still-here')
+
+    client = _client_that_writes()
+    message = _message()  # no video/document/audio/photo at all
+
+    result = await watcher.force_redownload(USER_ID, client, message, entry)
+
+    assert result is False
+    client.download_media.assert_not_awaited()
+    assert local_path.read_bytes() == b'still-here'

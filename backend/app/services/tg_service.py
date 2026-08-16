@@ -362,6 +362,42 @@ class TgService:
             functools.partial(self._downloaded_media_repo.list_by_user, user_id, page=page, size=size)
         )
 
+    async def force_redownload(self, user_id: str, entry_id: int) -> TgDownloadedMediaEntry | None:
+        """Queue a force re-download of *entry_id* — must already belong to *user_id*.
+
+        Only checks ownership synchronously (via
+        ``TgDownloadedMediaRepository.get_by_id_for_user`` — never leaks
+        another user's row: a missing OR wrongly-owned id both come back as
+        the same ``None`` here) and dispatches ``tg_redownload_actor``; the
+        API layer turns ``None`` into 404. Everything Telegram-related
+        (session, chat reachability, whether the message still exists) is
+        resolved later, inside the actor, by
+        ``TgRedownloadService.run`` — this method never blocks on any of
+        that, so the HTTP request it backs returns immediately regardless
+        of file size or connection speed. Returns the pre-redownload entry
+        (its fields still describe the OLD file until the actor lands the
+        new one) purely so the API response has an id/echo to hand back;
+        callers should not treat it as the post-redownload state.
+        """
+        entry = await anyio.to_thread.run_sync(
+            functools.partial(self._downloaded_media_repo.get_by_id_for_user, user_id, entry_id)
+        )
+        if entry is None:
+            return None
+        try:
+            from ..tasks.tg_redownload_tick import tg_redownload_actor
+
+            tg_redownload_actor.send(user_id, entry_id)
+        except Exception as exc:  # noqa: BLE001 — no broker configured (tests / CLI mode without Redis)
+            if self._logger is not None:
+                self._logger.error(
+                    None,
+                    _LOG_TAG,
+                    f'user_id={user_id} entry_id={entry_id} 強制重新下載任務派送失敗: {exc}',
+                    display=False,
+                )
+        return entry
+
     # ------------------------------------------------------------------ logging
 
     def _log_warning(self, message: str) -> None:

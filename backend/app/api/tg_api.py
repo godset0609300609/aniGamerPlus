@@ -33,6 +33,7 @@ from ..models import (
     TgPhoneLoginResponse,
     TgQrLoginResponse,
     TgRebindNotificationResponse,
+    TgRedownloadResponse,
     TgSessionStatus,
     TgWatchedChat,
     TgWatchedChatCreate,
@@ -439,6 +440,41 @@ async def list_downloads(
         page=page,
         size=size,
     )
+
+
+@router.post('/downloads/{entry_id}/redownload', response_model=TgRedownloadResponse)
+@rate_limit.limiter.limit(rate_limit.tg_login_rate_limit, key_func=rate_limit.session_or_ip_key)
+async def force_redownload(
+    request: fastapi.Request,  # required by slowapi's @limiter.limit decorator
+    entry_id: int,
+    user: T.Annotated[UserRow, fastapi.Depends(require_any_user)],
+    service: T.Annotated[TgService | None, fastapi.Depends(get_tg_service)],
+) -> TgRedownloadResponse:
+    """Force a fresh re-download of one already-downloaded media entry, overwriting its file in place.
+
+    Bypasses the dedup check that normally makes re-downloading a no-op,
+    and any watched-chat filter that may have changed since the file was
+    originally downloaded (the file was explicitly picked by the caller —
+    see ``TgDownloadWatcher.force_redownload``'s docstring). Does not
+    bypass the landing-root path-traversal guard, which is never
+    optional.
+
+    Only ever scoped to the caller's own downloads — *entry_id* is looked
+    up via ``get_by_id_for_user``, so an id belonging to another user
+    (or one that doesn't exist at all) both come back as the same 404,
+    never a distinguishing 403 that would confirm the id exists.
+
+    Rate-limited the same as the login-start / backfill-retry endpoints
+    (:data:`rate_limit.tg_login_rate_limit`) — dispatching this still
+    costs a live MTProto session lookup + eventual download, gated per
+    user. Returns immediately once the background job is queued; it does
+    not wait for the download itself (see ``app.tasks.tg_redownload_tick``).
+    """
+    svc = _require_service(service)
+    entry = await svc.force_redownload(user.id, entry_id)
+    if entry is None:
+        raise fastapi.HTTPException(status_code=fastapi.status.HTTP_404_NOT_FOUND, detail='下載紀錄不存在')
+    return TgRedownloadResponse(entry_id=entry_id)
 
 
 __all__ = ['router']

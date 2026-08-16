@@ -137,3 +137,78 @@ def test_mark_landed_updates_local_path(repo: TgDownloadedMediaRepository) -> No
 
     items, _total = repo.list_by_user('user-1')
     assert items[0].local_path == '/final/path/episode01.mp4'
+
+
+def test_get_by_id_for_user_returns_own_row(repo: TgDownloadedMediaRepository) -> None:
+    entry = _insert(repo, user_id='user-1')
+    assert entry is not None
+
+    found = repo.get_by_id_for_user('user-1', entry.id)
+
+    assert found is not None
+    assert found.id == entry.id
+    assert found.user_id == 'user-1'
+
+
+def test_get_by_id_for_user_returns_none_for_other_users_row(repo: TgDownloadedMediaRepository) -> None:
+    """Ownership scoping — the whole point of get_by_id_for_user existing at
+    all: a row id belonging to another user must never be returned, so the
+    force-redownload feature built on it can never leak/act on someone
+    else's download."""
+    entry = _insert(repo, user_id='user-1')
+    assert entry is not None
+
+    found = repo.get_by_id_for_user('user-2', entry.id)
+
+    assert found is None
+
+
+def test_get_by_id_for_user_returns_none_for_missing_id(repo: TgDownloadedMediaRepository) -> None:
+    assert repo.get_by_id_for_user('user-1', 999999) is None
+
+
+def test_replace_after_redownload_updates_in_place_keeping_id(repo: TgDownloadedMediaRepository) -> None:
+    """Item 3's design decision: force-redownload UPDATEs the existing row
+    rather than delete-then-reinsert, so the row id stays stable."""
+    entry = _insert(repo)
+    assert entry is not None
+    original_id = entry.id
+
+    repo.replace_after_redownload(
+        entry.id,
+        file_id='new-unique-file-id',
+        file_name='episode01.mp4',
+        file_size=999_999_999,
+        local_path='/bangumi/tg/user-1/chat/episode01.mp4',
+        progress_sn=42,
+    )
+
+    items, total = repo.list_by_user('user-1')
+    assert total == 1  # still exactly one row — not delete+reinsert
+    updated = items[0]
+    assert updated.id == original_id
+    assert updated.file_id == 'new-unique-file-id'
+    assert updated.file_size == 999_999_999
+    assert updated.progress_sn == 42
+    assert updated.downloaded_at != entry.downloaded_at  # downloaded_at refreshed to "now"
+
+
+def test_replace_after_redownload_preserves_dedup_key(repo: TgDownloadedMediaRepository) -> None:
+    """The (user_id, chat_id, message_id) UNIQUE key must survive a
+    replace — exists() should keep reporting True throughout, never
+    flickering to False (see the repo method's own docstring for why a
+    delete+reinsert alternative would be the wrong choice here)."""
+    entry = _insert(repo, user_id='user-1', chat_id=5, message_id=7)
+    assert entry is not None
+    assert repo.exists('user-1', 5, 7) is True
+
+    repo.replace_after_redownload(
+        entry.id,
+        file_id='new-id',
+        file_name='episode01.mp4',
+        file_size=1,
+        local_path='/x/episode01.mp4',
+        progress_sn=None,
+    )
+
+    assert repo.exists('user-1', 5, 7) is True

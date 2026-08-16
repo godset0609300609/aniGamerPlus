@@ -117,6 +117,64 @@ class TgDownloadedMediaRepository:
             )
             session.execute(stmt)
 
+    def get_by_id_for_user(self, user_id: str, entry_id: int) -> TgDownloadedMediaEntry | None:
+        """Ownership-scoped lookup — ``None`` for both "doesn't exist" and
+        "belongs to someone else".
+
+        Deliberately collapses those two cases into the same ``None``
+        result (rather than distinguishing them) — mirrors
+        ``TgWatchedChatRepository.get_by_id``'s established convention in
+        this codebase: telling a caller "that id belongs to another user"
+        would itself leak that the id exists, which is exactly the kind of
+        cross-user leak the force-redownload feature's 404 (never 403) is
+        supposed to avoid.
+        """
+        with self._db.session() as session:
+            stmt = sqlalchemy.select(TgDownloadedMediaRow).where(
+                TgDownloadedMediaRow.id == entry_id,
+                TgDownloadedMediaRow.user_id == user_id,
+            )
+            row = session.scalars(stmt).first()
+            return _to_entry(row) if row is not None else None
+
+    def replace_after_redownload(
+        self,
+        entry_id: int,
+        *,
+        file_id: str,
+        file_name: str,
+        file_size: int,
+        local_path: str,
+        progress_sn: int | None,
+    ) -> None:
+        """Update an existing row in place after a successful force re-download.
+
+        UPDATE, not delete-then-reinsert — see
+        ``TgDownloadWatcher.force_redownload``'s docstring for the full
+        rationale (keeping ``id`` stable). Worth calling out here too: a
+        delete-then-reinsert would open a transient window where this
+        ``(user_id, chat_id, message_id)`` has NO row at all, which would
+        make ``exists()`` briefly report "not downloaded" — exactly the
+        dedup signal force_redownload's caller is deliberately bypassing on
+        purpose (via a dedicated code path), not something that should be
+        able to happen as a side effect of persistence plumbing racing a
+        concurrent real-time handler call for the same message.
+        """
+        with self._db.session() as session:
+            stmt = (
+                sqlalchemy.update(TgDownloadedMediaRow)
+                .where(TgDownloadedMediaRow.id == entry_id)
+                .values(
+                    file_id=file_id,
+                    file_name=file_name,
+                    file_size=file_size,
+                    downloaded_at=_now_iso(),
+                    local_path=local_path,
+                    progress_sn=progress_sn,
+                )
+            )
+            session.execute(stmt)
+
     def list_landed_with_progress_sn(self) -> list[TgDownloadedMediaEntry]:
         """All rows that carry a known ``progress_sn``.
 

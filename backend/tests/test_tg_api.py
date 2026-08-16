@@ -1046,3 +1046,106 @@ def test_list_downloads_local_path_is_basename_only(
     assert item['local_path'] == 'episode01.mp4'
     assert '/app/bangumi' not in item['local_path']
     assert '/app/bangumi' not in r.text
+
+
+# ---------------------------------------------------------------------------
+# Force re-download
+# ---------------------------------------------------------------------------
+
+
+def test_force_redownload_dispatches_actor_and_returns_queued(
+    client: fastapi.testclient.TestClient, fake_container: FakeContainer
+) -> None:
+    entry = fake_container.tg_downloaded_media_repo.insert_if_new(
+        '__anonymous_admin__',
+        chat_id=1,
+        message_id=1,
+        file_id='f1',
+        file_name='episode01.mp4',
+        file_size=100,
+        local_path='/app/bangumi/tg/__anonymous_admin__/測試頻道/episode01.mp4',
+    )
+    service = _make_tg_service(fake_container)
+    _bind_service(client, service, fake_container)
+
+    with unittest.mock.patch('app.tasks.tg_redownload_tick.tg_redownload_actor.send') as fake_send:
+        r = client.post(f'/api/tg/downloads/{entry.id}/redownload')
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {'entry_id': entry.id, 'status': 'queued'}
+    fake_send.assert_called_once_with('__anonymous_admin__', entry.id)
+
+
+def test_force_redownload_missing_entry_returns_404(
+    client: fastapi.testclient.TestClient, fake_container: FakeContainer
+) -> None:
+    service = _make_tg_service(fake_container)
+    _bind_service(client, service, fake_container)
+
+    with unittest.mock.patch('app.tasks.tg_redownload_tick.tg_redownload_actor.send') as fake_send:
+        r = client.post('/api/tg/downloads/999999/redownload')
+
+    assert r.status_code == 404
+    fake_send.assert_not_called()
+
+
+def test_force_redownload_another_users_entry_returns_404_not_403(
+    client: fastapi.testclient.TestClient, fake_container: FakeContainer
+) -> None:
+    """Cross-user access must never leak whether the id exists — 404, the
+    same response as a genuinely missing id, never a distinguishing 403."""
+    entry = fake_container.tg_downloaded_media_repo.insert_if_new(
+        'owner-user',
+        chat_id=1,
+        message_id=1,
+        file_id='f1',
+        file_name='episode01.mp4',
+        file_size=100,
+        local_path='/app/bangumi/tg/owner-user/測試頻道/episode01.mp4',
+    )
+    service = _make_tg_service(fake_container)
+    attacker_client = _as_user(client, _make_user('user', uid='attacker-user'))
+    _bind_service(attacker_client, service, fake_container)
+
+    with unittest.mock.patch('app.tasks.tg_redownload_tick.tg_redownload_actor.send') as fake_send:
+        r = attacker_client.post(f'/api/tg/downloads/{entry.id}/redownload')
+
+    assert r.status_code == 404
+    fake_send.assert_not_called()
+
+
+def test_force_redownload_requires_auth(client: fastapi.testclient.TestClient, fake_container: FakeContainer) -> None:
+    service = _make_tg_service(fake_container)
+    _bind_service(client, service, fake_container)
+    client.app.dependency_overrides[current_user_opt] = lambda: None
+
+    r = client.post('/api/tg/downloads/1/redownload')
+
+    assert r.status_code == 401
+
+
+def test_force_redownload_rate_limited(
+    client: fastapi.testclient.TestClient, fake_container: FakeContainer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv('ANIGAMERPLUS_RATE_LIMIT_TG_LOGIN', '2/minute')
+    entry = fake_container.tg_downloaded_media_repo.insert_if_new(
+        '__anonymous_admin__',
+        chat_id=1,
+        message_id=1,
+        file_id='f1',
+        file_name='episode01.mp4',
+        file_size=100,
+        local_path='/app/bangumi/tg/__anonymous_admin__/測試頻道/episode01.mp4',
+    )
+    service = _make_tg_service(fake_container)
+    _bind_service(client, service, fake_container)
+
+    with unittest.mock.patch('app.tasks.tg_redownload_tick.tg_redownload_actor.send'):
+        r1 = client.post(f'/api/tg/downloads/{entry.id}/redownload')
+        r2 = client.post(f'/api/tg/downloads/{entry.id}/redownload')
+        r3 = client.post(f'/api/tg/downloads/{entry.id}/redownload')
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r3.status_code == 429

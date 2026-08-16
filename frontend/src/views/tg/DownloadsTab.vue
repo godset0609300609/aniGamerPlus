@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { TgApi } from '@/api/tg'
 import { formatRelativeBare } from '@/utils/format'
 import { useAutoRefresh } from '@/composables/useAutoRefresh'
@@ -18,6 +18,13 @@ const loading = ref(false)
 const page = ref(1)
 const size = ref(50)
 const total = ref(0)
+
+// Per-item "request in flight" state for the 強制重新下載 button — the
+// background download itself may still be running after this clears (the
+// endpoint only waits for the job to be queued), but that's what the
+// 5s auto-refresh below is for: it picks up the new downloaded_at/file_size
+// once the actor actually lands the file.
+const redownloadingIds = ref<Set<number>>(new Set())
 
 function formatSize(bytes: number): string {
   if (bytes <= 0) return '0 B'
@@ -48,6 +55,27 @@ function handleSizeChange(newSize: number): void {
 function handleCurrentChange(newPage: number): void {
   page.value = newPage
   void load()
+}
+
+async function forceRedownload(row: TgDownloadedMedia): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `確定要強制重新下載「${row.file_name}」嗎？這會覆蓋目前的檔案。`,
+      '強制重新下載',
+      { confirmButtonText: '確定', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  redownloadingIds.value.add(row.id)
+  try {
+    await api.forceRedownload(row.id)
+    ElMessage.success('已加入重新下載佇列')
+  } catch (err) {
+    ElMessage.error(`強制重新下載失敗：${(err as Error).message}`)
+  } finally {
+    redownloadingIds.value.delete(row.id)
+  }
 }
 
 onMounted(load)
@@ -125,6 +153,23 @@ useAutoRefresh(5000, load)
           {{ row.local_path }}
         </template>
       </el-table-column>
+      <el-table-column
+        label="操作"
+        width="120"
+      >
+        <template #default="{ row }">
+          <el-button
+            size="small"
+            link
+            type="warning"
+            :loading="redownloadingIds.has(row.id)"
+            :disabled="redownloadingIds.has(row.id)"
+            @click="forceRedownload(row)"
+          >
+            強制重新下載
+          </el-button>
+        </template>
+      </el-table-column>
     </el-table>
 
     <!-- Mobile: stacked cards instead of a cramped table. -->
@@ -154,6 +199,18 @@ useAutoRefresh(5000, load)
         </div>
         <div class="ag-download-card__path">
           {{ row.local_path }}
+        </div>
+        <div class="ag-download-card__actions">
+          <el-button
+            size="small"
+            link
+            type="warning"
+            :loading="redownloadingIds.has(row.id)"
+            :disabled="redownloadingIds.has(row.id)"
+            @click="forceRedownload(row)"
+          >
+            強制重新下載
+          </el-button>
         </div>
       </div>
     </div>
@@ -228,5 +285,9 @@ useAutoRefresh(5000, load)
   font-size: 12px;
   color: var(--el-text-color-secondary);
   word-break: break-all;
+}
+.ag-download-card__actions {
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

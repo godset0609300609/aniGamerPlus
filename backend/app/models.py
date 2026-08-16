@@ -781,6 +781,20 @@ class TgDownloadsPage(pydantic.BaseModel):
     size: int
 
 
+class TgRedownloadResponse(pydantic.BaseModel):
+    """Response body for POST /api/tg/downloads/{id}/redownload.
+
+    The actual download runs in the background (a dramatiq actor) — this
+    response only confirms the job was accepted and queued, not that the
+    file has been replaced yet. ``entry_id`` echoes the request so the
+    frontend has something to key its per-row pending state on without
+    re-parsing the URL it just called.
+    """
+
+    entry_id: int
+    status: T.Literal['queued'] = 'queued'
+
+
 # ---------------------------------------------------------------------------
 # Full config.json schema (v17.2)
 # ---------------------------------------------------------------------------

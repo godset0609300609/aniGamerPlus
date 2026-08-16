@@ -361,3 +361,10 @@ export interface TgDownloadsPage {
   page: number
   size: number
 }
+
+// The actual download runs in the background — this only confirms the job
+// was queued, not that the file has been replaced yet.
+export interface TgRedownloadResponse {
+  entry_id: number
+  status: 'queued'
+}

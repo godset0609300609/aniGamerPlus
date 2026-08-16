@@ -84,6 +84,7 @@ if T.TYPE_CHECKING:
     from .services.tg_service import TgService
     from .tg_downloader.backfill import TgBackfillService
     from .tg_downloader.catchup import TgCatchupService
+    from .tg_downloader.redownload import TgRedownloadService
 
 
 @dataclasses.dataclass
@@ -182,6 +183,12 @@ class Container:
     # no-ops). Same opt-in gate as tg_service — None when TG_API_ID/
     # TG_API_HASH are not configured.
     tg_catchup_service: TgCatchupService | None = None
+    # Runs one on-demand force-redownload of a single already-downloaded
+    # entry (app.tasks.tg_redownload_tick dramatiq actor — dispatched by
+    # POST /api/tg/downloads/{id}/redownload, not on a schedule). Same
+    # opt-in gate as tg_service — None when TG_API_ID/TG_API_HASH are not
+    # configured.
+    tg_redownload_service: TgRedownloadService | None = None
 
     def anime_factory(self, sn: int) -> Anime:
         """Build an :class:`Anime` orchestrator wired with this container's collaborators."""
@@ -579,6 +586,7 @@ def build_container() -> Container:
     tg_service = None
     tg_backfill_service = None
     tg_catchup_service = None
+    tg_redownload_service = None
     _tg_api_id_raw = os.environ.get('TG_API_ID', '')
     _tg_api_hash = os.environ.get('TG_API_HASH', '')
     if _tg_api_id_raw and _tg_api_hash:
@@ -598,6 +606,7 @@ def build_container() -> Container:
             from .tg_downloader.notification_binder import NotificationBinder as _NotificationBinder
             from .tg_downloader.phone_login import PhoneLoginService as _PhoneLoginService
             from .tg_downloader.qr_login import QrLoginService as _QrLoginService
+            from .tg_downloader.redownload import TgRedownloadService as _TgRedownloadService
 
             _tg_client_pool = _TgClientPool(_tg_api_id, _tg_api_hash, tg_session_repo, logger=logger)
             _tg_notification_binder = _NotificationBinder(
@@ -653,6 +662,12 @@ def build_container() -> Container:
                 _tg_watcher,
                 logger=logger,
             )
+            tg_redownload_service = _TgRedownloadService(
+                _tg_client_pool,
+                tg_downloaded_media_repo,
+                _tg_watcher,
+                logger=logger,
+            )
 
     container = Container(
         paths=paths,
@@ -677,6 +692,7 @@ def build_container() -> Container:
         tg_service=tg_service,
         tg_backfill_service=tg_backfill_service,
         tg_catchup_service=tg_catchup_service,
+        tg_redownload_service=tg_redownload_service,
         bt_downloader_service=bt_downloader_service,
         bt_manual_dispatch_service=bt_manual_dispatch_service,
         bt_probe_service=bt_probe_service,

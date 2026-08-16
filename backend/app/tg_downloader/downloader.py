@@ -10,6 +10,16 @@ Every task_history / ProgressBus / telegram-notify write is wrapped in
 ``contextlib.suppress(Exception)`` — mirrors
 ``app.bt_downloader.landing_worker.LandingWorker``'s "a notification/history
 failure must never break the download" contract.
+
+Also home to :meth:`TgDownloadWatcher.force_redownload` — a per-item "redo
+this exact file" action (see ``app.tg_downloader.redownload.TgRedownloadService``
+for the on-demand dramatiq actor that calls it). It never hands hydrogram
+the *final* target path directly: ``Client.handle_download`` silently
+appends ``(1)``/``(2)``/... to the filename rather than overwriting an
+existing one, which is the opposite of what a forced re-download is for —
+so it always downloads to a throwaway temp sibling first and only replaces
+the real file, via an atomic-ish move, once that download has fully
+succeeded.
 """
 
 from __future__ import annotations
@@ -22,13 +32,16 @@ import os
 import pathlib
 import time
 import typing as T
+import uuid
 
 import hydrogram
 import hydrogram.filters
 import hydrogram.handlers
 import hydrogram.types
 
+from ..downloader._file_utils import move_file
 from ..downloader.filename import FilenameBuilder
+from ..models import TgWatchedChat
 from ..security.log_scrub import scrub_exception_for_log
 
 if T.TYPE_CHECKING:
@@ -36,10 +49,9 @@ if T.TYPE_CHECKING:
 
     from ..downloader.progress import ProgressBus
     from ..logging_ import Logger
-    from ..models import TgWatchedChat
     from ..persistence.task_history_repo import TaskHistoryRepository
     from ..persistence.task_id_map_repo import TaskIdMapRepository
-    from ..persistence.tg_downloaded_media_repo import TgDownloadedMediaRepository
+    from ..persistence.tg_downloaded_media_repo import TgDownloadedMediaEntry, TgDownloadedMediaRepository
     from ..persistence.tg_watched_chat_repo import TgWatchedChatRepository
 
 _TASK_HISTORY_SOURCE = 'tg'
@@ -323,6 +335,189 @@ class TgDownloadWatcher:
         self._finish_history(history_row_id, final_status='下載完成', filename=media.file_name)
         self._finish_progress(sn, status='下載完成', filename=media.file_name)
         return True
+
+    # ------------------------------------------------------------------ force re-download
+
+    async def force_redownload(
+        self,
+        user_id: str,
+        client: hydrogram.Client,
+        message: hydrogram.types.Message,
+        entry: TgDownloadedMediaEntry,
+    ) -> bool:
+        """Force a fresh re-download of *entry*, replacing its file in place.
+
+        A sibling to :meth:`enqueue_message` rather than a ``force`` flag
+        threaded through it, because the two pipelines diverge in exactly
+        the ways that matter: ``enqueue_message`` computes its target
+        *directory* from the watched chat's current ``save_path``/
+        ``chat_title`` rules and ``INSERT``s a brand-new row;
+        ``force_redownload`` targets *entry.local_path* itself — so a
+        since-changed watched-chat config, or the watched chat having been
+        removed entirely, can never move where an explicit "redo this exact
+        file" lands — and ``UPDATE``s the existing row in place (see
+        :meth:`~app.persistence.tg_downloaded_media_repo.TgDownloadedMediaRepository.replace_after_redownload`
+        for why the row id is kept stable). What *is* still shared: every
+        bookkeeping helper below (``_confine``, the download semaphore,
+        progress/history/notify) — only target-path resolution and
+        persistence differ.
+
+        Deliberately bypasses, on purpose — this method exists specifically
+        to let an explicit per-item user action skip them:
+
+        * the ``exists()`` dedup guard in ``enqueue_message`` — the caller
+          already knows this exact message was downloaded before; that is
+          the entire point of "force".
+        * the watched-chat filter match (size/format/media-type) — the file
+          was explicitly picked by the user, so a filter that has since
+          narrowed must not silently veto redoing it.
+
+        Deliberately does **not** bypass, and never should:
+
+        * :meth:`_confine` — HIGH-1's landing-root escape guard is a
+          security control (arbitrary-file-write prevention), not a
+          convenience check that "force" has any business skipping. Applied
+          unconditionally to both the temp-download path and the final
+          replace target below.
+
+        Downloads to a temp file alongside the target first and only
+        replaces *entry.local_path* once that download has fully succeeded
+        (via :func:`app.downloader._file_utils.move_file`, the same
+        download-to-temp-then-atomic-move helper the classic ffmpeg/segment
+        downloaders use) — a failed or interrupted attempt always leaves
+        the original file exactly as it was, including when that original
+        file is already missing from disk (``move_file`` doesn't require
+        the destination to pre-exist).
+
+        Returns ``True`` on a successful replace, ``False`` on every
+        declined or failed path (no downloadable media on the message, a
+        path-guard trip, or the download itself failing) — mirrors
+        ``enqueue_message``'s own bool return. Every failure path already
+        logs/bookkeeps internally (progress/history/notify), same as
+        ``enqueue_message``, so callers don't need to inspect the return
+        value beyond tests asserting on it.
+        """
+        media = _extract_media(message)
+        if media is None:
+            self._log_error(
+                f'強制重新下載失敗，訊息已無可下載的媒體 '
+                f'user_id={user_id} chat_id={entry.chat_id} message_id={entry.message_id}'
+            )
+            return False
+
+        try:
+            original_path = self._confine(pathlib.Path(entry.local_path))
+        except TgSavePathEscapesLandingRootError as exc:
+            self._log_error(
+                f'強制重新下載失敗，原始下載路徑逃逸 landing root '
+                f'user_id={user_id} chat_id={entry.chat_id} message_id={entry.message_id}: '
+                f'{scrub_exception_for_log(exc)}'
+            )
+            return False
+
+        try:
+            # A hidden sibling of the final target — same directory as
+            # original_path (so the eventual move is same-filesystem and
+            # never collides with hydrogram's own "add (1)/(2)/... if the
+            # target exists" avoidance, see the module docstring's
+            # rationale for why we don't hand hydrogram the final path
+            # directly), one-off random suffix so two concurrent
+            # force-redownloads of the same entry can't clobber each
+            # other's temp file.
+            tmp_path = self._confine(original_path.parent / f'.redownload-{uuid.uuid4().hex}-{original_path.name}')
+        except TgSavePathEscapesLandingRootError as exc:
+            # Unreachable in practice (tmp_path is a sibling of the
+            # already-confined original_path) — same defense-in-depth
+            # rationale as enqueue_message's second _confine call.
+            self._log_error(
+                f'強制重新下載失敗，暫存下載路徑逃逸 landing root '
+                f'user_id={user_id} chat_id={entry.chat_id} message_id={entry.message_id}: '
+                f'{scrub_exception_for_log(exc)}'
+            )
+            return False
+
+        watched = self._watched_chat_repo.get(user_id, entry.chat_id)
+        if watched is None:
+            # Chat no longer on the watch list (or was removed since this
+            # file was downloaded) — the file and its DB row are still
+            # real, so force_redownload must still work. Only the
+            # display-only chat_title (progress card / history row /
+            # notification) needs a fallback here; every actual
+            # download-path decision above is independent of `watched` —
+            # force_redownload always targets entry.local_path, never
+            # watched.save_path.
+            watched = TgWatchedChat(id=0, chat_id=entry.chat_id, chat_title=str(entry.chat_id), created_at='')
+
+        sn = self._allocate_sn(entry.chat_id, entry.message_id)
+        self._start_progress(sn, media.file_name, user_id=user_id, chat_title=watched.chat_title)
+        history_row_id = self._start_history(sn, media.file_name, user_id, watched, message)
+        self._emit('tg_started', watched, media, message)
+
+        try:
+            async with self._get_semaphore(user_id):
+                downloaded = await client.download_media(
+                    message,
+                    file_name=str(tmp_path),
+                    progress=self._make_progress_callback(sn, watched, media, message),
+                )
+        except Exception as exc:  # noqa: BLE001 — surfaced via notify/history, mirrors enqueue_message
+            self._cleanup_tmp(tmp_path)
+            self._log_error(
+                f'強制重新下載失敗 user_id={user_id} chat_id={entry.chat_id} message_id={entry.message_id}: '
+                f'{scrub_exception_for_log(exc)}'
+            )
+            self._emit('tg_failed', watched, media, message, error_message=str(exc))
+            self._finish_history(history_row_id, final_status='下載失敗')
+            self._finish_progress(sn, status='失敗')
+            return False
+
+        # download_media's return type is str | BinaryIO | None (BinaryIO
+        # only when in_memory=True, which is never passed here) — str()
+        # mirrors enqueue_message's identical str(downloaded) handling of
+        # this same union.
+        downloaded_path = pathlib.Path(str(downloaded)) if downloaded else tmp_path
+        if not downloaded_path.exists():
+            # hydrogram returns None (rather than raising) when the
+            # transmission was stopped deliberately — treat that the same
+            # as an exception: nothing materialised to replace the
+            # original with, so the original file is left untouched.
+            self._cleanup_tmp(tmp_path)
+            self._log_error(
+                f'強制重新下載失敗，下載未產生檔案 '
+                f'user_id={user_id} chat_id={entry.chat_id} message_id={entry.message_id}'
+            )
+            self._emit('tg_failed', watched, media, message, error_message='下載未產生檔案')
+            self._finish_history(history_row_id, final_status='下載失敗')
+            self._finish_progress(sn, status='失敗')
+            return False
+
+        # Only now — the download has fully succeeded — replace the
+        # original file. move_file overwrites the destination if present
+        # and is a plain rename if it isn't (item 2's "old file already
+        # missing from disk" case collapses into the same call).
+        move_file(downloaded_path, original_path)
+
+        new_size = original_path.stat().st_size
+        self._downloaded_media_repo.replace_after_redownload(
+            entry.id,
+            file_id=media.file_unique_id,
+            file_name=media.file_name,
+            file_size=new_size,
+            local_path=str(original_path),
+            progress_sn=sn,
+        )
+        self._log_info(
+            f'已強制重新下載 {media.file_name}（user_id={user_id}, chat_id={entry.chat_id}, entry={entry.id})'
+        )
+        self._emit('tg_landed', watched, media, message, local_path=str(original_path))
+        self._finish_history(history_row_id, final_status='下載完成', filename=media.file_name)
+        self._finish_progress(sn, status='下載完成', filename=media.file_name)
+        return True
+
+    def _cleanup_tmp(self, tmp_path: pathlib.Path) -> None:
+        with contextlib.suppress(OSError):
+            if tmp_path.exists():
+                tmp_path.unlink()
 
     # ------------------------------------------------------------------ paths
 
