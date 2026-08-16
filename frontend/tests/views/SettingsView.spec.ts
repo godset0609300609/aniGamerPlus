@@ -270,6 +270,19 @@ describe('SettingsView — tabs', () => {
     expect(labels).toEqual(['一般', '來源', 'BT 下載', 'Telegram'])
   })
 
+  it('renders the tab bar horizontally — tab-position stays "top" (not "left")', async () => {
+    // The ElTabs test stub doesn't declare `tabPosition` as a prop (it only
+    // models `modelValue`), so the real prop value falls through as a plain
+    // DOM attribute on the stub's root element. That lets us assert on the
+    // actual value SettingsView.vue passes down, without needing the real
+    // Element Plus component (which would add an `el-tabs--left` class for
+    // vertical layouts — the regression this test guards against).
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('.el-tabs').attributes('tab-position')).toBe('top')
+  })
+
   it('defaults to the 一般 tab', async () => {
     const wrapper = mountView()
     await flushPromises()

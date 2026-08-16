@@ -53,7 +53,6 @@ function resolveTabFromQuery(): string {
 }
 
 const activeTab = ref(resolveTabFromQuery())
-const tabPosition = computed(() => (isMobile.value ? 'top' : 'left'))
 
 // Direction of the panel transition: 'left' when moving to a later tab,
 // 'right' when moving to an earlier one — mirrors BtView.vue's tab-switch
@@ -623,9 +622,12 @@ onUnmounted(() => {
     />
 
     <template v-else>
+      <!-- tab-position must stay "top" — the panes below are empty (see the
+           comment on the sibling el-form) so there's no pane content beside
+           a vertical nav for "left"/"right" to lay out against. -->
       <el-tabs
         v-model="activeTab"
-        :tab-position="tabPosition"
+        tab-position="top"
         class="ag-settings-tabs"
       >
         <el-tab-pane
