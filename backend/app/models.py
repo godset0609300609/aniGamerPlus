@@ -649,6 +649,19 @@ class TgWatchedChat(pydantic.BaseModel):
     backfill_matched_count: int = 0
     backfill_started_at: str | None = None
     backfill_finished_at: str | None = None
+    # ---- periodic catch-up scan cursor (see app.tg_downloader.catchup.TgCatchupService) ----
+    # Server-managed, same as the backfill_* fields above — never settable via
+    # TgWatchedChatCreate/TgWatchedChatUpdate, only ever written by
+    # TgCatchupService.run_one via TgWatchedChatRepository.update_scan_cursor_state.
+    # NOTE: tg_watched_chat also has scan_resume_offset_id/scan_pending_cursor
+    # columns (revision 0021) that deliberately do NOT appear here. Those two
+    # are pure internal bookkeeping for an in-progress multi-tick capped
+    # sweep (see TgCatchupService's module docstring) with no observability
+    # value of their own beyond what last_scanned_message_id/last_scanned_at
+    # already surface — read via TgWatchedChatRepository.get_scan_cursor_state
+    # instead, never through this API-facing model.
+    last_scanned_message_id: int | None = None
+    last_scanned_at: str | None = None
 
 
 def _reject_save_path_traversal(v: str | None) -> str | None:

@@ -6,6 +6,8 @@ import types
 import typing as T
 import unittest.mock
 
+import pytest
+
 
 def _fake_settings_repo(check_frequency: int = 5) -> T.Any:
     repo = unittest.mock.MagicMock()
@@ -47,6 +49,7 @@ def _build_aps(check_frequency: int = 5) -> tuple[object, _SpyScheduler]:
     fake_progress = unittest.mock.MagicMock()
     fake_health = unittest.mock.MagicMock()
     fake_retention = unittest.mock.MagicMock()
+    fake_tg_poll = unittest.mock.MagicMock()
 
     with (
         unittest.mock.patch.dict(
@@ -56,6 +59,7 @@ def _build_aps(check_frequency: int = 5) -> tuple[object, _SpyScheduler]:
                 'app.services.telegram_progress_publisher': types.SimpleNamespace(progress_publish_tick=fake_progress),
                 'app.services.telegram_health_monitor': types.SimpleNamespace(health_check_tick=fake_health),
                 'app.tasks.bt_retention_tick': types.SimpleNamespace(bt_retention_tick=fake_retention),
+                'app.tasks.tg_poll_tick': types.SimpleNamespace(tg_poll_tick=fake_tg_poll),
             },
         ),
     ):
@@ -70,11 +74,20 @@ def test_aps_scheduler_periodic_jobs_have_misfire_settings() -> None:
     """All periodic jobs must carry coalesce + max_instances + misfire_grace_time."""
     _aps, spy = _build_aps()
 
-    assert len(spy.captured) == 4, f'expected 4 jobs, got {len(spy.captured)}'
+    assert len(spy.captured) == 5, f'expected 5 jobs, got {len(spy.captured)}'
 
     for job in spy.captured:
         assert job.get('coalesce') is True, f'coalesce missing on {job}'
-        assert job.get('max_instances', 1) >= 2, f'max_instances too low on {job}'
+        # max_instances must be explicitly set (not left to APScheduler's own
+        # default) but the *value* legitimately varies: most jobs allow a
+        # few overlapping runs (>=2), while a job whose semantics forbid
+        # overlap entirely — tg_poll_tick's cursor writes assume only one
+        # sweep runs at a time, same as bt_remote_refresh_tick — is
+        # deliberately pinned to max_instances=1.
+        if job.get('id') == 'tg_poll_tick':
+            assert job.get('max_instances') == 1, f'tg_poll_tick must never overlap itself: {job}'
+        else:
+            assert job.get('max_instances', 1) >= 2, f'max_instances too low on {job}'
         assert job.get('misfire_grace_time', 0) >= 30, f'misfire_grace_time too low on {job}'
 
 
@@ -113,3 +126,23 @@ def test_aps_scheduler_bt_retention_tick_registered_even_when_bt_downloader_disa
     # BT-specific ticks must be absent while retention is still present.
     assert 'bt_feed_tick' not in job_ids
     assert 'bt_landing_tick' not in job_ids
+
+
+def test_aps_scheduler_tg_poll_tick_registered_daily_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tg_poll_tick is always scheduled (independent of TG_API_ID/TG_API_HASH), defaulting to 900s."""
+    monkeypatch.delenv('ANIGAMERPLUS_TG_POLL_SECONDS', raising=False)
+    _aps, spy = _build_aps()
+
+    tg_poll = next(j for j in spy.captured if j.get('id') == 'tg_poll_tick')
+    assert tg_poll.get('seconds') == 900
+    assert tg_poll.get('max_instances') == 1  # a sweep must never overlap itself
+    assert tg_poll.get('coalesce') is True
+    assert tg_poll.get('replace_existing') is True
+
+
+def test_aps_scheduler_tg_poll_tick_reads_interval_from_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('ANIGAMERPLUS_TG_POLL_SECONDS', '120')
+    _aps, spy = _build_aps()
+
+    tg_poll = next(j for j in spy.captured if j.get('id') == 'tg_poll_tick')
+    assert tg_poll.get('seconds') == 120

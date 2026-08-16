@@ -58,6 +58,7 @@ def _build_aps(settings_repo: T.Any) -> tuple[object, _SpyScheduler]:
     fake_bt_landing_tick = unittest.mock.MagicMock()
     fake_bt_retention_tick = unittest.mock.MagicMock()
     fake_bt_remote_refresh_tick = unittest.mock.MagicMock()
+    fake_tg_poll_tick = unittest.mock.MagicMock()
 
     with (
         unittest.mock.patch.dict(
@@ -72,6 +73,7 @@ def _build_aps(settings_repo: T.Any) -> tuple[object, _SpyScheduler]:
                 'app.tasks.bt_remote_refresh_tick': types.SimpleNamespace(
                     bt_remote_refresh_tick=fake_bt_remote_refresh_tick
                 ),
+                'app.tasks.tg_poll_tick': types.SimpleNamespace(tg_poll_tick=fake_tg_poll_tick),
             },
         ),
     ):
@@ -91,8 +93,8 @@ def test_bt_jobs_not_registered_when_disabled() -> None:
     assert 'bt_remote_refresh_tick' not in ids
     # bt_retention_tick is always registered (independent of bt_downloader.enabled).
     assert 'bt_retention_tick' in ids
-    # The three baseline jobs plus bt_retention_tick.
-    assert len(spy.captured) == 4
+    # The three baseline jobs plus bt_retention_tick and tg_poll_tick.
+    assert len(spy.captured) == 5
 
 
 def test_bt_jobs_registered_when_enabled() -> None:
@@ -103,7 +105,7 @@ def test_bt_jobs_registered_when_enabled() -> None:
     assert 'bt_landing_tick' in ids
     assert 'bt_retention_tick' in ids
     assert 'bt_remote_refresh_tick' in ids
-    assert len(spy.captured) == 7
+    assert len(spy.captured) == 8
 
     feed_job = next(j for j in spy.captured if j.get('id') == 'bt_feed_tick')
     assert feed_job.get('seconds') == 120

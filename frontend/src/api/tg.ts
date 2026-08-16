@@ -12,13 +12,15 @@ import type {
 } from '@/types'
 import type { SimpleStatus } from '@/types'
 
-/** Server-managed backfill fields — never sent by the client, only read back from responses. */
+/** Server-managed backfill + catch-up-scan fields — never sent by the client, only read back from responses. */
 type TgBackfillReadOnlyFields =
   | 'backfill_status'
   | 'backfill_scanned_count'
   | 'backfill_matched_count'
   | 'backfill_started_at'
   | 'backfill_finished_at'
+  | 'last_scanned_message_id'
+  | 'last_scanned_at'
 
 export type TgWatchedChatCreate = Omit<TgWatchedChat, 'id' | 'created_at' | TgBackfillReadOnlyFields>
 export type TgWatchedChatUpdate = Partial<Omit<TgWatchedChat, 'id' | 'chat_id' | 'created_at' | TgBackfillReadOnlyFields>>

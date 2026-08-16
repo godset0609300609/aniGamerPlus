@@ -320,6 +320,10 @@ export interface TgWatchedChat {
   backfill_matched_count: number
   backfill_started_at: string | null
   backfill_finished_at: string | null
+  /** Highest Telegram message id the periodic catch-up scan has walked past, or null if never scanned. */
+  last_scanned_message_id: number | null
+  /** ISO-8601 UTC — when the last catch-up scan for this chat completed, or null if never scanned. */
+  last_scanned_at: string | null
 }
 
 export interface TgAvailableChat {

@@ -26,6 +26,7 @@ from . import bt_retention_tick as bt_retention_tick  # noqa: F401, E402
 from . import download as download  # noqa: F401, E402
 from . import telegram as telegram  # noqa: F401, E402
 from . import tg_backfill_tick as tg_backfill_tick  # noqa: F401, E402
+from . import tg_poll_tick as tg_poll_tick  # noqa: F401, E402
 
 __all__: list[str] = [
     'auto_scan',
@@ -37,4 +38,5 @@ __all__: list[str] = [
     'download',
     'telegram',
     'tg_backfill_tick',
+    'tg_poll_tick',
 ]

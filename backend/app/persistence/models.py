@@ -456,6 +456,24 @@ class TgWatchedChatRow(Base):
     backfill_finished_at: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(
         sqlalchemy.Text, nullable=True
     )
+    # ---- periodic catch-up scan cursor (see app.tg_downloader.catchup.TgCatchupService) ----
+    # Added by revision 0021. NULL until this chat's first catch-up scan
+    # completes — see that migration's docstring for the cursor-vs-cutoff
+    # semantics. last_scanned_message_id/last_scanned_at are surfaced on the
+    # API-facing TgWatchedChat pydantic model (read-only, for UI
+    # observability); scan_resume_offset_id/scan_pending_cursor are pure
+    # internal scan bookkeeping and are deliberately NOT exposed there — see
+    # TgWatchedChatRepository.get_scan_cursor_state.
+    last_scanned_message_id: sqlalchemy.orm.Mapped[int | None] = sqlalchemy.orm.mapped_column(
+        sqlalchemy.Integer, nullable=True
+    )
+    last_scanned_at: sqlalchemy.orm.Mapped[str | None] = sqlalchemy.orm.mapped_column(sqlalchemy.Text, nullable=True)
+    scan_resume_offset_id: sqlalchemy.orm.Mapped[int | None] = sqlalchemy.orm.mapped_column(
+        sqlalchemy.Integer, nullable=True
+    )
+    scan_pending_cursor: sqlalchemy.orm.Mapped[int | None] = sqlalchemy.orm.mapped_column(
+        sqlalchemy.Integer, nullable=True
+    )
 
     __table_args__ = (sqlalchemy.UniqueConstraint('user_id', 'chat_id', name='uq_tg_watched_chat_user_chat'),)
 

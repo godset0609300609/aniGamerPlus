@@ -14,6 +14,16 @@ Runs alongside the dramatiq worker in the scheduler container.  Provides
 * ``bt_retention_tick`` every 24 hours — always scheduled (independent of
   ``settings.bt_downloader.enabled``); prunes stale ``bt_feed_entry`` and
   ``task_history`` rows.
+* ``tg_poll_tick`` every ``ANIGAMERPLUS_TG_POLL_SECONDS`` seconds (default
+  900 — 15 minutes) — always scheduled, independent of TG_API_ID/TG_API_HASH
+  being configured (same "always scheduled" convention as
+  ``bt_retention_tick``; the actor itself no-ops when the Telegram User API
+  feature isn't set up). Runs a cursor-based catch-up scan
+  (``app.tg_downloader.catchup.TgCatchupService``) across every enabled
+  watched chat, closing the gap the real-time handler
+  (``app.tg_downloader.downloader.TgDownloadWatcher``) leaves whenever the
+  process restarts, a client disconnects, or a handler hasn't
+  (re)registered yet.
 * ``bt_remote_refresh_tick`` — only when ``settings.bt_downloader.enabled``
   is ``True``; re-polls Put.io for landed-but-not-remote-cleared entries so
   SEEDING -> COMPLETED transitions and externally-deleted transfers are
@@ -104,6 +114,25 @@ class ApsScheduler:
             max_instances=3,
             coalesce=True,
             misfire_grace_time=3600,
+        )
+
+        # Telegram catch-up sweep — always scheduled (independent of
+        # TG_API_ID/TG_API_HASH; see the actor's own no-op guard), same
+        # "always on" convention as bt_retention_tick above.
+        # max_instances=1: a catch-up sweep must never overlap itself — the
+        # per-chat cursor writes assume each chat is only ever being scanned
+        # by one sweep at a time.
+        from ..tasks.tg_poll_tick import tg_poll_tick
+
+        self._scheduler.add_job(
+            tg_poll_tick.send,
+            trigger='interval',
+            seconds=int(os.environ.get('ANIGAMERPLUS_TG_POLL_SECONDS', '900')),
+            id='tg_poll_tick',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=120,
         )
 
         if settings.bt_downloader.enabled:

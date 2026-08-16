@@ -9,6 +9,7 @@ to the shape this repository reads/writes.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json
 import typing as T
@@ -21,6 +22,24 @@ from .models import TgWatchedChatRow
 
 if T.TYPE_CHECKING:
     from .db import Database
+
+
+@dataclasses.dataclass(frozen=True)
+class TgScanCursorState:
+    """Internal catch-up-scan bookkeeping for one watched chat.
+
+    Deliberately NOT part of the API-facing ``TgWatchedChat`` pydantic
+    model — ``scan_resume_offset_id``/``scan_pending_cursor`` are pure
+    implementation detail of :class:`~app.tg_downloader.catchup.TgCatchupService`'s
+    multi-tick resumable walk (see that module's docstring) with no
+    observability value beyond what ``last_scanned_message_id``/
+    ``last_scanned_at`` already surface on the model. Only
+    :class:`TgCatchupService` reads this.
+    """
+
+    last_scanned_message_id: int | None
+    scan_resume_offset_id: int | None
+    scan_pending_cursor: int | None
 
 
 class DuplicateWatchedChatError(Exception):
@@ -68,6 +87,8 @@ def _to_model(row: TgWatchedChatRow) -> TgWatchedChat:
         backfill_matched_count=row.backfill_matched_count,
         backfill_started_at=row.backfill_started_at,
         backfill_finished_at=row.backfill_finished_at,
+        last_scanned_message_id=row.last_scanned_message_id,
+        last_scanned_at=row.last_scanned_at,
     )
 
 
@@ -235,6 +256,77 @@ class TgWatchedChatRepository:
     def mark_backfill_failed(self, user_id: str, watched_chat_id: int, *, finished_at: str) -> None:
         self._update_backfill_columns(
             user_id, watched_chat_id, {'backfill_status': 'failed', 'backfill_finished_at': finished_at}
+        )
+
+    # ------------------------------------------------------------------ periodic catch-up scan cursor
+    #
+    # Read/written by app.tg_downloader.catchup.TgCatchupService (the
+    # dramatiq worker process, via app.tasks.tg_poll_tick's periodic actor).
+    # Same (user_id, watched_chat_id) scoping convention as the backfill
+    # methods above.
+
+    def get_scan_cursor_state(self, user_id: str, watched_chat_id: int) -> TgScanCursorState | None:
+        """Read the full internal catch-up-scan cursor triple for one chat.
+
+        Separate from :meth:`get`/:meth:`get_by_id` because
+        ``scan_resume_offset_id``/``scan_pending_cursor`` are not part of
+        the ``TgWatchedChat`` pydantic model those return (see
+        :class:`TgScanCursorState`'s docstring) — ``TgCatchupService`` needs
+        both the public model (for filters, ``watched.id``, ...) and this.
+        Returns ``None`` if the chat no longer exists.
+        """
+        with self._db.session() as session:
+            stmt = sqlalchemy.select(TgWatchedChatRow).where(
+                TgWatchedChatRow.user_id == user_id, TgWatchedChatRow.id == watched_chat_id
+            )
+            row = session.scalars(stmt).first()
+            if row is None:
+                return None
+            return TgScanCursorState(
+                last_scanned_message_id=row.last_scanned_message_id,
+                scan_resume_offset_id=row.scan_resume_offset_id,
+                scan_pending_cursor=row.scan_pending_cursor,
+            )
+
+    def update_scan_cursor_state(
+        self,
+        user_id: str,
+        watched_chat_id: int,
+        *,
+        last_scanned_message_id: int | None,
+        scan_resume_offset_id: int | None,
+        scan_pending_cursor: int | None,
+        scanned_at: str,
+    ) -> None:
+        """Persist the full catch-up-scan cursor state in one write.
+
+        Replaced the old single-field ``mark_scan_cursor`` once a scalar
+        cursor alone proved unable to express "handled a contiguous range at
+        the top, but there's still an unprocessed gap below it" safely under
+        ``TgCatchupService``'s per-run scan cap — see that module's
+        docstring. Every call writes all three columns plus
+        ``last_scanned_at`` explicitly (the caller passes back an unchanged
+        value for whichever fields shouldn't move this call) rather than
+        supporting a partial update, since ``TgCatchupService.run_one``
+        always knows the full state after every attempt.
+
+        ``last_scanned_message_id`` accepts ``None`` because a chat's
+        very-first sweep can still be mid-flight (capped, resuming) when
+        this is called — passing the caller's already-``None`` cursor
+        through unchanged is deliberate, not an oversight; see
+        ``TgCatchupService.run_one``'s "Cursor selection" comment on its
+        cap-hit branch for why coalescing it to a placeholder there would
+        reintroduce the bug this whole mechanism exists to fix.
+        """
+        self._update_backfill_columns(
+            user_id,
+            watched_chat_id,
+            {
+                'last_scanned_message_id': last_scanned_message_id,
+                'scan_resume_offset_id': scan_resume_offset_id,
+                'scan_pending_cursor': scan_pending_cursor,
+                'last_scanned_at': scanned_at,
+            },
         )
 
     def _update_backfill_columns(self, user_id: str, watched_chat_id: int, values: dict[str, T.Any]) -> None:

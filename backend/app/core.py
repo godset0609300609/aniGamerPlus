@@ -83,6 +83,7 @@ if T.TYPE_CHECKING:
     from .services.telegram_rate_limiter import TelegramRateLimiter
     from .services.tg_service import TgService
     from .tg_downloader.backfill import TgBackfillService
+    from .tg_downloader.catchup import TgCatchupService
 
 
 @dataclasses.dataclass
@@ -175,6 +176,12 @@ class Container:
     # dramatiq actor). Same opt-in gate as tg_service — None when
     # TG_API_ID/TG_API_HASH are not configured.
     tg_backfill_service: TgBackfillService | None = None
+    # Runs the periodic cursor-based catch-up sweep across every enabled
+    # watched chat (app.tasks.tg_poll_tick dramatiq actor, scheduled by
+    # ApsScheduler independent of this being None — the actor itself
+    # no-ops). Same opt-in gate as tg_service — None when TG_API_ID/
+    # TG_API_HASH are not configured.
+    tg_catchup_service: TgCatchupService | None = None
 
     def anime_factory(self, sn: int) -> Anime:
         """Build an :class:`Anime` orchestrator wired with this container's collaborators."""
@@ -571,6 +578,7 @@ def build_container() -> Container:
     # pyrogram, this no longer needs an event-loop compat shim).
     tg_service = None
     tg_backfill_service = None
+    tg_catchup_service = None
     _tg_api_id_raw = os.environ.get('TG_API_ID', '')
     _tg_api_hash = os.environ.get('TG_API_HASH', '')
     if _tg_api_id_raw and _tg_api_hash:
@@ -584,6 +592,7 @@ def build_container() -> Container:
             from .services.tg_service import TgService as _TgService
             from .services.tg_service import resolve_bot_username as _resolve_bot_username
             from .tg_downloader.backfill import TgBackfillService as _TgBackfillService
+            from .tg_downloader.catchup import TgCatchupService as _TgCatchupService
             from .tg_downloader.client_pool import TgClientPool as _TgClientPool
             from .tg_downloader.downloader import TgDownloadWatcher as _TgDownloadWatcher
             from .tg_downloader.notification_binder import NotificationBinder as _NotificationBinder
@@ -638,6 +647,12 @@ def build_container() -> Container:
                 _tg_watcher,
                 logger=logger,
             )
+            tg_catchup_service = _TgCatchupService(
+                _tg_client_pool,
+                tg_watched_chat_repo,
+                _tg_watcher,
+                logger=logger,
+            )
 
     container = Container(
         paths=paths,
@@ -661,6 +676,7 @@ def build_container() -> Container:
         tg_downloaded_media_repo=tg_downloaded_media_repo,
         tg_service=tg_service,
         tg_backfill_service=tg_backfill_service,
+        tg_catchup_service=tg_catchup_service,
         bt_downloader_service=bt_downloader_service,
         bt_manual_dispatch_service=bt_manual_dispatch_service,
         bt_probe_service=bt_probe_service,

@@ -331,3 +331,137 @@ def test_mark_backfill_scoped_to_owning_user(repo: TgWatchedChatRepository) -> N
     fetched = repo.get_by_id('user-1', created.id)
     assert fetched is not None
     assert fetched.backfill_status is None
+
+
+# ---------------------------------------------------------------------------
+# Periodic catch-up scan cursor — default state + get/update_scan_cursor_state
+# ---------------------------------------------------------------------------
+
+
+def test_insert_defaults_scan_cursor_fields(repo: TgWatchedChatRepository) -> None:
+    created = repo.insert('user-1', _create_payload())
+
+    assert created.last_scanned_message_id is None
+    assert created.last_scanned_at is None
+
+    state = repo.get_scan_cursor_state('user-1', created.id)
+    assert state is not None
+    assert state.last_scanned_message_id is None
+    assert state.scan_resume_offset_id is None
+    assert state.scan_pending_cursor is None
+
+
+def test_get_scan_cursor_state_returns_none_for_missing_chat(repo: TgWatchedChatRepository) -> None:
+    assert repo.get_scan_cursor_state('user-1', 999) is None
+
+
+def test_update_scan_cursor_state_sets_all_fields(repo: TgWatchedChatRepository) -> None:
+    created = repo.insert('user-1', _create_payload())
+
+    repo.update_scan_cursor_state(
+        'user-1',
+        created.id,
+        last_scanned_message_id=12345,
+        scan_resume_offset_id=None,
+        scan_pending_cursor=None,
+        scanned_at='2026-08-16T00:00:00+00:00',
+    )
+
+    fetched = repo.get_by_id('user-1', created.id)
+    assert fetched is not None
+    assert fetched.last_scanned_message_id == 12345
+    assert fetched.last_scanned_at == '2026-08-16T00:00:00+00:00'
+    state = repo.get_scan_cursor_state('user-1', created.id)
+    assert state is not None
+    assert state.last_scanned_message_id == 12345
+
+
+def test_update_scan_cursor_state_persists_resume_columns_for_an_in_progress_sweep(
+    repo: TgWatchedChatRepository,
+) -> None:
+    """last_scanned_message_id can legitimately be written as None while a sweep is
+    in-flight (its first-ever, still-capped run) — see TgCatchupService.run_one's
+    cap-hit branch for why this must be preserved, not coalesced to a placeholder."""
+    created = repo.insert('user-1', _create_payload())
+
+    repo.update_scan_cursor_state(
+        'user-1',
+        created.id,
+        last_scanned_message_id=None,
+        scan_resume_offset_id=501,
+        scan_pending_cursor=1000,
+        scanned_at='2026-08-16T00:00:00+00:00',
+    )
+
+    fetched = repo.get_by_id('user-1', created.id)
+    assert fetched is not None
+    assert fetched.last_scanned_message_id is None
+    state = repo.get_scan_cursor_state('user-1', created.id)
+    assert state is not None
+    assert state.last_scanned_message_id is None
+    assert state.scan_resume_offset_id == 501
+    assert state.scan_pending_cursor == 1000
+
+
+def test_update_scan_cursor_state_can_advance_across_calls(repo: TgWatchedChatRepository) -> None:
+    created = repo.insert('user-1', _create_payload())
+    repo.update_scan_cursor_state(
+        'user-1',
+        created.id,
+        last_scanned_message_id=10,
+        scan_resume_offset_id=None,
+        scan_pending_cursor=None,
+        scanned_at='2026-08-16T00:00:00+00:00',
+    )
+
+    repo.update_scan_cursor_state(
+        'user-1',
+        created.id,
+        last_scanned_message_id=99,
+        scan_resume_offset_id=None,
+        scan_pending_cursor=None,
+        scanned_at='2026-08-16T01:00:00+00:00',
+    )
+
+    fetched = repo.get_by_id('user-1', created.id)
+    assert fetched is not None
+    assert fetched.last_scanned_message_id == 99
+    assert fetched.last_scanned_at == '2026-08-16T01:00:00+00:00'
+
+
+def test_update_scan_cursor_state_scoped_to_owning_user(repo: TgWatchedChatRepository) -> None:
+    """update_scan_cursor_state is scoped by (user_id, watched_chat_id) — same convention as mark_backfill_*."""
+    created = repo.insert('user-1', _create_payload())
+
+    repo.update_scan_cursor_state(
+        'user-2',
+        created.id,
+        last_scanned_message_id=42,
+        scan_resume_offset_id=None,
+        scan_pending_cursor=None,
+        scanned_at='2026-08-16T00:00:00+00:00',
+    )
+
+    fetched = repo.get_by_id('user-1', created.id)
+    assert fetched is not None
+    assert fetched.last_scanned_message_id is None
+    assert fetched.last_scanned_at is None
+
+
+def test_update_scan_cursor_state_does_not_disturb_backfill_columns(repo: TgWatchedChatRepository) -> None:
+    created = repo.insert('user-1', _create_payload())
+    repo.mark_backfill_running('user-1', created.id, started_at='2026-08-16T00:00:00+00:00')
+
+    repo.update_scan_cursor_state(
+        'user-1',
+        created.id,
+        last_scanned_message_id=7,
+        scan_resume_offset_id=None,
+        scan_pending_cursor=None,
+        scanned_at='2026-08-16T01:00:00+00:00',
+    )
+
+    fetched = repo.get_by_id('user-1', created.id)
+    assert fetched is not None
+    assert fetched.backfill_status == 'running'
+    assert fetched.backfill_started_at == '2026-08-16T00:00:00+00:00'

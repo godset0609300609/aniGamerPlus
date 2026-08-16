@@ -80,6 +80,8 @@ function makeWatchedChat(overrides: Partial<TgWatchedChat> = {}): TgWatchedChat 
     backfill_matched_count: 0,
     backfill_started_at: null,
     backfill_finished_at: null,
+    last_scanned_message_id: null,
+    last_scanned_at: null,
     ...overrides,
   }
 }
