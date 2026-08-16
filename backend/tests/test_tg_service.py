@@ -5,7 +5,7 @@ Focused narrowly on this one method's two audit fixes — everything else
 (which drives it through the real FastAPI routes with its own client-pool
 fake).
 
-Blocker fix — ``ChannelForbidden`` AttributeError
+``ChannelForbidden`` — primary fix (shim) and backstop (``except AttributeError``)
     ``GET /api/tg/chats/available`` 500'd whenever the bound account had a
     dialog for a channel it was kicked from / restricted from: Telegram
     represents that as the raw ``ChannelForbidden`` type, and hydrogram's
@@ -17,10 +17,18 @@ Blocker fix — ``ChannelForbidden`` AttributeError
     hydrogram builds every ``Dialog`` in a batch before yielding any of
     them). Once that happens, the async generator can't be resumed to skip
     past just the bad one — see ``list_available_chats``'s docstring.
-    :class:`_RaisingDialogsClient` below reproduces that exact shape (an
-    ``AttributeError`` raised mid-iteration, generator unusable afterward)
-    to prove the method degrades to "whatever was fetched so far" instead
-    of propagating the crash.
+
+    The primary fix is now ``app.tg_downloader.hydrogram_compat``'s patch,
+    which makes ``Chat._parse_channel_chat`` tolerate ``ChannelForbidden``
+    directly so the crash never happens in the first place —
+    ``test_list_available_chats_channel_forbidden_dialog_is_kept_via_shim``
+    below exercises that end to end with real hydrogram types. The
+    ``except AttributeError`` in ``list_available_chats`` remains only as a
+    backstop for some other, not-yet-patched attribute gap; the two tests
+    using :class:`_RaisingDialogsClient` pin that backstop's behaviour
+    (degrade to "whatever was fetched so far" instead of propagating the
+    crash) without asserting it's still the normal path for
+    ``ChannelForbidden``.
 
 B-09/G-07 — unbounded fetch/response
     ``list_available_chats`` now caps the fetch at ``limit`` and reports
@@ -32,6 +40,8 @@ from __future__ import annotations
 import types
 import typing as T
 
+import hydrogram.raw
+import hydrogram.types
 import pytest
 
 from app.services.tg_service import TgService
@@ -110,6 +120,65 @@ async def test_list_available_chats_channel_forbidden_as_first_dialog_returns_em
 
     assert result == []
     assert truncated is False
+
+
+class _RealParseDialogsClient:
+    """Reproduces hydrogram's real ``get_dialogs()`` shape, but — unlike
+    :class:`_RaisingDialogsClient` above — builds each ``Dialog`` by running
+    a *real* raw channel object through the *real* (patched)
+    ``hydrogram.types.Chat._parse_channel_chat``, including a real
+    ``raw.types.ChannelForbidden``. This is what actually proves the
+    ``hydrogram_compat`` shim — not a stand-in for it — is what keeps the
+    dialog list complete end to end through ``list_available_chats``."""
+
+    def __init__(self, raw_chats: list[object]) -> None:
+        self._raw_chats = raw_chats
+
+    async def get_dialogs(self, limit: int = 0):  # noqa: ANN201 — async generator, matches hydrogram's shape
+        for raw_chat in self._raw_chats:
+            chat = hydrogram.types.Chat._parse_channel_chat(None, raw_chat)
+            yield hydrogram.types.Dialog(
+                chat=chat,
+                top_message=None,
+                unread_messages_count=0,
+                unread_mentions_count=0,
+                unread_mark=False,
+                is_pinned=False,
+            )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_list_available_chats_channel_forbidden_dialog_is_kept_via_shim(anyio_backend: str) -> None:
+    """End-to-end proof of the shim: a dialog list with a real ChannelForbidden
+    channel in the middle now yields ALL dialogs, not just the ones before it."""
+    good_before = hydrogram.raw.types.Channel(
+        id=111,
+        title='Before',
+        photo=hydrogram.raw.types.ChatPhotoEmpty(),
+        date=0,
+        megagroup=True,
+        usernames=[],
+        restriction_reason=[],
+    )
+    forbidden = hydrogram.raw.types.ChannelForbidden(id=222, access_hash=0, title='Kicked', megagroup=False)
+    good_after = hydrogram.raw.types.Channel(
+        id=333,
+        title='After',
+        photo=hydrogram.raw.types.ChatPhotoEmpty(),
+        date=0,
+        megagroup=True,
+        usernames=[],
+        restriction_reason=[],
+    )
+    client = _RealParseDialogsClient([good_before, forbidden, good_after])
+    service = _make_service(_FakeClientPool(client))
+
+    result, truncated = await service.list_available_chats('user-1')
+
+    assert truncated is False
+    assert [d.chat.title for d in result] == ['Before', 'Kicked', 'After']
+    assert result[1].chat.is_restricted is True
 
 
 @pytest.mark.anyio

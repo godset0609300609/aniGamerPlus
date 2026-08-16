@@ -19,6 +19,7 @@ import typing as T
 import anyio.to_thread
 
 from ..security.log_scrub import scrub_exception_for_log
+from ..tg_downloader import hydrogram_compat as _hydrogram_compat
 
 if T.TYPE_CHECKING:
     import hydrogram
@@ -34,6 +35,17 @@ if T.TYPE_CHECKING:
     from ..tg_downloader.notification_binder import NotificationBinder, NotificationBindOutcome
     from ..tg_downloader.phone_login import PhoneLoginService
     from ..tg_downloader.qr_login import QrLoginService
+
+# Importing ``app.tg_downloader`` above already runs its __init__, which
+# applies this same patch — but this module is the one that actually calls
+# ``client.get_dialogs()`` (in ``list_available_chats`` below), so call it
+# again explicitly rather than relying on that import ordering. It's
+# idempotent (see ``hydrogram_compat.apply_patches``), so this costs
+# nothing on the normal "package __init__ already ran" path; it's only
+# insurance against a future refactor of ``app.tg_downloader.__init__``
+# dropping the call. See ``hydrogram_compat``'s docstring for what defect
+# this works around.
+_hydrogram_compat.apply_patches()
 
 _LOG_TAG = 'TG服務'
 
@@ -289,21 +301,31 @@ class TgService:
         account with a huge dialog list force an unbounded live MTProto
         walk + an unbounded JSON response on every call).
 
-        Also guards against a crash the blocker fix in this same change
-        addresses: ``client.get_dialogs()`` raises ``AttributeError`` deep
-        inside hydrogram when one of the account's dialogs is a channel the
-        user was kicked from or is otherwise restricted from (Telegram
-        represents it as the raw ``ChannelForbidden`` type, which
-        ``hydrogram.types.Chat._parse_channel_chat`` can't fully parse — it
+        Channels the user can't access (Telegram's raw ``ChannelForbidden``
+        type — e.g. a channel they were kicked from) used to crash
+        ``client.get_dialogs()`` outright with an ``AttributeError`` deep
+        inside hydrogram: ``hydrogram.types.Chat._parse_channel_chat``
         unconditionally reads attributes, e.g. ``channel.verified``, that
-        only exist on the regular ``Channel`` type). Telegram's
-        ``messages.getDialogs`` is paginated in batches of up to 100 and
-        hydrogram builds each batch's ``Dialog`` objects before yielding
-        any of them, so once a batch fails to parse there is no way to skip
-        past just the one bad dialog and resume — the whole generator is
-        left unusable. Rather than 500 the entire listing, this returns
-        whatever dialogs were already fetched from earlier batches (the
-        user can't monitor a chat they don't have access to anyway).
+        only exist on the regular ``Channel`` type, and Telegram's
+        ``messages.getDialogs`` is paginated in batches of up to 100 with
+        hydrogram building every ``Dialog`` in a batch before yielding any
+        of them — so one bad dialog anywhere in a batch left the whole
+        generator unusable, with no way to resume past it. The primary fix
+        for that now lives in ``app.tg_downloader.hydrogram_compat``
+        (applied at import time of ``app.tg_downloader`` — see that
+        package's and that module's docstrings): it patches
+        ``Chat._parse_channel_chat`` to tolerate ``ChannelForbidden``
+        directly, so a forbidden channel's dialog parses into a minimal
+        ``Chat`` instead of raising, and the walk over every dialog
+        completes normally with nothing silently missing.
+
+        The ``except AttributeError`` below is therefore no longer the
+        normal path for forbidden channels — it's a backstop against some
+        *other*, not-yet-special-cased attribute hydrogram reads
+        unconditionally on some other raw type turning out to be missing.
+        Should that happen, this still degrades gracefully to "return
+        whatever dialogs were already fetched from earlier batches" rather
+        than 500ing the entire listing.
         """
         client = await self._client_pool.get(user_id)
         if client is None:
@@ -318,8 +340,13 @@ class TgService:
             async for dialog in dialogs_gen:
                 dialogs.append(dialog)
         except AttributeError as exc:
+            # Unexpected fallback: the ChannelForbidden case this used to be
+            # is now handled by hydrogram_compat's patch (see this method's
+            # docstring), so reaching here means some other, not-yet-patched
+            # hydrogram parsing gap was hit.
             self._log_warning(
-                f'user_id={user_id} 略過無法解析的 dialog（可能是 ChannelForbidden）: {scrub_exception_for_log(exc)}'
+                f'user_id={user_id} 略過無法解析的 dialog（非預期的解析失敗，'
+                f'hydrogram_compat 補丁未涵蓋此情況）: {scrub_exception_for_log(exc)}'
             )
         truncated = len(dialogs) > limit
         if truncated:

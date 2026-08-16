@@ -28,6 +28,34 @@ module — it dropped that legacy sync-wrapping mechanism entirely — so a bare
 None of this affects the async code paths this package actually uses
 (``await client.connect()`` etc.), which always run inside FastAPI's real
 running loop regardless.
+
+hydrogram ``ChannelForbidden`` parsing shim
+--------------------------------------------
+``hydrogram.types.Chat._parse_channel_chat`` (hydrogram==0.2.0) crashes with
+``AttributeError`` when parsing a channel/supergroup the current account is
+banned from or otherwise can't access (Telegram's raw ``ChannelForbidden``
+type) — it unconditionally reads attributes, e.g. ``channel.verified``, that
+only exist on the regular ``Channel`` type. Because ``Client.get_dialogs()``
+builds every ``Dialog`` in a paginated batch before yielding any of them,
+one such channel anywhere in a user's dialog list kills the whole listing.
+``app.tg_downloader.hydrogram_compat.apply_patches()`` monkey-patches
+``Chat._parse_channel_chat`` to tolerate ``ChannelForbidden`` (mirroring how
+``Chat._parse_chat_chat`` already handles its own forbidden counterpart,
+``ChatForbidden``, via ``getattr``). It is called below, at import time of
+this package, so every TG code path (which all import through here) gets
+the patch before any hydrogram call that could hit this. See that module's
+docstring for the full defect writeup, and
+``app.services.tg_service.TgService.list_available_chats`` for the
+user-visible bug this was causing (dialogs silently missing from
+``GET /api/tg/chats/available``).
+
+This shim can be deleted, along with this call and its import, once
+upstream hydrogram fixes ``_parse_channel_chat`` to handle
+``ChannelForbidden`` itself.
 """
 
 from __future__ import annotations
+
+from . import hydrogram_compat as _hydrogram_compat
+
+_hydrogram_compat.apply_patches()
