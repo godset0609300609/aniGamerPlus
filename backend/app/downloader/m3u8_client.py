@@ -6,9 +6,14 @@ The legacy flow is:
 2. Call the ``token.php`` endpoint to learn whether the user is VIP.
 3. If not VIP, start the ad clock (``videoCastcishu.php``), sleep
    ``ads_time`` seconds, then ``skip_ad``.
-4. Request the playlist (``ajax/m3u8.php``) — this returns the master
-   playlist URL.
+4. Request the playlist — this returns the master playlist URL.
 5. Parse the master playlist into ``{resolution: chunklist_url}``.
+
+Bahamut retired the web ``ajax/m3u8.php`` endpoint in Aug 2026: it now
+answers ``404 File not found.`` for every sn. The web branch was moved to
+``api.gamer.com.tw/anime/v1/video_src.php``, which nests the playlist URL
+under ``data.srcUseCases[]`` instead of returning a flat ``src``. Tracks
+upstream aniGamerPlus v25.2 (miyouzi/aniGamerPlus#316, #318).
 
 The rewrite drops legacy's adaptive ``check_no_ad`` which wrote ad-time
 adjustments back to ``config.json`` — that mutation pattern doesn't fit
@@ -164,15 +169,26 @@ class M3u8Client:
         if self._settings.use_mobile_api:
             url = f'https://api.gamer.com.tw/mobile_app/anime/v3/m3u8.php?videoSn={sn}&device={device_id}'
         else:
-            url = f'https://ani.gamer.com.tw/ajax/m3u8.php?sn={sn}&device={device_id}'
+            url = (
+                f'https://api.gamer.com.tw/anime/v1/video_src.php'
+                f'?videoSn={sn}&deviceid={device_id}&deviceTypeUseCases=1'
+            )
         data = self._client.get_json(url)
         return data if isinstance(data, dict) else {}
 
     def _parse_playlist(self, sn: int, playlist: dict[str, T.Any]) -> dict[str, str]:
+        if 'error' in playlist:
+            # video_src.php reports auth/device problems in-band with a 2xx
+            # status. Surfacing the code beats the bare 'missing src' below.
+            err = playlist.get('error') or {}
+            raise exceptions.NoAvailableStreamError(
+                f'sn={sn} playlist error: code={err.get("code")} {err.get("message")}'
+            )
+
         if self._settings.use_mobile_api:
             playlist_url = (playlist.get('data') or {}).get('src', '')
         else:
-            playlist_url = playlist.get('src', '')
+            playlist_url = _use_case_playlist_url(playlist)
         if not playlist_url:
             raise exceptions.NoAvailableStreamError(f'sn={sn} playlist missing src')
 
@@ -197,6 +213,28 @@ class M3u8Client:
             key = vertical[0][1:]
             out[key] = url_prefix + chunk_match.group(0)
         return out
+
+
+def _use_case_playlist_url(playlist: dict[str, T.Any]) -> str:
+    """Dig ``data.srcUseCases[0].src.playlist`` out of a video_src.php reply.
+
+    Upstream indexes straight through that chain, so any shape change
+    upstream becomes a ``KeyError``/``IndexError`` raised deep inside a
+    worker thread. Every level is checked instead and a miss returns ``''``,
+    letting the caller raise ``NoAvailableStreamError`` like every other
+    no-stream path.
+    """
+    use_cases = (playlist.get('data') or {}).get('srcUseCases')
+    if not isinstance(use_cases, list) or not use_cases:
+        return ''
+    first = use_cases[0]
+    if not isinstance(first, dict):
+        return ''
+    src = first.get('src')
+    if not isinstance(src, dict):
+        return ''
+    url = src.get('playlist')
+    return url if isinstance(url, str) else ''
 
 
 def _random_string(length: int) -> str:

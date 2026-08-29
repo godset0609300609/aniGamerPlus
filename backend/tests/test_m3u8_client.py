@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from app.downloader import exceptions
 from app.downloader.m3u8_client import M3u8Client
 from app.logging_ import Logger
 from app.models import AppSettings
@@ -35,6 +36,8 @@ class _FakeResponse:
 
         return json.loads(self.text or 'null')
 
+
+_PLAYLIST_URL = 'https://cdn.example.com/playlist.m3u8'
 
 _PLAYLIST_BODY = b"""#EXTM3U
 #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080
@@ -77,8 +80,10 @@ class _FakeClient:
             return {'deviceid': 'FAKE-DEVICE'}
         if 'token.php' in url:
             return {'vip': self.vip, 'time': 1}
-        if 'm3u8.php' in url:
-            return {'src': 'https://cdn.example.com/playlist.m3u8'}
+        if 'video_src.php' in url:  # web branch, post-Aug-2026
+            return {'data': {'srcUseCases': [{'src': {'playlist': _PLAYLIST_URL}}]}}
+        if 'm3u8.php' in url:  # mobile branch
+            return {'data': {'src': _PLAYLIST_URL}}
         return {}
 
 
@@ -148,6 +153,93 @@ def test_playlist_parse_returns_resolution_map(logger: Logger, settings_repo: Se
     assert set(result.keys()) == {'1080', '720'}
     assert result['1080'].endswith('chunklist_1080.m3u8')
     assert result['1080'].startswith('https://cdn.example.com/')
+
+
+def test_web_branch_uses_video_src_endpoint(logger: Logger, settings_repo: SettingsRepository) -> None:
+    """The retired ``ajax/m3u8.php`` must not be called any more.
+
+    Bahamut answers it with ``404 File not found.`` since Aug 2026; the web
+    branch moved to ``video_src.php`` with renamed query params.
+    """
+    fake = _FakeClient()
+    m3u8 = _make(fake, logger, settings_repo)
+
+    m3u8.fetch(51139)
+
+    assert not any('ajax/m3u8.php' in c for c in fake.calls)
+    hits = [c for c in fake.calls if 'video_src.php' in c]
+    assert len(hits) == 1
+    url = hits[0]
+    assert url.startswith('https://api.gamer.com.tw/anime/v1/video_src.php')
+    assert 'videoSn=51139' in url
+    assert 'deviceid=FAKE-DEVICE' in url
+    assert 'deviceTypeUseCases=1' in url
+
+
+def test_web_branch_reads_playlist_from_use_cases(logger: Logger, settings_repo: SettingsRepository) -> None:
+    """``data.srcUseCases[0].src.playlist`` replaces the flat ``src``."""
+    fake = _FakeClient()
+    m3u8 = _make(fake, logger, settings_repo)
+
+    result = m3u8.fetch(300)
+
+    assert set(result.keys()) == {'1080', '720'}
+    assert any(_PLAYLIST_URL.rsplit('/', 1)[0] in u for u in result.values())
+
+
+@pytest.mark.parametrize(
+    'payload',
+    [
+        {},
+        {'data': {}},
+        {'data': {'srcUseCases': []}},
+        {'data': {'srcUseCases': [{}]}},
+        {'data': {'srcUseCases': [{'src': {}}]}},
+        {'data': {'srcUseCases': ['not-a-dict']}},
+        {'data': {'srcUseCases': [{'src': {'playlist': None}}]}},
+    ],
+)
+def test_malformed_use_cases_raise_no_available_stream(
+    payload: dict[str, Any],
+    logger: Logger,
+    settings_repo: SettingsRepository,
+) -> None:
+    """A shape change must surface as NoAvailableStreamError, not IndexError.
+
+    Upstream indexes straight into ``srcUseCases[0]``; here the miss has to
+    land on the same no-stream path as every other unplayable sn.
+    """
+    fake = _FakeClient()
+    fake.get_json = lambda url, **kw: (  # type: ignore[method-assign]
+        {'deviceid': 'FAKE-DEVICE'}
+        if 'getdeviceid.php' in url
+        else {'vip': True, 'time': 1}
+        if 'token.php' in url
+        else payload
+    )
+    m3u8 = _make(fake, logger, settings_repo)
+
+    with pytest.raises(exceptions.NoAvailableStreamError):
+        m3u8.fetch(300)
+
+
+def test_playlist_error_payload_surfaces_code(logger: Logger, settings_repo: SettingsRepository) -> None:
+    """video_src.php reports 1007 etc. in-band with a 2xx status."""
+    fake = _FakeClient()
+    fake.get_json = lambda url, **kw: (  # type: ignore[method-assign]
+        {'deviceid': 'FAKE-DEVICE'}
+        if 'getdeviceid.php' in url
+        else {'vip': True, 'time': 1}
+        if 'token.php' in url
+        else {'error': {'code': 1007, 'message': '裝置驗證異常！'}}
+    )
+    m3u8 = _make(fake, logger, settings_repo)
+
+    with pytest.raises(exceptions.NoAvailableStreamError) as excinfo:
+        m3u8.fetch(300)
+
+    assert '1007' in str(excinfo.value)
+    assert '裝置驗證異常' in str(excinfo.value)
 
 
 def test_parse_sn_cd_serialises_concurrent_calls(
