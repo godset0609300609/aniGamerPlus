@@ -9,10 +9,9 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import pathlib
+import sqlite3
 import threading
 from typing import Any
-
-import pytest
 
 from app.downloader import exceptions
 from app.downloader.anime import DownloadResult
@@ -342,8 +341,7 @@ def test_permit_released_on_unexpected_exception(tmp_path: pathlib.Path) -> None
     h.queue.add(7, TaskInfo(sn=7, tag='', mode='single'))
     h.queue.mark_processing(7)
 
-    with pytest.raises(RuntimeError):
-        h.worker.run(7)
+    h.worker.run(7)
 
     # Permit must have been released despite the exception so another
     # acquire succeeds immediately.
@@ -352,11 +350,15 @@ def test_permit_released_on_unexpected_exception(tmp_path: pathlib.Path) -> None
     h.queue.download_limiter.release()
 
 
-def test_unexpected_exception_still_finishes_progress(
+def test_unexpected_exception_is_contained_and_marked_retriable(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The try/finally around ``_run_pipeline`` guarantees the progress
-    entry is always dropped on an unexpected terminal exception."""
+    """An unclassified exception must not escape ``run``.
+
+    A worker owns its thread: an escaping exception kills it before
+    ``unmark_processing`` runs, wedging the sn in the processing set for
+    the life of the process. The catch-all treats it as retriable.
+    """
     fake_anime = FakeAnime(
         sn=70,
         download_raises=RuntimeError('unexpected'),
@@ -366,13 +368,42 @@ def test_unexpected_exception_still_finishes_progress(
     h.queue.mark_processing(70)
     h.progress.start(70, 'pending', status='正在下載')
 
-    with pytest.raises(RuntimeError):
-        h.worker.run(70)
+    h.worker.run(70)
 
-    # Progress entry must be finished (finished_at stamped) by the finally block.
+    # Slot released, sn retriable rather than wedged.
+    assert not h.queue.is_processing(70)
+    assert h.queue.contains(70)
     snap = h.progress.snapshot()
     assert 70 in snap
-    assert snap[70].finished_at is not None
+    assert snap[70].status == '失敗! 重啓中'
+    assert snap[70].retries == 1
+    assert snap[70].finished_at is None
+
+
+def test_prologue_exception_does_not_strand_sn_in_processing_set(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A raise before the pipeline must still release the sn.
+
+    ``_spawn_worker`` marks the sn processing then skips it forever after,
+    so a settings/DB read blowing up in the prologue would silently wedge
+    the whole queue.
+    """
+    h = _build(tmp_path, fake_anime=FakeAnime(sn=71))
+    h.queue.add(71, TaskInfo(sn=71, tag='', mode='single'))
+    h.queue.mark_processing(71)
+    h.progress.start(71, 'pending', status='等待下載')
+
+    def _boom() -> AppSettings:
+        raise sqlite3.OperationalError('database is locked')
+
+    h.worker._settings_provider = _boom  # type: ignore[assignment]
+
+    h.worker.run(71)
+
+    assert not h.queue.is_processing(71)
+    snap = h.progress.snapshot()
+    assert snap[71].status == '失敗! 重啓中'
 
 
 def test_no_available_stream_during_load_pops_and_finishes(

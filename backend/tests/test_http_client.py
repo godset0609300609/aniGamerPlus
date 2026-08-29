@@ -246,6 +246,32 @@ def test_get_raises_after_max_retry_exhausted(cookies: CookieRepository, logger:
         client.get('https://example.com/', max_retry=2)
 
 
+def test_get_json_raises_try_too_many_time_on_non_json_body(cookies: CookieRepository, logger: Logger) -> None:
+    """A WAF/error page must not surface as a bare ``JSONDecodeError``.
+
+    Regression: ``ajax/m3u8.php`` answering with HTML let a raw
+    ``JSONDecodeError`` escape the download worker's thread.
+    """
+    client = _client(cookies, logger)
+    html = '<!DOCTYPE html>\n<html><body>Too many requests</body></html>'
+    client._session = _FakeSession(_FakeResponse(status_code=429, text=html))  # type: ignore[assignment]
+
+    with pytest.raises(exceptions.TryTooManyTimeError) as excinfo:
+        client.get_json('https://ani.gamer.com.tw/ajax/m3u8.php?sn=1')
+
+    message = str(excinfo.value)
+    assert 'non-JSON' in message
+    assert '429' in message
+    assert 'Too many requests' in message  # body snippet aids diagnosis
+
+
+def test_get_json_returns_decoded_payload(cookies: CookieRepository, logger: Logger) -> None:
+    client = _client(cookies, logger)
+    client._session = _FakeSession(_FakeResponse(text='{"src": "x.m3u8"}'))  # type: ignore[assignment]
+
+    assert client.get_json('https://ani.gamer.com.tw/ajax/m3u8.php?sn=1') == {'src': 'x.m3u8'}
+
+
 def test_apply_proxies_does_not_touch_socket_default_timeout(
     cookies: CookieRepository,
     logger: Logger,

@@ -206,7 +206,15 @@ class AniGamerHttpClient:
         extra_headers: collections.abc.Mapping[str, str] | None = None,
         use_pyhttpx: bool = False,
     ) -> T.Any:
-        """Convenience wrapper around ``get`` that decodes JSON."""
+        """Convenience wrapper around ``get`` that decodes JSON.
+
+        The upstream ajax endpoints answer with an HTML error page (or an
+        empty body) when they rate-limit us or the WAF steps in. Left alone
+        that surfaces as a bare ``JSONDecodeError``, which no caller catches
+        — it escapes the worker thread and leaves the sn wedged in the
+        queue's processing set. Translate it into ``TryTooManyTimeError``,
+        the transient category the pipeline already treats as retriable.
+        """
         response = self.get(
             url,
             no_cookies=no_cookies,
@@ -214,7 +222,13 @@ class AniGamerHttpClient:
             extra_headers=extra_headers,
             use_pyhttpx=use_pyhttpx,
         )
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:  # JSONDecodeError, from either transport
+            snippet = ' '.join(response.text[:200].split())
+            raise exceptions.TryTooManyTimeError(
+                f'{url} returned non-JSON (HTTP {response.status_code}): {snippet!r}'
+            ) from exc
 
     def build_web_headers(self, sn: int) -> dict[str, str]:
         """Header block the web animeVideo.php endpoints expect."""

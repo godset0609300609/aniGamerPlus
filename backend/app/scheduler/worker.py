@@ -52,20 +52,48 @@ class DownloadWorker:
     # ------------------------------------------------------------------ entry
 
     def run(self, sn: int, *, realtime_show_file_size: bool = False) -> None:
+        """Thread entry point — guarantees the sn is released, always.
+
+        ``UpdateLoop._spawn_worker`` marks the sn processing *before*
+        starting this thread and only ever unmarks it here. An exception
+        escaping this method therefore doesn't just kill one download: it
+        strands the sn in the processing set for the life of the process,
+        and ``_spawn_worker`` skips it forever after. A whole queue can go
+        quiet this way while the loop keeps beating happily, so the
+        watchdog never notices.
+
+        Hence the outermost catch-all. ``_run`` guards the pipeline itself;
+        this guards everything else, including the settings and DB reads in
+        the prologue — a locked SQLite file is a live possibility there.
+        """
+        sn = int(sn)
+        try:
+            self._run(sn, realtime_show_file_size=realtime_show_file_size)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.error(
+                sn,
+                '任務失敗',
+                f'worker 未預期的錯誤: {type(exc).__name__}: {exc}',
+                display=False,
+            )
+            self._progress.mark_retry(sn)
+            self._queue.unmark_processing(sn)
+
+    def _run(self, sn: int, *, realtime_show_file_size: bool = False) -> None:
         """Pull ``sn`` from the queue, execute the pipeline, release slot.
 
         ``TryTooManyTimeError`` and ``NoAvailableStreamError`` are caught
-        per legacy behaviour; any other exception propagates.
+        per legacy behaviour; any other exception is contained by the
+        catch-all around ``_run_pipeline`` so it can never kill the worker
+        thread.
 
         Progress lifecycle: the pipeline owns all ``progress.finish(sn)``
-        calls. Terminal paths (success, ``NoAvailableStreamError``, or any
-        unexpected exception bubbling out of the pipeline) MUST finish the
-        entry so the monitor drops it within one polling tick. The single
-        exception is ``TryTooManyTimeError``, which is recoverable — the
-        entry is left visible with status ``'失敗! 重啓中'`` so users
-        see the failure until the UpdateLoop's next pass.
+        calls. Terminal paths (success, ``NoAvailableStreamError``) MUST
+        finish the entry so the monitor drops it within one polling tick.
+        The recoverable paths are ``TryTooManyTimeError`` and the catch-all
+        below — the entry is left visible with status ``'失敗! 重啓中'``
+        so users see the failure until the UpdateLoop's next pass.
         """
-        sn = int(sn)
         info = self._queue.get(sn)
         if info is None:
             self._logger.info(
@@ -98,9 +126,9 @@ class DownloadWorker:
             return
 
         # Belt-and-suspenders: ensure ``finish(sn)`` runs in every terminal
-        # path, including an unexpected exception escaping ``_run_pipeline``.
-        # ``TryTooManyTimeError`` is the lone recoverable branch and unsets
-        # this flag so the entry survives for the user to see.
+        # path. ``TryTooManyTimeError`` and the catch-all below are the
+        # recoverable branches and unset this flag so the entry survives
+        # for the user to see.
         finish_on_exit = True
         with self._queue.download_slot():
             try:
@@ -110,6 +138,20 @@ class DownloadWorker:
                     settings=settings,
                     realtime_show_file_size=realtime_show_file_size,
                 )
+            except Exception as exc:  # noqa: BLE001
+                # A worker runs on its own thread: anything escaping here
+                # kills the thread before ``unmark_processing`` runs, which
+                # wedges the sn in the processing set for the lifetime of
+                # the process. Treat an unclassified failure as retriable.
+                self._logger.error(
+                    sn,
+                    '任務失敗',
+                    f'未預期的錯誤: {type(exc).__name__}: {exc}',
+                    display=False,
+                )
+                self._progress.mark_retry(sn)
+                self._queue.unmark_processing(sn)
+                finish_on_exit = False
             finally:
                 if finish_on_exit:
                     self._progress.finish(sn)
